@@ -1,0 +1,17 @@
+table inet filter {
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        iifname $veth_iface counter accept;
+        oifname $veth_iface counter accept;
+    }
+}
+
+table inet nat {
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+    }
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        masquerade random
+    }
+}

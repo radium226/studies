@@ -1,0 +1,23 @@
+[project]
+name = "dummy-app"
+version = "0.1.0"
+description = "Dummy app to test systemd's JoinsNamespaceOf"
+authors = [
+    {name = "radium226", email = "radium226@rouages.xyz"},
+]
+dependencies = [
+    "click>=8.1.7",
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "UNLICENSED"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project.scripts]
+dummy-app = "dummy_app:app"
+
+[tool.pdm]
+distribution = true

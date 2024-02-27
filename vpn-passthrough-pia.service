@@ -1,0 +1,34 @@
+[Unit]
+Description=Attach enp3s1f0 to Named network namespace %i
+
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Environment File containing address and gateway definitions
+EnvironmentFile=/etc/enp3s1f0.conf
+
+# Associate the enp3s1f0 NIC with the network namespace
+ExecStart=/usr/bin/openvpn \
+    --client \
+    --dev "${OPENVPN_DEV}" \
+    --proto "udp" \
+    --resolv-retry "infinite" \
+    --nobind \
+    --persist-key \
+    --persist-tun \
+    --cipher "AES-256-CBC" \
+    --data-ciphers-fallback "AES-256-CBC" \
+    --auth "sha1" \
+    --tls-client \
+    --remote-cert-tls "server" \
+    --auth-user-pass \
+    --compress \
+    --reneg-sec 0 \
+    --crl-verify "/etc/vpn-passthrough/ca.rsa.2048.crl" \
+    --ca "/etc/vpn-passthrough/ca.rsa.2048.crt" \
+    --disable-occ \
+    --errors-to-stderr \
+    --pull-filter ignore "route-ipv6" \
+    --pull-filter ignore "ifconfig-ipv6"

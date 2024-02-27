@@ -1,0 +1,17 @@
+[Unit]
+Description=Network Namespace for PIA
+StopWhenUnneeded=true
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/vpn-passthrough.conf
+
+PrivateNetwork=yes
+
+# Create Network Namespace
+ExecStart=/usr/bin/ip netns add "${NETNS}"
+ExecStart=/usr/bin/umount "/var/run/netns/${NETNS}"
+ExecStart=/usr/bin/mount --bind "/proc/self/ns/net" "/var/run/netns/${NETNS}"
+
+ExecStop=/usr/bin/ip netns delelte "${NETNS}"
