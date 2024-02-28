@@ -13,9 +13,11 @@ source=(
     "vpn-passthrough-netns.service" 
     "vpn-passthrough-pia.service"
     "pia.txt"
+    "openvpn-script"
 )
 
 sha256sums=(
+  "SKIP"
   "SKIP"
   "SKIP"
   "SKIP"
@@ -42,6 +44,8 @@ package() {
     for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "config.env" "internet.nft" "pia.txt"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/etc/vpn-passthrough/${file_name}"
     done
+
+    install -Dm755 "${srcdir}/openvpn-script" "${pkgdir}/etc/vpn-passthrough/openvpn-script"
 
     for file_name in "vpn-passthrough-connectivity.service" "vpn-passthrough-internet.service" "vpn-passthrough-netns.service" "vpn-passthrough-pia.service"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/usr/lib/systemd/system/${file_name}"

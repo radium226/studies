@@ -32,4 +32,7 @@ ExecStart=/usr/bin/openvpn \
     --remote "${OPENVPN_REMOTE}" \
     --port "${OPENVPN_PORT}" \
     --auth-user-pass "/etc/vpn-passthrough/pia.txt" \
-    --auth-nocache
+    --auth-nocache \
+    --script-security 2 \
+    --up "/etc/vpn-passthrough/openvpn-script" \
+    --down "/etc/vpn-passthrough/openvpn-script"

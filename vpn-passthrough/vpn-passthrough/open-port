@@ -1,0 +1,150 @@
+#!/usr/bin/env python
+
+from click import command, option
+import requests
+from requests.auth import HTTPBasicAuth
+from dataclasses import dataclass
+from typing import NewType
+import json
+from subprocess import run
+from pathlib import Path
+from os import environ
+
+
+User = NewType("User", str)
+Password = NewType("Password", str)
+DIPToken = NewType("DIPToken", str)
+AuthToken = NewType("AuthToken", str)
+
+
+AUTH_TOKEN_URL = "https://www.privateinternetaccess.com/api/client/v2/token"
+DIP_URL = "https://www.privateinternetaccess.com/api/client/v2/dedicated_ip"
+
+
+@dataclass
+class PayloadAndSignature():
+    
+    payload: str
+    signature: str
+
+
+class PIA():
+
+    user: User
+    password: Password
+    dip_token: DIPToken
+
+    def __init__(self, user: User, password: Password, dip_token: DIPToken):
+        self.user = user
+        self.password = password
+        self.dip_token = dip_token
+
+    
+    def generate_auth_token(self) -> str:
+        command = [
+            "curl", 
+            "-s",
+            "--location",
+            "--request", "POST",
+            "--form", "username={user}".format(user=str(self.user)),
+            "--form", "password={password}".format(password=str(self.password)),
+            AUTH_TOKEN_URL,
+        ]
+
+        stdout = run(command, text=True, check=True, capture_output=True).stdout
+        obj = json.loads(stdout)
+        auth_token = obj["token"]
+        return auth_token
+
+    def check_dip(self):
+        auth_token = self.generate_auth_token()
+        dip_token = self.dip_token
+        print(dip_token)
+        command = [
+            "curl", 
+            "--location", 
+            "--request", "POST",
+            "--header", "Content-Type: application/json",
+            "--header", f"Authorization: Token {auth_token}",
+            "--data-raw", f'{{"tokens":["{self.dip_token}"]}}',
+            DIP_URL,
+        ]
+        stdout = run(command, capture_output=True, text=True, check=True).stdout
+        obj = json.loads(stdout)
+        return obj
+
+
+    def generate_payload_and_signature(self, *, hostname: str, gateway: str) -> PayloadAndSignature:
+        auth_token = self.generate_auth_token()
+        command = [
+            "curl", "-m", "5",
+            "--connect-to", f"{hostname}::{gateway}:",
+            "--cacert", str(Path(__file__).parent / "ca.rsa.4096.crt"),
+            "-G", "--data-urlencode", f"token={auth_token}",
+            f"https://{hostname}:19999/getSignature",
+        ]
+            
+        stdout = run(command, capture_output=True, text=True, check=True).stdout
+        obj = json.loads(stdout)
+        payload = obj["payload"]
+        signature = obj["signature"]
+        return PayloadAndSignature(
+            payload=payload,
+            signature=signature,
+        )
+    
+    
+        
+        
+    # def forward_port(self, *, hostname: str, gateway: str) -> int:
+    #     payload_and_signature = self.generate_payload_and_signature(hostname=hostname, gateway=gateway)
+    #     payload = payload_and_signature.payload
+    #     signature = payload_and_signature.signature
+    #     obj = json.loads(b64decode(payload).decode("utf-8"))
+    #     port = int(obj["port"])
+    #     self.bind_port(hostname=hostname, gateway=gateway, payload=payload, signature=signature)
+    #     return port
+
+
+    # def bind_port(self, *, hostname: str, gateway: str, payload: str, signature: str):
+    #     sudo_command_part = ["sudo"]
+    #     ip_command_part = ["ip", "netns", "exec", network_namespace.name] if (network_namespace := self.network_namespace) else []
+    #     curl_command_part = [
+    #             "sudo",
+    #             "curl", "-G", "-s", "-m", "5",
+    #             "--connect-to", f"{hostname}::{gateway}:",
+    #             "--cacert", str(Path(__file__).parent / "ca.rsa.4096.crt"),
+    #             "--data-urlencode", f"payload={payload}",
+    #             "--data-urlencode", f"signature={signature}",
+    #             f"https://{hostname}:19999/bindPort",
+    #         ]
+    #     command = sudo_command_part + ip_command_part + curl_command_part
+    #     stdout = run(command, capture_output=True, text=True, check=True).stdout
+    #     obj = json.loads(stdout)
+    #     status = obj["status"]
+    #     print(f"status={status}")
+
+
+@command()
+@option("--pia-user", "pia_user", type=User, required=False)
+@option("--pia-password", "pia_password", type=Password, required=False)
+@option("--pia-dip-token", "pia_dip_token", type=DIPToken, required=False)
+def app(pia_user: User | None, pia_password: Password | None, pia_dip_token: DIPToken | None):
+    pia_user = pia_user or User(environ.get("PIA_USER", None))
+    pia_password = pia_password or Password(environ.get("PIA_PASSWORD", None))
+    pia_dip_token = pia_dip_token or DIPToken(environ.get("PIA_DIP_TOKEN", None))
+
+    if not (pia_user and pia_password and pia_dip_token):
+        raise Exception("Some options are missing! ")
+
+    pia = PIA(
+        user=pia_user,
+        password=pia_password,
+        dip_token=pia_dip_token,
+    )
+    obj = pia.check_dip()
+    print(obj)
+
+
+if __name__ == "__main__":
+    app()
