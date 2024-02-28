@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+
+set -euEo pipefail
+
+
+forward_signal_to_child()
+{
+    test -f "/tmp/app.pid" && kill -TERM "$( <"/tmp/app.pid" )"
+}
+
+main()
+{
+    declare timeout
+    timeout=5
+
+    declare port
+    port=8080
+
+    declare host
+    host="127.0.0.1"
+
+    declare max_retry
+    max_retry=5
+
+    while true; do
+        case "${1}" in
+            -p | --port )
+                    port=${2}
+                    shift 2
+                ;;
+
+            -h | --host )
+                    host="${2}"
+                    shift 2
+                ;;
+
+            -t | --timeout )
+                    timeout=${2}
+                    shift 2
+                ;;
+
+            -m | --max_retry )
+                    max_retry=${2}
+                    shift 2
+                ;;
+
+            -- )
+                    shift 1
+                    break
+                ;;
+        esac
+    done
+
+    echo "[XXX] Let's go"
+
+    trap forward_signal_to_child SIGTERM
+
+    declare app_pid
+    echo "[XXX] Starting app"
+    { "${@}" ; } & 
+    app_pid=${!}
+    echo "${app_pid}" >"/tmp/app.pid"
+
+    for i in $( seq 1 ${max_retry} ); do
+        echo -en "[XXX] Checking for port ${port}... "
+        if timeout "${timeout}" bash -c "</dev/tcp/${host}/${port}" >"/dev/null"; then
+            echo "OK"
+            systemd-notify --ready
+            break
+        else
+            echo "KO"
+            sleep 1
+        fi
+    done
+
+    echo "[XXX] Waiting for app"
+    wait ${app_pid}
+    rm "/tmp/app.pid"
+}
+
+main "${@}"

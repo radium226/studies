@@ -1,0 +1,9 @@
+[Unit]
+Requires=hello.service
+After=hello.service
+Requires=proxy-to-hello.socket
+After=proxy-to-hello.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --exit-idle-time="30s" 127.0.0.1:8889
