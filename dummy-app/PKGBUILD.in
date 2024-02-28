@@ -1,0 +1,42 @@
+arch=("any")
+pkgname="dummy-app"
+pkgver="0.1.0"
+pkgrel=1
+
+source=(
+    "${pkgname//-/_}-${pkgver}.tar.gz"
+)
+
+sha256sums=(
+  "SKIP"
+)
+
+makedepends=(
+    "python-build" 
+    "python-installer" 
+    "python-wheel"
+)
+
+depends=(
+    "python"
+    "python-click"
+)
+
+build() {
+    cd "${srcdir}/${pkgname//-/_}-${pkgver}"
+    python -m build --wheel --no-isolation
+}
+
+package() {
+    # install -Dm644 sysusers.conf "$pkgdir/usr/lib/sysusers.d/timelapse.conf"
+    # install -Dm644 tmpfiles.conf "$pkgdir/usr/lib/tmpfiles.d/timelapse.conf"
+    # install -Dm644 timelapse.service "$pkgdir/usr/lib/systemd/system/timelapse.service"
+    # install -Dm644 timelapse-handle-event@.service "$pkgdir/usr/lib/systemd/system/timelapse-handle-event@.service"
+    # install -Dm644 timelapse-handle-event-powered-on.service "$pkgdir/usr/lib/systemd/system/timelapse-handle-event-powered-on.service"
+    # install -Dm644 timelapse-handle-event-power-button-tapped.service "$pkgdir/usr/lib/systemd/system/timelapse-handle-event-power-button-tapped.service"
+    # install -Dm644 timelapse-website.service "$pkgdir/usr/lib/systemd/system/timelapse-website.service"
+    # install -Dm644 timelapse-hotspot.service "$pkgdir/usr/lib/systemd/system/timelapse-hotspot.service"
+    # install -Dm644 "10-timelapse.rules" "$pkgdir/etc/polkit-1/rules.d/10-timelapse.rules"
+
+    find "${pkgname//-/_}-${pkgver}" -type "f" -name "*.whl" -exec python -m installer --destdir="${pkgdir}" {} \;
+}

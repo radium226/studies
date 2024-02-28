@@ -1,0 +1,12 @@
+[Unit]
+Description=Network Namespace for the VPN passthrough
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/vpn-passthrough/config.env
+
+# Create Network Namespace
+ExecStart=/usr/bin/ip netns add "${NETNS}"
+
+ExecStop=/usr/bin/ip netns delete "${NETNS}"

@@ -1,15 +1,12 @@
 [Unit]
-Description=Attach enp3s1f0 to Named network namespace %i
-
+Description=Private Internet Access for the VPN Passthrough
+BindTo=vpn-passthrough-internet.service
+After=vpn-passthrough-internet.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-
-# Environment File containing address and gateway definitions
-EnvironmentFile=/etc/enp3s1f0.conf
-
-# Associate the enp3s1f0 NIC with the network namespace
+Type=simple
+NetworkNamespacePath=/var/run/netns/pia
+EnvironmentFile=/etc/vpn-passthrough/config.env
 ExecStart=/usr/bin/openvpn \
     --client \
     --dev "${OPENVPN_DEV}" \
@@ -31,4 +28,8 @@ ExecStart=/usr/bin/openvpn \
     --disable-occ \
     --errors-to-stderr \
     --pull-filter ignore "route-ipv6" \
-    --pull-filter ignore "ifconfig-ipv6"
+    --pull-filter ignore "ifconfig-ipv6" \
+    --remote "${OPENVPN_REMOTE}" \
+    --port "${OPENVPN_PORT}" \
+    --auth-user-pass "/etc/vpn-passthrough/pia.txt" \
+    --auth-nocache

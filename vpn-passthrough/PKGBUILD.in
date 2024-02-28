@@ -1,0 +1,49 @@
+arch=("any")
+pkgname="vpn-passthrough"
+pkgver="0.1.0"
+pkgrel=1
+
+source=(
+    "ca.rsa.2048.crl" 
+    "ca.rsa.2048.crt" 
+    "config.env" 
+    "internet.nft"
+    "vpn-passthrough-connectivity.service"
+    "vpn-passthrough-internet.service" 
+    "vpn-passthrough-netns.service" 
+    "vpn-passthrough-pia.service"
+    "pia.txt"
+)
+
+sha256sums=(
+  "SKIP"
+  "SKIP"
+  "SKIP"
+  "SKIP"
+  "SKIP"
+  "SKIP"
+  "SKIP"
+  "SKIP"
+  "SKIP"
+)
+
+makedepends=(
+)
+
+depends=(
+    "openvpn"
+)
+
+build() {
+    :
+}
+
+package() {
+    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "config.env" "internet.nft" "pia.txt"; do
+        install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/etc/vpn-passthrough/${file_name}"
+    done
+
+    for file_name in "vpn-passthrough-connectivity.service" "vpn-passthrough-internet.service" "vpn-passthrough-netns.service" "vpn-passthrough-pia.service"; do
+        install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/usr/lib/systemd/system/${file_name}"
+    done
+}

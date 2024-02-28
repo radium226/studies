@@ -1,0 +1,24 @@
+[Unit]
+Description=Connectivity for the VPN Passthrough
+BindTo=vpn-passthrough-netns.service
+After=vpn-passthrough-netns.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/vpn-passthrough/config.env
+# Create interfaces
+ExecStart=/usr/bin/ip link add "${VETH_IFACE}" type "veth" peer name "${VPEER_IFACE}" netns "${NETNS}"
+# Setup Virtual Ethernet oustide of Network Namespace
+ExecStart=/usr/bin/ip addr add "${VETH_ADDR}/24" dev "${VETH_IFACE}"
+ExecStart=/usr/bin/ip link set "${VETH_IFACE}" up
+# Setup Virtual Peer inside Network Namespace
+ExecStart=/usr/bin/ip netns exec "${NETNS}" ip addr add "${VPEER_ADDR}/24" dev "${VPEER_IFACE}"
+ExecStart=/usr/bin/ip netns exec "${NETNS}" ip link set "${VPEER_IFACE}" up
+# Setup localhost
+ExecStart=/usr/bin/ip netns exec "${NETNS}" ip link set lo up
+
+ExecStart=/usr/bin/ip netns exec "${NETNS}" ip route add default via "${VETH_ADDR}"
+
+# Delete interface
+ExecStop=/usr/bin/ip link delete "${VETH_IFACE}"        

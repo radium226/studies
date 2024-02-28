@@ -1,6 +1,12 @@
-from click import command
+from click import command, group
+from subprocess import run
 
 
-@command()
+@group()
 def app():
-    print("Hello, world! ")
+    pass
+
+@app.command()
+def show_ip():
+    command = ["curl", "https://api.ipify.org?format=text"]
+    run(command, check=True)

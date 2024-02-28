@@ -1,20 +1,16 @@
 [Unit]
-Description=Network Namespace for PIA
-StopWhenUnneeded=true
-Requires=vpn-passthrough-connectivity.service
+Description=Internet for the VPN Passthrough
+BindTo=vpn-passthrough-connectivity.service
 After=vpn-passthrough-connectivity.service
 
 [Service]
+NetworkNamespacePath=/var/run/netns/pia
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/etc/vpn-passthrough/config.env
-
-PrivateNetwork=yes
-JoinsNamespaceOf=vpn-passthrough-netns.service
-
 ExecStart=/usr/bin/nft \
     -f "/etc/vpn-passthrough/internet.nft" \
-    -D veth_iface="${VETH_IFACE} \
+    -D veth_iface="${VETH_IFACE}" \
     -D veth_addr="${VETH_ADDR}" \
     -D vpeer_iface="${VPEER_IFACE}" \
     -D vpeer_addr="${VPEER_ADDR}"
