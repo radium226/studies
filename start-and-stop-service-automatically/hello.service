@@ -1,0 +1,13 @@
+[Unit]
+Description=Hello
+After=network.target
+StopWhenUnneeded=true
+
+[Service]
+User=adrien
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/local/bin/wait-for-port -p 8889 -- /usr/local/bin/hello 8889
+
+[Install]
+WantedBy=multi-user.target

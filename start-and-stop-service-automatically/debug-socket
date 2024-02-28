@@ -1,0 +1,15 @@
+#!/usr/bin/env python
+
+from signal import signal, SIGPIPE, SIG_DFL
+from sys import stdin, stdout, stderr
+
+
+if __name__ == "__main__":
+    signal(SIGPIPE,SIG_DFL)
+
+    name = stdin.read()
+    stderr.write(f"Starting to write {name} \n")
+    stdout.write(f"Hello, {name}! \n")
+    stdout.flush()
+    stderr.write(f"Finishing to write {name} \n")
+   

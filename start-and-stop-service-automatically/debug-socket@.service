@@ -1,0 +1,9 @@
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/debug-socket
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

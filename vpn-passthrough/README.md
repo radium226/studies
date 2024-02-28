@@ -13,8 +13,8 @@ We need to check:
 
 
 ## Usage
-- Run `make test` to:
-    - Build the `dummy-app` package
-    - Build the `vpn-passthrough` package
-    - Install both of them
-    - Run `systemd-run` to display the IP
+Run `make test` to:
+- Build the `dummy-app` package
+- Build the `vpn-passthrough` package
+- Install both of them
+- Run `systemd-run` to display the IP
