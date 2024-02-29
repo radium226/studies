@@ -1,0 +1,8 @@
+[Unit]
+
+[Service]
+Type=oneshot
+NetworkNamespacePath=/var/run/netns/pia
+BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
+EnvironmentFile=/etc/vpn-passthrough/config.env
+ExecStart=vpn-passthrough-pia --auth-file="/etc/vpn-passthrough/pia.txt" bind-port %I

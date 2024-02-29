@@ -24,3 +24,4 @@ Run `make test` to:
 - We need to use `pyroute2` to get the gateway
 - ip route show 0.0.0.0/1
 - ip route show result
+- [Manual connection with PIA](https://github.com/pia-foss/manual-connections/blob/master/port_forwarding.sh)
