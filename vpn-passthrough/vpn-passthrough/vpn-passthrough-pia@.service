@@ -2,6 +2,7 @@
 Description=Private Internet Access for VPN Passthrough for %I
 BindTo=vpn-passthrough-forwarding@%i.service
 After=vpn-passthrough-forwarding@%i.service
+PartOf=vpn-passthrough@%i.service
 
 [Service]
 Type=notify

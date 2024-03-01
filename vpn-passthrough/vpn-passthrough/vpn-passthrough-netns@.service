@@ -1,5 +1,6 @@
 [Unit]
 Description=Network Namespace for VPN Passthrough for %i
+PartOf=vpn-passthrough@%i.service
 
 [Service]
 Type=oneshot

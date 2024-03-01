@@ -14,6 +14,7 @@ source=(
     "vpn-passthrough-netns@.service" 
     "vpn-passthrough-pia@.service"
     "vpn-passthrough-configuration@.service"
+    "vpn-passthrough@.service"
     "pia.txt"
     "openvpn-script"
     "vpn_passthrough-0.1.0.tar.gz"
@@ -60,7 +61,7 @@ package() {
 
     install -Dm755 "${srcdir}/openvpn-script" "${pkgdir}/etc/vpn-passthrough/openvpn-script"
 
-    for file_name in "vpn-passthrough-netns@.service" "vpn-passthrough-veth@.service" "vpn-passthrough-forwarding@.service" "vpn-passthrough-pia@.service" "vpn-passthrough-configuration@.service"; do
+    for file_name in "vpn-passthrough@.service" "vpn-passthrough-netns@.service" "vpn-passthrough-veth@.service" "vpn-passthrough-forwarding@.service" "vpn-passthrough-pia@.service" "vpn-passthrough-configuration@.service"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/usr/lib/systemd/system/${file_name}"
     done
 }

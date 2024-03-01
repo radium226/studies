@@ -2,6 +2,7 @@
 Description=Configuration for VPN Passthrough for %I
 BindTo=vpn-passthrough-pia@%i.service
 After=vpn-passthrough-pia@%i.service
+PartOf=vpn-passthrough@%i.service
 
 [Service]
 Type=oneshot
