@@ -38,7 +38,7 @@ def app(
     pia_auth_file_path: Path | None,
 ):
     config_file_path = config_folder_path / f"{app_name}.yaml"
-    config = yaml.safe_load(config_file_path.read_text())
+    config = yaml.safe_load(config_file_path.read_text()) if config_file_path.exists() else {}
     
     args_pia_auth = Auth(pia_user, pia_password) if pia_user and pia_password else None
     file_pia_auth = PIA.read_auth_file(pia_auth_file_path) if pia_auth_file_path else None
@@ -85,7 +85,7 @@ def connect(context: Context, region_id: RegionID | None):
 @pass_context
 def bind_port(context: Context, payload_and_signature_file_path: Path):
     pia = context.obj.pia
-    payload_and_signature = PIA.read_payload_and_signature(payload_and_signature_file_path)
+    payload_and_signature = PIA.read_payload_and_signature_file(payload_and_signature_file_path)
     pia.bind_port(payload_and_signature)
 
 
@@ -153,6 +153,8 @@ def setup(context: Context, callback: str | None, number_of_ports_to_forward: in
     pia = context.obj.pia
     config = context.obj.config
 
+    app_name = context.obj.app_name
+
     callback = callback or config["callback"] or DEFAULT_CALLBACK
 
     print("callback: ", callback)
@@ -169,15 +171,20 @@ def setup(context: Context, callback: str | None, number_of_ports_to_forward: in
             signature=payload_and_signature.signature,
         ))
 
-        payload_and_signature_file_path = context.obj.state_folder_path / f"{port}.json"
+        payload_and_signature_file_path = context.obj.state_folder_path / app_name / f"{port}.json"
+        payload_and_signature_file_path.parent.mkdir(parents=True, exist_ok=True)
         payload_and_signature_file_path.write_text(text)
 
-        specifier = run(["systemd-escape", "-p", str(payload_and_signature_file_path)], capture_output=True, text=True, check=True).stdout.strip()
+        instance = run(["systemd-escape", "-p", str(payload_and_signature_file_path)], capture_output=True, text=True, check=True).stdout.strip()
         command = [
         "systemd-run", 
-            "--timer-property", "PartOf=vpn-passthrough-configuration.service",
+            "--timer-property", f"PartOf=vpn-passthrough-configuration@{app_name}.service",
             "--on-calendar=*-*-* *:*:00,30",
-            "--unit", "vpn-passthrough-pia-bind-port@{specifier}".format(specifier=str(specifier))
+            "--property", f"NetworkNamespacePath=/var/run/netns/{app_name}",
+            "--property", f"BindReadOnlyPaths=/etc/netns/{app_name}/resolv.conf:/etc/resolv.conf:norbind",
+            "--unit", "vpn-passthrough-pia-bind-port@{instance}".format(instance=str(instance)),
+            "--service-type", "oneshot",
+            "vpn-passthrough", "pia", "bind-port", str(payload_and_signature_file_path),
         ]
         run(command, check=True)
         ports.append(port)

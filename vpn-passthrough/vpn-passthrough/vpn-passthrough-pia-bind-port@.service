@@ -1,8 +1,0 @@
-[Unit]
-Description=Bind PIA port for VPN Passthrough 
-
-[Service]
-Type=oneshot
-NetworkNamespacePath=/var/run/netns/dummy
-BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
-ExecStart=vpn-passthrough pia bind-port "%I"
