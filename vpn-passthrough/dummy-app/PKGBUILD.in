@@ -5,12 +5,10 @@ pkgrel=1
 
 source=(
     "${pkgname//-/_}-${pkgver}.tar.gz"
-    "dummy-app.service"
-    "config.json"
+    "dummy-app@.service"
 )
 
 sha256sums=(
-  "SKIP"
   "SKIP"
   "SKIP"
 )
@@ -32,8 +30,7 @@ build() {
 }
 
 package() {
-    install -Dm644 "${srcdir}/dummy-app.service" "${pkgdir}/usr/lib/systemd/system/dummy-app.service"
-    install -Dm644 "${srcdir}/config.json" "${pkgdir}/etc/dummy-app/config.json"
+    install -Dm644 "${srcdir}/dummy-app@.service" "${pkgdir}/usr/lib/systemd/system/dummy-app@.service"
     
     find "${pkgname//-/_}-${pkgver}" -type "f" -name "*.whl" -exec python -m installer --destdir="${pkgdir}" {} \;
 }

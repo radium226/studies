@@ -5,7 +5,4 @@ After=vpn-passthrough-forwarding@%i.service
 
 [Service]
 Type=notify
-NetworkNamespacePath=/var/run/netns/%I
-BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
-ExecStartPre=sleep 10
-ExecStart=vpn-passthrough --app "%I" pia connect
+ExecStart=vpn-passthrough --app "%i" pia connect

@@ -67,6 +67,8 @@ def pia(context: Context):
 @pass_context
 def connect(context: Context, region_id: RegionID | None):
     config = context.obj.config
+    app_name = context.obj.app_name
+    netns = app_name
     config_region_id = RegionID(config["region_id"]) if "region_id" in config else None
     env_region_id = RegionID(environ["VPN_PASSTHROUGH_REGION_ID"]) if "VPN_PASSTHROUGH_REGION_ID" in environ else None
 
@@ -75,7 +77,7 @@ def connect(context: Context, region_id: RegionID | None):
         raise Exception("No region found!")
 
     pia = context.obj.pia
-    pia.connect(region_id=region_id)
+    pia.connect(region_id=region_id, netns=netns)
 
 
 @pia.command()
@@ -114,6 +116,10 @@ def create(context: Context):
     veth_addr = context.obj.config["dev"]["veth"]["addr"]
     vpeer_iface = context.obj.config["dev"]["vpeer"]["iface"]
     vpeer_addr = context.obj.config["dev"]["vpeer"]["addr"]
+
+    resolv_conf_file_path = Path("/etc/netns") / netns / "resolv.conf"
+    resolv_conf_file_path.parent.mkdir(parents=True, exist_ok=True)
+    resolv_conf_file_path.write_text("nameserver 10.0.0.242")
 
     run(["ip", "link", "add", veth_iface, "type", "veth", "peer", "name", vpeer_iface, "netns", netns], check=True)
     run(["ip", "addr", "add", f"{veth_addr}/24", "dev", veth_iface], check=True)

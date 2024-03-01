@@ -15,47 +15,70 @@ test: install
 	# sudo iptables -P OUTPUT ACCEPT
 	sudo iptables -P FORWARD ACCEPT
 
+	sudo mkdir -p "/etc/vpn-passthrough"
+
+	sudo cp "./tests/dummy-app-foo.yaml" "/etc/vpn-passthrough/dummy-app-foo.yaml"
+	sudo cp "./tests/dummy-app-bar.yaml" "/etc/vpn-passthrough/dummy-app-bar.yaml"
+	
+	sudo systemctl stop \
+		"vpn-passthrough-netns@dummy-app-foo" \
+		"vpn-passthrough-veth@dummy-app-foo" \
+		"vpn-passthrough-forwarding@dummy-app-foo" \
+		"vpn-passthrough-pia@dummy-app-foo" \
+		"vpn-passthrough-configuration@dummy-app-foo" || true
 
 	sudo systemctl stop \
-		"vpn-passthrough-netns@dummy" \
-		"vpn-passthrough-veth@dummy" \
-		"vpn-passthrough-forwarding@dummy" \
-		"vpn-passthrough-pia@dummy" \
-		"vpn-passthrough-configuration@dummy" || true
+		"vpn-passthrough-netns@dummy-app-bar" \
+		"vpn-passthrough-veth@dummy-app-bar" \
+		"vpn-passthrough-forwarding@dummy-app-bar" \
+		"vpn-passthrough-pia@dummy-app-bar" \
+		"vpn-passthrough-configuration@dummy-app-bar" || true
 
 	sudo systemctl start \
-		"vpn-passthrough-netns@dummy" \
-		"vpn-passthrough-veth@dummy" \
-		"vpn-passthrough-forwarding@dummy" \
-		"vpn-passthrough-pia@dummy" \
-		"vpn-passthrough-configuration@dummy" || true
+		"vpn-passthrough-netns@dummy-app-foo" \
+		"vpn-passthrough-veth@dummy-app-foo" \
+		"vpn-passthrough-forwarding@dummy-app-foo" \
+		"vpn-passthrough-pia@dummy-app-foo" \
+		"vpn-passthrough-configuration@dummy-app-foo" || true
 
-	sleep 5
+	sudo systemctl start \
+		"vpn-passthrough-netns@dummy-app-bar" \
+		"vpn-passthrough-veth@dummy-app-bar" \
+		"vpn-passthrough-forwarding@dummy-app-bar" \
+		"vpn-passthrough-pia@dummy-app-bar" \
+		"vpn-passthrough-configuration@dummy-app-bar" || true
 
-	sudo ip netns exec "dummy" ping -c 1 -W 1 "www.google.fr"
+	sleep 2.5
 
-	sudo systemctl restart "dummy-app.service" || true
+	sudo ip netns exec "dummy-app-foo" ping -c 1 -W 1 "www.google.fr"
 
+	sudo ip netns exec "dummy-app-bar" ping -c 1 -W 1 "www.google.fr"
 
-	sudo mkdir -p "/etc/systemd/system/dummy-app.service.d"
-	cat <<EOCAT | sudo tee "/etc/systemd/system/dummy-app.service.d/vpn-passthrough.conf"
-	[Unit]
-	Requires=vpn-passthrough-configuration@dummy.service
-	After=vpn-passthrough-configuration@dummy.service
+	sudo mkdir -p "/etc/systemd/system/dummy-app@foo.service.d"
+	sudo cp "./tests/dummy-app-foo-vpn-passthrough.conf" "/etc/systemd/system/dummy-app@foo.service.d/vpn-passthrough.conf"
 
-	[Service]
-	NetworkNamespacePath=/var/run/netns/dummy
-	BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
-	EOCAT
+	sudo mkdir -p "/etc/systemd/system/dummy-app@bar.service.d"
+	sudo cp "./tests/dummy-app-bar-vpn-passthrough.conf" "/etc/systemd/system/dummy-app@bar.service.d/vpn-passthrough.conf"
 
 	sudo systemctl daemon-reload
-	sudo systemctl restart "dummy-app.service"
+	sudo systemctl restart "dummy-app@foo.service" "dummy-app@bar.service"
 
 	dummy-app show-ip
-	sleep 5
+
+	sleep 2.5
 	sudo systemd-run \
-		--property "NetworkNamespacePath=/var/run/netns/dummy" \
-		--property "BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind" \
+		--property "NetworkNamespacePath=/var/run/netns/dummy-app-foo" \
+		--property "BindReadOnlyPaths=/etc/netns/dummy-app-foo/resolv.conf:/etc/resolv.conf:norbind" \
+		--pty \
+		--wait \
+		--collect \
+		--service-type="exec" \
+			dummy-app \
+				show-ip
+
+	sudo systemd-run \
+		--property "NetworkNamespacePath=/var/run/netns/dummy-app-bar" \
+		--property "BindReadOnlyPaths=/etc/netns/dummy-app-bar/resolv.conf:/etc/resolv.conf:norbind" \
 		--pty \
 		--wait \
 		--collect \
@@ -79,7 +102,7 @@ build-dummy-app:
 	mkdir -p "$(BUILDDIR)/dummy-app"
 	cp "./dummy-app/PKGBUILD.in" "$(BUILDDIR)/dummy-app/PKGBUILD"
 	pdm build --project="./dummy-app" --no-wheel --no-clean --dest $(shell realpath -m --relative-to "./dummy-app" "$(BUILDDIR)/dummy-app")
-	cp "./dummy-app/config.json" "./dummy-app/dummy-app.service" "$(BUILDDIR)/dummy-app"
+	cp "./dummy-app/dummy-app@.service" "$(BUILDDIR)/dummy-app"
 	
 	cd "$(BUILDDIR)/dummy-app"
 	makepkg --force --skipchecksums

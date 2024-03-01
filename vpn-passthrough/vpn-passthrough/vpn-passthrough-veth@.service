@@ -6,5 +6,5 @@ After=vpn-passthrough-netns@%i.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=vpn-passthrough --app "%I" veth create
-ExecStop=vpn-passthrough --app "%I" veth destroy
+ExecStart=vpn-passthrough --app "%i" veth create
+ExecStop=vpn-passthrough --app "%i" veth destroy
