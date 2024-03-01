@@ -106,6 +106,8 @@ def veth():
 def create(context: Context):
     app_name = context.obj.app_name
 
+    print("app_name: ", app_name)
+
     netns = app_name
     
     veth_iface = context.obj.config["dev"]["veth"]["iface"]
@@ -218,7 +220,7 @@ def start(context: Context):
 @pass_context
 def stop(context: Context):
     app_name = context.obj.app_name
-    command = ["nft", "delete", "table", "inet", str(app_name)]
+    command = ["nft", "delete", "table", "inet", "pia"] # FIXME: We need to find a way to include the app_name
     run(command, check=True)
 
 

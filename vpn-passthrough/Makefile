@@ -16,9 +16,23 @@ test: install
 	sudo iptables -P FORWARD ACCEPT
 
 
-	sudo systemctl restart "vpn-passthrough-netns@dummy" || true
+	sudo systemctl stop \
+		"vpn-passthrough-netns@dummy" \
+		"vpn-passthrough-veth@dummy" \
+		"vpn-passthrough-forwarding@dummy" \
+		"vpn-passthrough-pia@dummy" \
+		"vpn-passthrough-configuration@dummy" || true
 
-	sudo ip netns exec "pia" ping -c 1 -W 1 "www.google.fr"
+	sudo systemctl start \
+		"vpn-passthrough-netns@dummy" \
+		"vpn-passthrough-veth@dummy" \
+		"vpn-passthrough-forwarding@dummy" \
+		"vpn-passthrough-pia@dummy" \
+		"vpn-passthrough-configuration@dummy" || true
+
+	sleep 5
+
+	sudo ip netns exec "dummy" ping -c 1 -W 1 "www.google.fr"
 
 	sudo systemctl restart "dummy-app.service" || true
 
