@@ -1,0 +1,10 @@
+[Unit]
+Description=Virtual Ethernet for VPN Passthrough for %I
+BindTo=vpn-passthrough-netns@%i.service
+After=vpn-passthrough-netns@%i.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=vpn-passthrough --app "%i" veth create
+ExecStop=vpn-passthrough --app "%i" veth destroy

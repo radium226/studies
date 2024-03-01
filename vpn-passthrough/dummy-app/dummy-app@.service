@@ -1,0 +1,6 @@
+[Unit]
+Description=Dummy App for %I
+
+[Service]
+Type=simple
+ExecStart=dummy-app --instance "%I" serve

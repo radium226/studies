@@ -1,0 +1,23 @@
+---
+region_id: uk
+
+port_forwards:
+  number_of: 1
+
+callback: |
+  config_file_path="/etc/dummy-app/foo.json"
+  mkdir -p "/etc/dummy-app"
+  test -f "${config_file_path}" || echo '{}' > "${config_file_path}"
+  read -r port <<<"${*}"
+  jq \
+    --arg port "${port}" \
+    '.port = ( $port | tonumber )' \
+    "${config_file_path}" | \
+    sponge "${config_file_path}"
+dev:
+  veth:
+    iface: veth2
+    addr: 10.200.2.2
+  vpeer:
+    iface: vpeer2
+    addr: 10.200.2.1

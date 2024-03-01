@@ -23,20 +23,21 @@ DEFAULT_CALLBACK = "true"
 @group()
 @option("--app", "app_name", type=AppName, required=False, default="pia")
 @option("--state-folder", "state_folder_path", type=Path, default=Path("/var/run/vpn-passthrough"))
-@option("--config-file", "config_file_path", type=Path, default=Path("/etc/vpn-passthrough/config.yaml"))
+@option("--config-folder", "config_folder_path", type=Path, default=Path("/etc/vpn-passthrough"))
 @option("--pia-user", "pia_user", type=User, required=False)
 @option("--pia-password", "pia_password", type=Password, required=False)
 @option("--pia-auth-file", "pia_auth_file_path", type=Path, default=Path("/etc/vpn-passthrough/pia.txt"))
 @pass_context
 def app(
     context: Context, 
-    config_file_path: Path, 
+    config_folder_path: Path, 
     state_folder_path: Path, 
     app_name: str,
     pia_user: User | None,
     pia_password: Password | None,
     pia_auth_file_path: Path | None,
 ):
+    config_file_path = config_folder_path / f"{app_name}.yaml"
     config = yaml.safe_load(config_file_path.read_text())
     
     args_pia_auth = Auth(pia_user, pia_password) if pia_user and pia_password else None
@@ -66,6 +67,8 @@ def pia(context: Context):
 @pass_context
 def connect(context: Context, region_id: RegionID | None):
     config = context.obj.config
+    app_name = context.obj.app_name
+    netns = app_name
     config_region_id = RegionID(config["region_id"]) if "region_id" in config else None
     env_region_id = RegionID(environ["VPN_PASSTHROUGH_REGION_ID"]) if "VPN_PASSTHROUGH_REGION_ID" in environ else None
 
@@ -74,7 +77,7 @@ def connect(context: Context, region_id: RegionID | None):
         raise Exception("No region found!")
 
     pia = context.obj.pia
-    pia.connect(region_id=region_id)
+    pia.connect(region_id=region_id, netns=netns)
 
 
 @pia.command()
@@ -105,12 +108,18 @@ def veth():
 def create(context: Context):
     app_name = context.obj.app_name
 
+    print("app_name: ", app_name)
+
     netns = app_name
     
     veth_iface = context.obj.config["dev"]["veth"]["iface"]
     veth_addr = context.obj.config["dev"]["veth"]["addr"]
     vpeer_iface = context.obj.config["dev"]["vpeer"]["iface"]
     vpeer_addr = context.obj.config["dev"]["vpeer"]["addr"]
+
+    resolv_conf_file_path = Path("/etc/netns") / netns / "resolv.conf"
+    resolv_conf_file_path.parent.mkdir(parents=True, exist_ok=True)
+    resolv_conf_file_path.write_text("nameserver 10.0.0.242")
 
     run(["ip", "link", "add", veth_iface, "type", "veth", "peer", "name", vpeer_iface, "netns", netns], check=True)
     run(["ip", "addr", "add", f"{veth_addr}/24", "dev", veth_iface], check=True)
@@ -217,7 +226,7 @@ def start(context: Context):
 @pass_context
 def stop(context: Context):
     app_name = context.obj.app_name
-    command = ["nft", "delete", "table", "inet", str(app_name)]
+    command = ["nft", "delete", "table", "inet", "pia"] # FIXME: We need to find a way to include the app_name
     run(command, check=True)
 
 

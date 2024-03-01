@@ -1,0 +1,10 @@
+[Unit]
+Description=Forwarding for VPN Passthrough for %i
+BindTo=vpn-passthrough-veth@%i.service
+After=vpn-passthrough-veth@%i.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=vpn-passthrough --app "%i" forwarding start
+ExecStop=vpn-passthrough --app "%i" forwarding stop

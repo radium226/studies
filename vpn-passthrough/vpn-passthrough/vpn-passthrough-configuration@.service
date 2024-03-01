@@ -1,0 +1,13 @@
+[Unit]
+Description=Configuration for VPN Passthrough for %I
+BindTo=vpn-passthrough-pia@%i.service
+After=vpn-passthrough-pia@%i.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+NetworkNamespacePath=/var/run/netns/%i
+BindReadOnlyPaths=/etc/netns/%i/resolv.conf:/etc/resolv.conf:norbind
+ExecStartPre=sleep 5
+ExecStart=vpn-passthrough --app "%i" configuration setup
+ExecStop=vpn-passthrough --app "%i" configuration teardown

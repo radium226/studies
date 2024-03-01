@@ -57,7 +57,7 @@ class PIA():
         }))
 
 
-    def connect(self, region_id: RegionID, openvpn_dev: str = "tun0"):
+    def connect(self, region_id: RegionID, openvpn_dev: str = "tun0", netns: str | None = None):
         response = requests.get(self.SERVERS_URL, headers={"Accept": "application/json"})
         [text, *_] = response.text.splitlines()
         obj = json.loads(text)
@@ -70,7 +70,10 @@ class PIA():
         # FIXME: Find a way to get this port somewhere
         openvpn_port = 1198
 
-        command = [
+        ip_command = ["ip", "netns", "exec", netns] if netns else []
+
+        openvpn_command = [
+            "openvpn",
             "--client",
             "--dev", openvpn_dev,
             "--proto", "udp",
@@ -101,12 +104,14 @@ class PIA():
             "--down", "/etc/vpn-passthrough/openvpn-script",
         ]
 
+        command = ip_command + openvpn_command
+
         print(command)
         sys.stdout.flush()
 
         execvpe(
-            "openvpn", 
-            ["opvenvpn"] + command,
+            command[0], 
+            command,
             env=environ,
         )
 
