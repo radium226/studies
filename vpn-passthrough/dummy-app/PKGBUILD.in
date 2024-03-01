@@ -5,9 +5,13 @@ pkgrel=1
 
 source=(
     "${pkgname//-/_}-${pkgver}.tar.gz"
+    "dummy-app.service"
+    "config.json"
 )
 
 sha256sums=(
+  "SKIP"
+  "SKIP"
   "SKIP"
 )
 
@@ -28,15 +32,8 @@ build() {
 }
 
 package() {
-    # install -Dm644 sysusers.conf "$pkgdir/usr/lib/sysusers.d/timelapse.conf"
-    # install -Dm644 tmpfiles.conf "$pkgdir/usr/lib/tmpfiles.d/timelapse.conf"
-    # install -Dm644 timelapse.service "$pkgdir/usr/lib/systemd/system/timelapse.service"
-    # install -Dm644 timelapse-handle-event@.service "$pkgdir/usr/lib/systemd/system/timelapse-handle-event@.service"
-    # install -Dm644 timelapse-handle-event-powered-on.service "$pkgdir/usr/lib/systemd/system/timelapse-handle-event-powered-on.service"
-    # install -Dm644 timelapse-handle-event-power-button-tapped.service "$pkgdir/usr/lib/systemd/system/timelapse-handle-event-power-button-tapped.service"
-    # install -Dm644 timelapse-website.service "$pkgdir/usr/lib/systemd/system/timelapse-website.service"
-    # install -Dm644 timelapse-hotspot.service "$pkgdir/usr/lib/systemd/system/timelapse-hotspot.service"
-    # install -Dm644 "10-timelapse.rules" "$pkgdir/etc/polkit-1/rules.d/10-timelapse.rules"
-
+    install -Dm644 "${srcdir}/dummy-app.service" "${pkgdir}/usr/lib/systemd/system/dummy-app.service"
+    install -Dm644 "${srcdir}/config.json" "${pkgdir}/etc/dummy-app/config.json"
+    
     find "${pkgname//-/_}-${pkgver}" -type "f" -name "*.whl" -exec python -m installer --destdir="${pkgdir}" {} \;
 }

@@ -1,12 +1,9 @@
-table inet filter {
+table inet vpn-passthrough {
     chain forward {
         type filter hook forward priority 0; policy accept;
         iifname $veth_iface counter accept;
         oifname $veth_iface counter accept;
     }
-}
-
-table inet nat {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
     }

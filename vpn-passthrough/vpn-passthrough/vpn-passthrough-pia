@@ -1,0 +1,228 @@
+#!/usr/bin/env python
+
+from click import command, option, group, pass_context, Context, argument
+import requests
+from requests.auth import HTTPBasicAuth
+from dataclasses import dataclass
+from typing import NewType
+import json
+from subprocess import run
+from pathlib import Path
+from os import environ
+from base64 import b64decode
+from types import SimpleNamespace
+import sys
+
+
+User = NewType("User", str)
+Password = NewType("Password", str)
+DIPToken = NewType("DIPToken", str)
+AuthToken = NewType("AuthToken", str)
+
+
+AUTH_TOKEN_URL = "https://www.privateinternetaccess.com/api/client/v2/token"
+DIP_URL = "https://www.privateinternetaccess.com/api/client/v2/dedicated_ip"
+
+
+@dataclass
+class PayloadAndSignature():
+    
+    payload: str
+    signature: str
+
+
+class PIA():
+
+    user: User
+    password: Password
+    dip_token: DIPToken
+
+    def __init__(self, user: User, password: Password):
+        self.user = user
+        self.password = password
+        # self.dip_token = dip_token
+
+    
+    def generate_auth_token(self) -> str:
+        command = [
+            "curl", 
+            "-s",
+            "--location",
+            "--request", "POST",
+            "--form", "username={user}".format(user=str(self.user)),
+            "--form", "password={password}".format(password=str(self.password)),
+            AUTH_TOKEN_URL,
+        ]
+
+        process = run(command, text=True, check=True, capture_output=True)
+        stdout = process.stdout
+        obj = json.loads(stdout)
+        auth_token = obj["token"]
+        return auth_token
+    
+    def lookup_gateway(self):
+        # FIXME: Find a better way to get the gateway address
+        process = run(["ip", "route", "show", "0.0.0.0/1"], capture_output=True, text=True, check=True)
+        stdout = process.stdout
+        gateway = stdout.split(" ")[2]
+        return gateway
+
+
+    # def check_dip(self):
+    #     auth_token = self.generate_auth_token()
+    #     dip_token = self.dip_token
+    #     print(dip_token)
+    #     command = [
+    #         "curl", 
+    #         "--location", 
+    #         "--request", "POST",
+    #         "--header", "Content-Type: application/json",
+    #         "--header", f"Authorization: Token {auth_token}",
+    #         "--data-raw", f'{{"tokens":["{self.dip_token}"]}}',
+    #         DIP_URL,
+    #     ]
+    #     stdout = run(command, capture_output=True, text=True, check=True).stdout
+    #     obj = json.loads(stdout)
+    #     return obj
+
+
+    def generate_payload_and_signature(self) -> PayloadAndSignature:
+        gateway = self.lookup_gateway()
+        auth_token = self.generate_auth_token()
+        print(auth_token)
+        # FIXME: Use cert
+        command = [
+            "curl", "-kG",
+            "--data-urlencode", f"token={auth_token}",
+            f"https://{gateway}:19999/getSignature",
+        ]
+        process = run(command, capture_output=True, text=True, check=True)
+        stdout = process.stdout
+        obj = json.loads(stdout)
+        print(obj)
+        payload = obj["payload"]
+        signature = obj["signature"]
+        payload_and_signature = PayloadAndSignature(
+            payload=payload,
+            signature=signature,
+        )
+        return payload_and_signature
+    
+    def request_port(self) -> tuple[int, PayloadAndSignature]:
+        payload_and_signature = self.generate_payload_and_signature()
+        payload = payload_and_signature.payload
+        obj = json.loads(b64decode(payload).decode("utf-8"))
+        port = int(obj["port"])
+        return port, payload_and_signature
+    
+
+    def bind_port(self, payload_and_signature: PayloadAndSignature):
+        payload = payload_and_signature.payload
+        signature = payload_and_signature.signature
+        gateway = self.lookup_gateway()
+        command = [
+                "curl",
+                "-sGk", 
+                "--data-urlencode", f"payload={payload}",
+                "--data-urlencode", f"signature={signature}",
+                f"https://{gateway}:19999/bindPort",
+            ]
+        print(" ".join(command))
+        stdout = run(command, capture_output=True, text=True, check=True).stdout
+        obj = json.loads(stdout)
+        status = obj["status"]
+        message = obj["message"]
+        if status != "OK":
+            raise Exception(
+                "Unable to bind port! (status={status}, message={message})".format(
+                    status=status, 
+                    message=message
+                )
+            )
+
+
+@group()
+@option("--user", "user", type=User, required=False)
+@option("--password", "password", type=Password, required=False)
+@option("--auth-file", "auth_file_path", type=Path, required=False)
+@option("--state-folder", "state_folder_path", type=Path, required=False)
+@pass_context
+def app(
+    context: Context, 
+    user: User | None, 
+    password: Password | None,
+    state_folder_path: Path | None,
+    auth_file_path: Path | None,
+):
+    if (user and password) and auth_file_path:
+        raise Exception("You can't specify both --user and --password and --auth-file! ")
+
+    if auth_file_path:
+        [user_line, password_line] = auth_file_path.read_text().splitlines()
+        user = User(user_line)
+        password = Password(password_line)
+
+    if not user:
+        user = User(environ["PIA_USER"])
+
+    if not password:
+        password = Password(environ["PIA_PASSWORD"])
+
+    context.obj = SimpleNamespace(
+        pia=PIA(
+            user=user or User(environ["PIA_USER"]),
+            password=password or Password(environ["PIA_PASSWORD"]),
+        ),
+        state_folder_path=state_folder_path or Path("/var/run/vpn-passthrough/pia/forwarded-ports"),
+    )
+
+
+def schedule_bind_port(port: int):
+    command = [
+        "systemd-run", 
+            "--on-calendar=*-*-* *:*:00,30",
+            "--unit", "vpn-passthrough-pia-bind-port@{port}".format(port=str(port))
+    ]
+    run(command, check=True)
+
+
+@app.command()
+@option("--callback", "-c", "callback", type=str, default=None, required=False)
+@option("--number-of", "-n", "number_of", type=int, default=1, required=True)
+@pass_context
+def forward_ports(context: Context, number_of: int, callback: str | None):
+    pia = context.obj.pia
+    ports = []
+    for _ in range(number_of):
+        port, payload_and_signature = pia.request_port()
+        pia.bind_port(payload_and_signature)
+        context.obj.state_folder_path.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(dict(
+            payload=payload_and_signature.payload,
+            signature=payload_and_signature.signature,
+        ))
+        (context.obj.state_folder_path / f"{port}.json").write_text(text)
+        schedule_bind_port(port)
+        ports.append(port)
+
+    if callback:
+        run(["bash", "-c", callback, ""] + [str(port) for port in ports], check=True)
+
+
+@app.command()
+@argument("port", type=int, required=True)
+@pass_context
+def bind_port(context: Context, port):
+    pia = context.obj.pia
+
+    obj = json.loads((context.obj.state_folder_path / f"{port}.json").read_text())
+    payload_and_signature = PayloadAndSignature(
+        payload=obj["payload"],
+        signature=obj["signature"],
+    )
+    print(payload_and_signature)
+    pia.bind_port(payload_and_signature)
+
+
+if __name__ == "__main__":
+    app()

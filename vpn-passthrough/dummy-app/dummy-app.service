@@ -1,0 +1,6 @@
+[Unit]
+Description=Dummy App
+
+[Service]
+Type=simple
+ExecStart=dummy-app serve

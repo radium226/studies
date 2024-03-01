@@ -9,14 +9,38 @@ BUILDDIR := ./build
 
 .PHONY: test
 test: install
-	sudo iptables -P FORWARD ACCEPT
+	sudo sysctl -w net.ipv4.ip_forward=1
+	# sudo iptables -F
+	# sudo iptables -P INPUT ACCEPT
+	# sudo iptables -P OUTPUT ACCEPT
+	# sudo iptables -P FORWARD ACCEPT
+
+
 	sudo systemctl restart \
 		"vpn-passthrough-netns.service" \
 		"vpn-passthrough-connectivity.service" \
 		"vpn-passthrough-internet.service" \
-		"vpn-passthrough-pia.service"
+		"vpn-passthrough-openvpn.service"
 	sudo ip netns exec "pia" ping -c 1 -W 1 "www.google.fr"
-	sudo systemctl restart "vpn-passthrough-pia.service"
+
+	sudo systemctl restart "dummy-app.service" || true
+
+	sudo mkdir -p "/etc/systemd/system/dummy-app.service.d"
+	cat <<EOCAT | sudo tee "/etc/systemd/system/dummy-app.service.d/vpn-passthrough.conf"
+	[Unit]
+	Requires=vpn-passthrough-openvpn.service
+	After=vpn-passthrough-openvpn.service
+
+	[Service]
+	NetworkNamespacePath=/var/run/netns/pia
+	BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
+	ExecStartPre=sleep 5
+	ExecStartPre=vpn-passthrough-pia --auth-file="/etc/vpn-passthrough/pia.txt" forward-ports \
+		-n 1 \
+		-c 'cat /etc/dummy-app/config.json && jq ".port = \$$\$${1}" "/etc/dummy-app/config.json" | sponge "/etc/dummy-app/config.json"'
+	EOCAT
+	sudo systemctl daemon-reload
+	sudo systemctl restart "dummy-app.service"
 
 	dummy-app show-ip
 	sleep 5
@@ -46,6 +70,8 @@ build-dummy-app:
 	mkdir -p "$(BUILDDIR)/dummy-app"
 	cp "./dummy-app/PKGBUILD.in" "$(BUILDDIR)/dummy-app/PKGBUILD"
 	pdm build --project="./dummy-app" --no-wheel --no-clean --dest $(shell realpath -m --relative-to "./dummy-app" "$(BUILDDIR)/dummy-app")
+	cp "./dummy-app/config.json" "./dummy-app/dummy-app.service" "$(BUILDDIR)/dummy-app"
+	
 	cd "$(BUILDDIR)/dummy-app"
 	makepkg --force --skipchecksums
 	cd -
@@ -91,4 +117,4 @@ show-pia-region:
 		-H "Accept: application/json" \
 			"https://serverlist.piaservers.net/vpninfo/servers/v6" | \
 	head -n1 | \
-		jq '.regions[] | select(.id == "$(REGION)") | .servers.ovpnudp[0]'
+		jq '.regions[] | select(.id == "$(REGION)")'
