@@ -1,8 +1,0 @@
-[Unit]
-Description=Network Namespace for the VPN passthrough
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=vpn-passthrough netns create
-ExecStop=vpn-passthrough netns destroy

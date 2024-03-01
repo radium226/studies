@@ -23,20 +23,21 @@ DEFAULT_CALLBACK = "true"
 @group()
 @option("--app", "app_name", type=AppName, required=False, default="pia")
 @option("--state-folder", "state_folder_path", type=Path, default=Path("/var/run/vpn-passthrough"))
-@option("--config-file", "config_file_path", type=Path, default=Path("/etc/vpn-passthrough/config.yaml"))
+@option("--config-folder", "config_folder_path", type=Path, default=Path("/etc/vpn-passthrough"))
 @option("--pia-user", "pia_user", type=User, required=False)
 @option("--pia-password", "pia_password", type=Password, required=False)
 @option("--pia-auth-file", "pia_auth_file_path", type=Path, default=Path("/etc/vpn-passthrough/pia.txt"))
 @pass_context
 def app(
     context: Context, 
-    config_file_path: Path, 
+    config_folder_path: Path, 
     state_folder_path: Path, 
     app_name: str,
     pia_user: User | None,
     pia_password: Password | None,
     pia_auth_file_path: Path | None,
 ):
+    config_file_path = config_folder_path / f"{app_name}.yaml"
     config = yaml.safe_load(config_file_path.read_text())
     
     args_pia_auth = Auth(pia_user, pia_password) if pia_user and pia_password else None

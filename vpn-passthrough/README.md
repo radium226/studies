@@ -7,7 +7,7 @@ The goal of this study is to experiment running apps isolated inside network nam
 We need to check: 
 - [x] If we can connect to remote ports
 - [ ] How to use of `NetworkNamespacePath` or `JoinsNamespaceOf`
-- [ ] How to use `PartOf`, `BindTo`, etc. to drive all the `vpn-passthrough-*.services`
+- [x] How to use `PartOf`, `BindTo`, etc. to drive all the `vpn-passthrough-*.services`
 - [ ] How to use the `StopWhenUnneeded`
 - [ ] See if D-Bus works
 
@@ -26,8 +26,8 @@ Run `make test` to:
 - ip route show result
 - [Manual connection with PIA](https://github.com/pia-foss/manual-connections/blob/master/port_forwarding.sh)
 - Todo : 
-    - [ ] Put openvpn service in `Type=notify`
-    - [ ] Setup `PartOf=` for timers
+    - [x] Put openvpn service in `Type=notify`
+    - [x] Setup `PartOf=` for timers
     - [ ] Use a `br0` bridge instead of forwarding everything
     - [ ] Use `JoinsNamespaceOf=`
     - [ ] Forward port from localhost to Networknamespace

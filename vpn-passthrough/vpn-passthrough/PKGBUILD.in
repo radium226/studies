@@ -7,13 +7,13 @@ source=(
     "ca.rsa.2048.crl" 
     "ca.rsa.2048.crt" 
     "ca.rsa.4096.crt" 
-    "config.yaml" 
+    "dummy.yaml" 
     "internet.nft"
-    "vpn-passthrough-veth.service"
-    "vpn-passthrough-forwarding.service" 
-    "vpn-passthrough-netns.service" 
-    "vpn-passthrough-pia.service"
-    "vpn-passthrough-configuration.service"
+    "vpn-passthrough-veth@.service"
+    "vpn-passthrough-forwarding@.service" 
+    "vpn-passthrough-netns@.service" 
+    "vpn-passthrough-pia@.service"
+    "vpn-passthrough-configuration@.service"
     "vpn-passthrough-pia-bind-port@.service"
     "pia.txt"
     "openvpn-script"
@@ -56,13 +56,13 @@ package() {
     # Install the Python app
     find "${pkgname//-/_}-${pkgver}" -type "f" -name "*.whl" -exec python -m installer --destdir="${pkgdir}" {} \;
     
-    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "ca.rsa.4096.crt" "config.yaml" "internet.nft" "pia.txt"; do
+    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "ca.rsa.4096.crt" "dummy.yaml" "internet.nft" "pia.txt"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/etc/vpn-passthrough/${file_name}"
     done
 
     install -Dm755 "${srcdir}/openvpn-script" "${pkgdir}/etc/vpn-passthrough/openvpn-script"
 
-    for file_name in "vpn-passthrough-netns.service" "vpn-passthrough-veth.service" "vpn-passthrough-forwarding.service" "vpn-passthrough-pia.service" "vpn-passthrough-configuration.service" "vpn-passthrough-pia-bind-port@.service"; do
+    for file_name in "vpn-passthrough-netns@.service" "vpn-passthrough-veth@.service" "vpn-passthrough-forwarding@.service" "vpn-passthrough-pia@.service" "vpn-passthrough-configuration@.service" "vpn-passthrough-pia-bind-port@.service"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/usr/lib/systemd/system/${file_name}"
     done
 }

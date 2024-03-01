@@ -1,0 +1,10 @@
+[Unit]
+Description=Private Internet Access for VPN Passthrough for %I
+BindTo=vpn-passthrough-forwarding@%i.service
+After=vpn-passthrough-forwrding@%i.service
+
+[Service]
+Type=notify
+NetworkNamespacePath=/var/run/netns/%I
+BindReadOnlyPaths=/etc/netns/%I/resolv.conf:/etc/resolv.conf:norbind
+ExecStart=vpn-passthrough --app "%I" pia connect

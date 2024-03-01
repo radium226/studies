@@ -16,32 +16,21 @@ test: install
 	sudo iptables -P FORWARD ACCEPT
 
 
-	sudo systemctl stop \
-		"vpn-passthrough-netns.service" \
-		"vpn-passthrough-veth.service" \
-		"vpn-passthrough-forwarding.service" \
-		"vpn-passthrough-pia.service" \
-		"vpn-passthrough-configuration.service" || true
-
-	sudo systemctl start \
-		"vpn-passthrough-netns.service" \
-		"vpn-passthrough-veth.service" \
-		"vpn-passthrough-forwarding.service" \
-		"vpn-passthrough-pia.service" \
-		"vpn-passthrough-configuration.service" || true
+	sudo systemctl restart "vpn-passthrough-netns@dummy" || true
 
 	sudo ip netns exec "pia" ping -c 1 -W 1 "www.google.fr"
 
 	sudo systemctl restart "dummy-app.service" || true
 
+
 	sudo mkdir -p "/etc/systemd/system/dummy-app.service.d"
 	cat <<EOCAT | sudo tee "/etc/systemd/system/dummy-app.service.d/vpn-passthrough.conf"
 	[Unit]
-	Requires=vpn-passthrough-configuration.service
-	After=vpn-passthrough-configuration.service
+	Requires=vpn-passthrough-configuration@dummy.service
+	After=vpn-passthrough-configuration@dummy.service
 
 	[Service]
-	NetworkNamespacePath=/var/run/netns/pia
+	NetworkNamespacePath=/var/run/netns/dummy
 	BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
 	EOCAT
 
@@ -51,7 +40,7 @@ test: install
 	dummy-app show-ip
 	sleep 5
 	sudo systemd-run \
-		--property "NetworkNamespacePath=/var/run/netns/pia" \
+		--property "NetworkNamespacePath=/var/run/netns/dummy" \
 		--property "BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind" \
 		--pty \
 		--wait \
