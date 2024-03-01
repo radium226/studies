@@ -1,10 +1,11 @@
 [Unit]
 Description=PIA Connection for VPN Passthrough
-BindTo=vpn-passthrough-internet.service
-After=vpn-passthrough-internet.service
+BindTo=vpn-passthrough-forwarding.service
+After=vpn-passthrough-forwrding.service
 
 [Service]
 Type=notify
 NetworkNamespacePath=/var/run/netns/pia
 BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
-ExecStart=vpn-passthrough-pia connect
+ExecStartPre=sleep 10
+ExecStart=vpn-passthrough pia connect
