@@ -1,6 +1,6 @@
 [Unit]
 Description=Internet for the VPN Passthrough
-Requires=vpn-passthrough-connectivity.service
+BindTo=vpn-passthrough-connectivity.service
 After=vpn-passthrough-connectivity.service
 
 [Service]

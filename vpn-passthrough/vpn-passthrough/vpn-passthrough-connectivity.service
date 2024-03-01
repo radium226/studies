@@ -1,6 +1,6 @@
 [Unit]
 Description=Connectivity for the VPN Passthrough
-Requires=vpn-passthrough-netns.service
+BindTo=vpn-passthrough-netns.service
 After=vpn-passthrough-netns.service
 
 [Service]
