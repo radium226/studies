@@ -2,6 +2,7 @@
 Description=Forwarding for VPN Passthrough for %i
 BindTo=vpn-passthrough-veth@%i.service
 After=vpn-passthrough-veth@%i.service
+PartOf=vpn-passthrough@%i.service
 
 [Service]
 Type=oneshot

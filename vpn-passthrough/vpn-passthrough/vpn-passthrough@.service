@@ -1,0 +1,7 @@
+[Unit]
+Description=VPN Passthrough for %Install
+PartOf=vpn-passthrough@%i.service
+
+[Service]
+ExecStart=oneshot
+RemainsAfterExit=yes

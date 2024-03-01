@@ -2,6 +2,7 @@
 Description=Virtual Ethernet for VPN Passthrough for %I
 BindTo=vpn-passthrough-netns@%i.service
 After=vpn-passthrough-netns@%i.service
+PartOf=vpn-passthrough@%i.service
 
 [Service]
 Type=oneshot
