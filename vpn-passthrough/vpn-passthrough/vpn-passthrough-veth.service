@@ -1,0 +1,10 @@
+[Unit]
+Description=Connectivity for the VPN Passthrough
+BindTo=vpn-passthrough-netns.service
+After=vpn-passthrough-netns.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=vpn-passthrough veth create
+ExecStop=vpn-passthrough veth destroy

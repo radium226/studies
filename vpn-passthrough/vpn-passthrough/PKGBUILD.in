@@ -8,17 +8,16 @@ source=(
     "ca.rsa.2048.crt" 
     "ca.rsa.4096.crt" 
     "config.yaml" 
-    "config.env" 
     "internet.nft"
-    "vpn-passthrough-connectivity.service"
-    "vpn-passthrough-internet.service" 
+    "vpn-passthrough-veth.service"
+    "vpn-passthrough-forwarding.service" 
     "vpn-passthrough-netns.service" 
-    "vpn-passthrough-pia-connection.service"
-    "vpn-passthrough-setup.service"
+    "vpn-passthrough-pia.service"
+    "vpn-passthrough-configuration.service"
+    "vpn-passthrough-pia-bind-port@.service"
     "pia.txt"
     "openvpn-script"
-    "vpn-passthrough-pia"
-    "vpn-passthrough-pia-bind-port@.service"
+    "vpn_passthrough-0.1.0.tar.gz"
 )
 
 sha256sums=(
@@ -46,19 +45,24 @@ depends=(
     "openvpn"
 )
 
+
 build() {
-    :
+    cd "${srcdir}/${pkgname//-/_}-${pkgver}"
+    python -m build --wheel --no-isolation
 }
 
+
 package() {
-    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "ca.rsa.4096.crt" "config.yaml" "config.env" "internet.nft" "pia.txt"; do
+    # Install the Python app
+    find "${pkgname//-/_}-${pkgver}" -type "f" -name "*.whl" -exec python -m installer --destdir="${pkgdir}" {} \;
+    
+    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "ca.rsa.4096.crt" "config.yaml" "internet.nft" "pia.txt"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/etc/vpn-passthrough/${file_name}"
     done
 
     install -Dm755 "${srcdir}/openvpn-script" "${pkgdir}/etc/vpn-passthrough/openvpn-script"
-    install -Dm755 "${srcdir}/vpn-passthrough-pia" "${pkgdir}/usr/bin/vpn-passthrough-pia"
 
-    for file_name in "vpn-passthrough-pia-bind-port@.service" "vpn-passthrough-connectivity.service" "vpn-passthrough-setup.service" "vpn-passthrough-internet.service" "vpn-passthrough-netns.service" "vpn-passthrough-pia-connection.service"; do
+    for file_name in "vpn-passthrough-netns.service" "vpn-passthrough-veth.service" "vpn-passthrough-forwarding.service" "vpn-passthrough-pia.service" "vpn-passthrough-configuration.service" "vpn-passthrough-pia-bind-port@.service"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/usr/lib/systemd/system/${file_name}"
     done
 }
