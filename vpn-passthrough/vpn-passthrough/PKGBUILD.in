@@ -7,12 +7,14 @@ source=(
     "ca.rsa.2048.crl" 
     "ca.rsa.2048.crt" 
     "ca.rsa.4096.crt" 
+    "config.yaml" 
     "config.env" 
     "internet.nft"
     "vpn-passthrough-connectivity.service"
     "vpn-passthrough-internet.service" 
     "vpn-passthrough-netns.service" 
-    "vpn-passthrough-openvpn.service"
+    "vpn-passthrough-pia-connection.service"
+    "vpn-passthrough-setup.service"
     "pia.txt"
     "openvpn-script"
     "vpn-passthrough-pia"
@@ -20,6 +22,8 @@ source=(
 )
 
 sha256sums=(
+  "SKIP"
+  "SKIP"
   "SKIP"
   "SKIP"
   "SKIP"
@@ -47,14 +51,14 @@ build() {
 }
 
 package() {
-    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "ca.rsa.4096.crt" "config.env" "internet.nft" "pia.txt"; do
+    for file_name in "ca.rsa.2048.crl" "ca.rsa.2048.crt" "ca.rsa.4096.crt" "config.yaml" "config.env" "internet.nft" "pia.txt"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/etc/vpn-passthrough/${file_name}"
     done
 
     install -Dm755 "${srcdir}/openvpn-script" "${pkgdir}/etc/vpn-passthrough/openvpn-script"
     install -Dm755 "${srcdir}/vpn-passthrough-pia" "${pkgdir}/usr/bin/vpn-passthrough-pia"
 
-    for file_name in "vpn-passthrough-pia-bind-port@.service" "vpn-passthrough-connectivity.service" "vpn-passthrough-internet.service" "vpn-passthrough-netns.service" "vpn-passthrough-openvpn.service"; do
+    for file_name in "vpn-passthrough-pia-bind-port@.service" "vpn-passthrough-connectivity.service" "vpn-passthrough-setup.service" "vpn-passthrough-internet.service" "vpn-passthrough-netns.service" "vpn-passthrough-pia-connection.service"; do
         install -Dm644 "${srcdir}/${file_name}" "${pkgdir}/usr/lib/systemd/system/${file_name}"
     done
 }

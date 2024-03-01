@@ -1,0 +1,14 @@
+---
+country: France
+
+port_forwards:
+  number_of: 1
+
+callback: |
+  config_file_path="/etc/dummy-app/config.json"
+  read -r port <<<"${*}"
+  jq \
+    --arg port "${port}" \
+    '.port = ( $port | tonumber )' \
+      "${config_file_path}" | \
+  sponge "${config_file_path}"

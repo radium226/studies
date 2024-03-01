@@ -13,14 +13,15 @@ test: install
 	# sudo iptables -F
 	# sudo iptables -P INPUT ACCEPT
 	# sudo iptables -P OUTPUT ACCEPT
-	# sudo iptables -P FORWARD ACCEPT
+	sudo iptables -P FORWARD ACCEPT
 
 
 	sudo systemctl restart \
 		"vpn-passthrough-netns.service" \
 		"vpn-passthrough-connectivity.service" \
 		"vpn-passthrough-internet.service" \
-		"vpn-passthrough-openvpn.service"
+		"vpn-passthrough-pia-connection.service" \
+		"vpn-passthrough-setup.service"
 	sudo ip netns exec "pia" ping -c 1 -W 1 "www.google.fr"
 
 	sudo systemctl restart "dummy-app.service" || true
@@ -28,17 +29,14 @@ test: install
 	sudo mkdir -p "/etc/systemd/system/dummy-app.service.d"
 	cat <<EOCAT | sudo tee "/etc/systemd/system/dummy-app.service.d/vpn-passthrough.conf"
 	[Unit]
-	Requires=vpn-passthrough-openvpn.service
-	After=vpn-passthrough-openvpn.service
+	Requires=vpn-passthrough-setup.service
+	After=vpn-passthrough-setup.service
 
 	[Service]
 	NetworkNamespacePath=/var/run/netns/pia
 	BindReadOnlyPaths=/etc/netns/pia/resolv.conf:/etc/resolv.conf:norbind
-	ExecStartPre=sleep 5
-	ExecStartPre=vpn-passthrough-pia --auth-file="/etc/vpn-passthrough/pia.txt" forward-ports \
-		-n 1 \
-		-c 'cat /etc/dummy-app/config.json && jq ".port = \$$\$${1}" "/etc/dummy-app/config.json" | sponge "/etc/dummy-app/config.json"'
 	EOCAT
+
 	sudo systemctl daemon-reload
 	sudo systemctl restart "dummy-app.service"
 

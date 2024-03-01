@@ -12,16 +12,23 @@ from os import environ
 from base64 import b64decode
 from types import SimpleNamespace
 import sys
-
+from os import execvpe
+import yaml
 
 User = NewType("User", str)
 Password = NewType("Password", str)
 DIPToken = NewType("DIPToken", str)
 AuthToken = NewType("AuthToken", str)
+RegionID = NewType("RegionID", str)
 
 
 AUTH_TOKEN_URL = "https://www.privateinternetaccess.com/api/client/v2/token"
 DIP_URL = "https://www.privateinternetaccess.com/api/client/v2/dedicated_ip"
+
+
+DEFAULT_REGION_ID = RegionID("france")
+DEFAULT_CALLBACK = "true"
+DEFAULT_NUMBER_OF_PORTS_TO_FORWARD = 0
 
 
 @dataclass
@@ -33,6 +40,8 @@ class PayloadAndSignature():
 
 class PIA():
 
+    SERVERS_URL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
+
     user: User
     password: Password
     dip_token: DIPToken
@@ -41,6 +50,59 @@ class PIA():
         self.user = user
         self.password = password
         # self.dip_token = dip_token
+
+    def connect(self, region_id: RegionID, openvpn_dev: str = "tun0"):
+        response = requests.get(self.SERVERS_URL, headers={"Accept": "application/json"})
+        [text, *_] = response.text.splitlines()
+        obj = json.loads(text)
+
+        region = next((region for region in obj["regions"] if region["id"] == region_id), None)
+        if not region:
+            raise Exception(f"Unknown region! (region_id={region_id})")
+        
+        openvpn_remote = region["servers"]["ovpnudp"][0]["ip"]
+        # FIXME: Find a way to get this port somewhere
+        openvpn_port = 1198
+
+        command = [
+            "--client",
+            "--dev", openvpn_dev,
+            "--proto", "udp",
+            "--resolv-retry", "infinite",
+            "--nobind", 
+            "--persist-key",
+            "--persist-tun", 
+            "--cipher", "AES-256-CBC",
+            "--data-ciphers-fallback", "AES-256-CBC",
+            "--auth", "sha1",
+            "--tls-client", 
+            "--remote-cert-tls", "server",
+            "--auth-user-pass", 
+            "--compress",
+            "--reneg-sec", "0",
+            "--crl-verify", "/etc/vpn-passthrough/ca.rsa.2048.crl",
+            "--ca", "/etc/vpn-passthrough/ca.rsa.2048.crt",
+            "--disable-occ", 
+            "--errors-to-stderr", 
+            "--pull-filter", "ignore", "route-ipv6",
+            "--pull-filter", "ignore", "ifconfig-ipv6",
+            "--remote", openvpn_remote, 
+            "--port", str(openvpn_port),
+            "--auth-user-pass", "/etc/vpn-passthrough/pia.txt",
+            "--auth-nocache",
+            "--script-security", "2",
+            "--up", "/etc/vpn-passthrough/openvpn-script",
+            "--down", "/etc/vpn-passthrough/openvpn-script",
+        ]
+
+        print(command)
+        sys.stdout.flush()
+
+        execvpe(
+            "openvpn", 
+            ["opvenvpn"] + command,
+            env=environ,
+        )
 
     
     def generate_auth_token(self) -> str:
@@ -144,8 +206,9 @@ class PIA():
 @group()
 @option("--user", "user", type=User, required=False)
 @option("--password", "password", type=Password, required=False)
-@option("--auth-file", "auth_file_path", type=Path, required=False)
+@option("--auth-file", "auth_file_path", type=Path, default=Path("/etc/vpn-passthrough/pia.txt"))
 @option("--state-folder", "state_folder_path", type=Path, required=False)
+@option("--config-file", "config_file_path", type=Path, default=Path("/etc/vpn-passthrough/config.yaml"))
 @pass_context
 def app(
     context: Context, 
@@ -153,7 +216,9 @@ def app(
     password: Password | None,
     state_folder_path: Path | None,
     auth_file_path: Path | None,
+    config_file_path: Path,
 ):
+    
     if (user and password) and auth_file_path:
         raise Exception("You can't specify both --user and --password and --auth-file! ")
 
@@ -168,22 +233,56 @@ def app(
     if not password:
         password = Password(environ["PIA_PASSWORD"])
 
+    config = yaml.safe_load(config_file_path.read_text())
+
     context.obj = SimpleNamespace(
         pia=PIA(
             user=user or User(environ["PIA_USER"]),
             password=password or Password(environ["PIA_PASSWORD"]),
         ),
         state_folder_path=state_folder_path or Path("/var/run/vpn-passthrough/pia/forwarded-ports"),
+        config=config,
     )
 
 
 def schedule_bind_port(port: int):
     command = [
         "systemd-run", 
+            "--timer-property", "PartOf=vpn-passthrough-setup.service",
             "--on-calendar=*-*-* *:*:00,30",
             "--unit", "vpn-passthrough-pia-bind-port@{port}".format(port=str(port))
     ]
     run(command, check=True)
+
+@app.command()
+@option("--callback", "-c", "callback", type=str, required=False)
+@option("--number-of-ports-to-forward", "-n", "number_of_ports_to_forward", type=int, required=False)
+@pass_context
+def set_up(context: Context, callback: str | None, number_of_ports_to_forward: int | None):
+    pia = context.obj.pia
+    config = context.obj.config
+
+    callback = callback or config["callback"] or DEFAULT_CALLBACK
+
+    print("callback: ", callback)
+
+    number_of_ports_to_forward = number_of_ports_to_forward or config["port_forwards"]["number_of"] or DEFAULT_NUMBER_OF_PORTS_TO_FORWARD
+    
+    ports = []
+    for _ in range(number_of_ports_to_forward):
+        port, payload_and_signature = pia.request_port()
+        pia.bind_port(payload_and_signature)
+        context.obj.state_folder_path.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(dict(
+            payload=payload_and_signature.payload,
+            signature=payload_and_signature.signature,
+        ))
+        (context.obj.state_folder_path / f"{port}.json").write_text(text)
+        schedule_bind_port(port)
+        ports.append(port)
+
+    if callback:
+        run(["bash", "-c", callback, "callback"] + [str(port) for port in ports], check=True)
 
 
 @app.command()
@@ -222,6 +321,19 @@ def bind_port(context: Context, port):
     )
     print(payload_and_signature)
     pia.bind_port(payload_and_signature)
+
+
+
+@app.command()
+@option("--region", "-r", "region_id", type=RegionID, required=False)
+@pass_context
+def connect(context: Context, region_id: RegionID | None):
+    config = context.obj.config
+    config_region_id = RegionID(config["region_id"]) if "region_id" in config else None
+    env_region_id = RegionID(environ["VPN_PASSTHROUGH_REGION_ID"]) if "VPN_PASSTHROUGH_REGION_ID" in environ else None
+
+    pia = context.obj.pia
+    pia.connect(region_id=region_id or config_region_id or env_region_id or DEFAULT_REGION_ID)
 
 
 if __name__ == "__main__":

@@ -25,3 +25,9 @@ Run `make test` to:
 - ip route show 0.0.0.0/1
 - ip route show result
 - [Manual connection with PIA](https://github.com/pia-foss/manual-connections/blob/master/port_forwarding.sh)
+- Todo : 
+    - [ ] Put openvpn service in `Type=notify`
+    - [ ] Setup `PartOf=` for timers
+    - [ ] Use a `br0` bridge instead of forwarding everything
+    - [ ] Use `JoinsNamespaceOf=`
+    - [ ] Forward port from localhost to Networknamespace
