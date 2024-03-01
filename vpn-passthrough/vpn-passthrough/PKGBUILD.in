@@ -38,10 +38,14 @@ sha256sums=(
 )
 
 makedepends=(
+    "python-pdm"
 )
 
 depends=(
     "openvpn"
+    "python"
+    "python-yaml"
+    "python-requests"
 )
 
 
