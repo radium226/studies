@@ -20,27 +20,18 @@ class FooSource(Source):
         print(f"Refreshing {entity_names} from foo using {token}")
 
 
-class FooSourceSpec(SourceSpec[FooSource]):
-    
-    def source_class(self) -> Type[FooSource]:
-        return FooSource
-    
-    def source_name(self) -> SourceName:
-        return "foo"
-    
-    def entity_names(self) -> list[EntityName]:
-        return ["fizz", "buzz"]
-    
-    def cli(self) -> CLI:
+@group
+@option("-t", "--token", "token")
+@pass_context
+def _cli_group(context: Context, token: str | None):
+    context.obj["foo"] = {}
+    if token:
+        context.obj["foo"]["token"] = token
 
-        @group
-        @option("-t", "--token", "token")
-        @pass_context
-        def _group(context: Context, token: str | None):
-            context.obj["foo"] = {}
-            if token:
-                context.obj["foo"]["token"] = token
 
-        return CLI(_group)
-
-    
+SPEC = SourceSpec[FooSource](
+    source_class=FooSource,
+    source_name="foo",
+    entity_names=["fizz", "buzz"],
+    cli=CLI(group=_cli_group)
+)

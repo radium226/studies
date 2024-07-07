@@ -26,7 +26,7 @@ build-backend = "pdm.backend"
 distribution = true
 
 [project.entry-points."data_platform.source_specs"]
-foo = "data_platform.sources:FooSourceSpec"
+foo = "data_platform.sources.foo"
 
 [project.scripts]
 data-platform = "data_platform:app"

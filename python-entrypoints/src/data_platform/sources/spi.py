@@ -1,5 +1,6 @@
 from typing import Protocol, TypeAlias, NamedTuple, TypeVar, Generic, Type, Any
 from click import Group
+from dataclasses import dataclass
 
 
 
@@ -26,18 +27,13 @@ class Source(Protocol):
 S = TypeVar("S", bound=Source, covariant=True)
 
 
-class SourceSpec(Generic[S], Protocol):
+@dataclass
+class SourceSpec(Generic[S]):
 
-    def source_class(self) -> Type[S]:
-        ...
+    source_class: Type[S]
 
-    def source_name(self) -> SourceName:
-        ...
+    source_name: SourceName
 
-    def entity_names(self) -> list[EntityName]:
-        ...
+    entity_names: list[EntityName]
 
-    def cli(self) -> CLI:
-        ...
-
-    
+    cli: CLI    

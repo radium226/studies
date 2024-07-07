@@ -4,7 +4,7 @@ from .data_platform import DataPlatform
 from .sources.spi import EntityName, Source, SourceSpec
 
 def create_refresh_command(source_spec: SourceSpec):
-    entity_names = source_spec.entity_names()
+    entity_names = source_spec.entity_names
 
     @command()
     @option("-e", "--entity", "entity_names", multiple=True, type=Choice(entity_names), default=entity_names)
@@ -12,7 +12,7 @@ def create_refresh_command(source_spec: SourceSpec):
     def func(context: Context, entity_names: list[EntityName]):
         config = context.obj
         data_platform = DataPlatform(config)
-        data_platform.sources[source_spec.source_name()].refresh(entity_names)
+        data_platform.sources[source_spec.source_name].refresh(entity_names)
     return func
 
 
@@ -29,8 +29,8 @@ def create_app():
         pass
     
     for source_spec in DataPlatform.list_source_specs():
-        source_group = source_spec.cli().group
-        parent_source_group.add_command(source_group, name=source_spec.source_name())
+        source_group = source_spec.cli.group
+        parent_source_group.add_command(source_group, name=source_spec.source_name)
 
         refresh_command = create_refresh_command(source_spec) 
         source_group.add_command(refresh_command, name="refresh")
