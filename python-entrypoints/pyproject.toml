@@ -1,0 +1,32 @@
+[project]
+name = "data-platform"
+version = "0.1.0"
+description = "Just a dummy data platform"
+authors = [
+    {name = "Radium", email = "radium226@rouages.xyz"},
+]
+dependencies = [
+    "click>=8.1.7",
+]
+requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "UNLICENSED"}
+
+[project.optional-dependencies]
+mypy = []
+dev = [
+    "mypy>=1.10.1",
+]
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+
+[tool.pdm]
+distribution = true
+
+[project.entry-points."data_platform.source_specs"]
+foo = "data_platform.sources:FooSourceSpec"
+
+[project.scripts]
+data-platform = "data_platform:app"
