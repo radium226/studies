@@ -16,6 +16,7 @@ license = {text = "UNLICENSED"}
 mypy = []
 dev = [
     "mypy>=1.10.1",
+    "pytest>=8.2.2",
 ]
 [build-system]
 requires = ["pdm-backend"]

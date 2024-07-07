@@ -1,7 +1,9 @@
 from click import group, command, argument, Choice, option, pass_context, Context
+from dataclasses import fields
 
 from .data_platform import DataPlatform
 from .sources.spi import EntityName, Source, SourceSpec
+
 
 def create_refresh_command(source_spec: SourceSpec):
     entity_names = source_spec.entity_names
@@ -13,6 +15,22 @@ def create_refresh_command(source_spec: SourceSpec):
         config = context.obj
         data_platform = DataPlatform(config)
         data_platform.sources[source_spec.source_name].refresh(entity_names)
+    return func
+
+
+def create_source_group(source_spec: SourceSpec):
+    config_class = source_spec.config_class
+
+    def func(context: Context, **kwargs):
+        context.obj[source_spec.source_name] = config_class(**kwargs)
+
+    func = pass_context(func)
+
+    for field in fields(config_class):
+        func = option(f"--{field.name}", field.name, type=str, default=field.default)(func)
+
+    func = group(func)
+    
     return func
 
 
@@ -29,7 +47,7 @@ def create_app():
         pass
     
     for source_spec in DataPlatform.list_source_specs():
-        source_group = source_spec.cli.group
+        source_group = create_source_group(source_spec)
         parent_source_group.add_command(source_group, name=source_spec.source_name)
 
         refresh_command = create_refresh_command(source_spec) 

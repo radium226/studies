@@ -26,14 +26,16 @@ class Source(Protocol):
 
 S = TypeVar("S", bound=Source, covariant=True)
 
+C = TypeVar("C", bound=Source, covariant=True)
+
 
 @dataclass
 class SourceSpec(Generic[S]):
 
     source_class: Type[S]
 
+    config_class: Type[C]
+
     source_name: SourceName
 
     entity_names: list[EntityName]
-
-    cli: CLI    
