@@ -89,7 +89,7 @@ class PIA():
             "--auth-user-pass", 
             "--compress",
             "--reneg-sec", "0",
-            "--crl-verify", "/etc/vpn-passthrough/ca.rsa.2048.crl",
+            # "--crl-verify", "/etc/vpn-passthrough/ca.rsa.2048.crl",
             "--ca", "/etc/vpn-passthrough/ca.rsa.2048.crt",
             "--disable-occ", 
             "--errors-to-stderr", 
