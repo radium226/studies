@@ -1,0 +1,23 @@
+[project]
+name = "radium226-hubspot"
+version = "0.1.0"
+description = "HubSpot"
+authors = [
+    {name = "Radium226", email = "radium226@rouages.xyz"},
+]
+dependencies = []
+requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2.2",
+]
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+
+[tool.pdm]
+distribution = true
