@@ -8,8 +8,19 @@ SHELL := bash
 
 .PHONY: start-vm
 start-vm:
-	vagrant up --no-provision --no-tty
+	vagrant up \
+		--provision-with "install-python" \
+		--no-tty
+
+.PHONY: stop-vm
+stop-vm:
+	vagrant destroy --force
 
 .PHONY: provision-vm
 provision-vm:
-	vagrant provision --no-tty
+	VAGRANT_LOG=warn vagrant provision \
+		--provision-with "run-ansible-playbook"
+
+.PHONY: shell
+shell:
+	vagrant ssh

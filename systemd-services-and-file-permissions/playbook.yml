@@ -1,6 +1,100 @@
 - hosts: all
-  gather_facts: no
   become: yes
 
   tasks:
-  
+  - debug:
+      msg: |
+        Hello !
+
+  # Purge bazarr and radarr
+  - file:
+      path: "/var/local/lib/bazarr"
+      state: absent
+
+  - file:
+      path: "/var/local/lib/radarr"
+      state: absent
+
+  # Prepare files
+  - file:
+      path: "/etc/sysusers.d"
+      state: directory
+
+  - file:
+      path: "/etc/tmpfiles.d"
+      state: directory
+
+  # Bazarr files
+  - copy:
+      src: "bazarr/bazarr"
+      dest: /usr/local/bin/bazarr
+      mode: u=rwx,g=rx,o=rx
+
+  - copy:
+      src: "bazarr/systemd-bazarr.service"
+      dest: /etc/systemd/system/bazarr.service
+      mode: u=rw,g=r,o=r
+
+  - copy:
+      src: "bazarr/sysusers-bazarr.conf"
+      dest: /etc/sysusers.d/bazarr.conf
+
+  - copy:
+      src: "bazarr/tmpfiles-bazarr.conf"
+      dest: /etc/tmpfiles.d/bazarr.conf
+
+  # Radarr files
+  - copy:
+      src: "radarr/radarr"
+      dest: /usr/local/bin/radarr
+      mode: u=rwx,g=rx,o=rx
+
+  - copy:
+      src: "radarr/systemd-radarr.service"
+      dest: /etc/systemd/system/radarr.service
+      mode: u=rw,g=r,o=r
+
+  - copy:
+      src: "radarr/sysusers-radarr.conf"
+      dest: /etc/sysusers.d/radarr.conf
+
+  - copy:
+      src: "radarr/tmpfiles-radarr.conf"
+      dest: /etc/tmpfiles.d/radarr.conf
+
+
+  # Some overrides that we want to test
+  - copy:
+      content: |
+        g servarr
+        m radarr servarr
+        m bazarr servarr
+      dest: "/etc/sysusers.d/servarr.conf"
+
+
+  - file:
+      path: "/etc/systemd/system/bazarr.service.d"
+      state: directory
+
+  - file:
+      path: "/etc/systemd/system/radarr.service.d"
+      state: directory
+
+  - copy:
+      content: |
+        [Service]
+        UMask=002
+        Group=servarr
+      dest: "/etc/systemd/system/radarr.service.d/override.conf"
+
+  # Install dependencies
+  - command: pacman -S --noconfirm "inotify-tools"
+
+  # Prepare system
+  - command: systemctl daemon-reload
+  - command: systemd-sysusers
+  - command: systemd-tmpfiles --create
+  - command: systemctl enable bazarr.service radarr.service
+
+  # Start services
+  - command: systemctl restart bazarr.service radarr.service

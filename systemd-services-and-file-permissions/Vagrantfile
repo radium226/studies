@@ -1,6 +1,11 @@
 Vagrant.configure("2") do |config|
     config.vm.box = "archlinux/archlinux"
-    config.vm.provision "ansible" do |ansible|
+    config.vm.provision "install-python", type: "shell" do |shell|
+        shell.inline = "pacman -Sy --noconfirm && pacman -S python --noconfirm"
+    end
+    config.vm.provision "run-ansible-playbook", type:"ansible" do |ansible|
+        ansible.verbose = "v"
         ansible.playbook = "playbook.yml"
+        ansible.extra_vars = { ansible_python_interpreter:"/usr/bin/python" }
     end
 end

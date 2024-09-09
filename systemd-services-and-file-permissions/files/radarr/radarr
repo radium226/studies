@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+set -euEo pipefail
+
+
+declare SLEEP_TIME
+SLEEP_TIME=5
+
+declare -a MOVE_TITLES
+MOVE_TITLES+=("Mandy")
+MOVE_TITLES+=("Back to the Future")
+MOVE_TITLES+=("Platoon")
+MOVE_TITLES+=("Requiem for a Dream")
+
+
+random_movie_title()
+{
+    echo "${MOVE_TITLES[${RANDOM} % ${#MOVE_TITLES[@]}]}"
+}
+
+
+main()
+{
+    declare data_folder_path
+    data_folder_path="${1:-}"
+    if [[ -z "${data_folder_path}" ]]; then
+        data_folder_path="/var/local/lib/radarr"
+    fi
+
+    mkdir -p "${data_folder_path}"
+
+    while sleep ${SLEEP_TIME}; do
+        declare movie_title
+        movie_title="$( random_movie_title )"
+
+        log_info "Downloading ${movie_title}... "
+        mkdir -p "${data_folder_path}/${movie_title}"
+        touch "${data_folder_path}/${movie_title}/${movie_title}.mp4"
+        log_info "${movie_title} downloaded! "
+    done
+}
+
+
+log_info()
+{
+    log "INFO" "${*}"
+}
+
+
+log()
+{
+    declare level
+    level="${1}"
+    shift 1
+
+    echo "[${level}] ${*}" >&2
+}
+
+
+main "${@}"
