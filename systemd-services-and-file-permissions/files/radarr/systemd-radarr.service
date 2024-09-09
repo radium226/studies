@@ -1,0 +1,11 @@
+[Unit]
+Description=Radarr
+
+[Service]
+Type=simple
+User=radarr
+ExecStart=/usr/local/bin/radarr /var/local/lib/radarr
+
+
+[Install]
+WantedBy=multi-user.target

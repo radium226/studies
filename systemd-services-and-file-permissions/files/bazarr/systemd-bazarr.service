@@ -1,0 +1,12 @@
+[Unit]
+Description=Bazarr
+
+After=radarr.service
+
+[Service]
+Type=simple
+User=bazarr
+ExecStart=/usr/local/bin/bazarr /var/local/lib/radarr
+
+[Install]
+WantedBy=multi-user.target

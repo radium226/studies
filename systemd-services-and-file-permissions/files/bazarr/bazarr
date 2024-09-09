@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+set -euEo pipefail
+
+main()
+{
+    declare radarr_data_folder_path
+    radarr_data_folder_path="${1:-}"
+    if [[ -z "${radarr_data_folder_path}" ]]; then
+        radarr_data_folder_path="/var/local/lib/radarr"
+    fi
+
+    declare movie_file_path
+    inotifywait \
+        --quiet \
+        --monitor \
+        --event "close_write" \
+        --recursive \
+        --exclude '.*\.srt$' \
+        --format "%w/%f" \
+            "${radarr_data_folder_path}" | 
+    while read movie_file_path; do
+        movie_file_path="$( 
+            realpath \
+                --canonicalize-missing \
+                --relative-to="." \
+                    "${movie_file_path}" 
+        )"
+
+        log_info "Movie ${movie_file_path} has been created... "
+        
+        declare subtitle_file_path
+        subtitle_file_path="${movie_file_path%.*}.srt"
+
+        log_info "Downloading subtitles ${subtitle_file_path}... "
+        touch "${subtitle_file_path}"
+        log_info "Subtitles ${subtitle_file_path} downloaded! "
+    done
+}
+
+
+log_info()
+{
+    log "INFO" "${*}"
+}
+
+
+log()
+{
+    declare level
+    level="${1}"
+    shift 1
+
+    echo "[${level}] ${*}" >&2
+}
+
+
+main "${@}"
