@@ -1,0 +1,10 @@
+[project]
+name = "radium226"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.uv.sources]
+radium226-core = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/*"]

@@ -1,0 +1,6 @@
+pyproject.toml
+src/core.egg-info/PKG-INFO
+src/core.egg-info/SOURCES.txt
+src/core.egg-info/dependency_links.txt
+src/core.egg-info/top_level.txt
+src/radium226/core/__init__.py
