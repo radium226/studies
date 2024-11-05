@@ -7,4 +7,5 @@ requires-python = ">=3.12"
 package = false
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/*", "packages/messages/*"]
+exclude = ["packages/messages"]

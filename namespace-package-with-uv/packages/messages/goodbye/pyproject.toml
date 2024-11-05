@@ -1,19 +1,14 @@
 [project]
-name = "cli"
+name = "goodbye-message"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "click>=8.1.7",
-    "core",
 ]
 
 [tool.uv]
 package = true
 
-[tool.uv.sources]
-core = { workspace = true }
-
-[project.scripts]
-radium226 = "radium226.cli:app"
+[project.entry-points."radium226.messages"]
+hello = "goodbye:provide_message"
