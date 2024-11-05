@@ -1,0 +1,2 @@
+[console_scripts]
+radium226 = radium226.cli:app

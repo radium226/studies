@@ -1,0 +1,30 @@
+version = 1
+requires-python = ">=3.12"
+
+[manifest]
+members = [
+    "radium226",
+    "radium226-cli",
+    "radium226-core",
+]
+
+[[package]]
+name = "radium226"
+version = "0.1.0"
+source = { virtual = "." }
+
+[[package]]
+name = "radium226-cli"
+version = "0.1.0"
+source = { virtual = "packages/cli" }
+dependencies = [
+    { name = "radium226-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "radium226-core", virtual = "packages/core" }]
+
+[[package]]
+name = "radium226-core"
+version = "0.1.0"
+source = { virtual = "packages/core" }
