@@ -1,0 +1,6 @@
+/**/*/docker/Dockerfile
+/**/*/.venv
+/**/*.egg-info
+/**/*.pyc
+/**/*/dist
+/cache
