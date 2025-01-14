@@ -1,0 +1,21 @@
+[project]
+name = "an-app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "a-tool",
+]
+
+[tool.uv.workspace]
+members = ["../../tools/*"]
+
+[tool.uv.sources]
+a-tool = { workspace = true }
+
+[tool.uv]
+package = true
+
+[project.scripts]
+an-app = "radium226.apps.an_app:app"
