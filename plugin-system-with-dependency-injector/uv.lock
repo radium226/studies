@@ -1,0 +1,102 @@
+version = 1
+requires-python = ">=3.13"
+
+[manifest]
+members = [
+    "data-platform",
+    "data-platform-core-cli",
+    "data-platform-core-spi",
+    "data-platform-exports-sales",
+    "data-platform-tools-slack",
+]
+
+[[package]]
+name = "click"
+version = "8.1.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b9/2e/0090cbf739cee7d23781ad4b89a9894a41538e4fcf4c31dcdd705b78eb8b/click-8.1.8.tar.gz", hash = "sha256:ed53c9d8990d83c2a27deae68e4ee337473f6330c040a31d4225c9574d16096a", size = 226593 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/d4/7ebdbd03970677812aac39c869717059dbb71a4cfc033ca6e5221787892c/click-8.1.8-py3-none-any.whl", hash = "sha256:63c132bbbed01578a06712a2d1f497bb62d9c1c0d329b7903a866228027263b2", size = 98188 },
+]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335 },
+]
+
+[[package]]
+name = "data-platform"
+version = "0.1.0"
+source = { virtual = "." }
+
+[[package]]
+name = "data-platform-core-cli"
+version = "0.1.0"
+source = { editable = "packages/core/cli" }
+dependencies = [
+    { name = "click" },
+    { name = "dependency-injector" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1.8" },
+    { name = "dependency-injector", specifier = ">=4.45.0" },
+]
+
+[[package]]
+name = "data-platform-core-spi"
+version = "0.1.0"
+source = { editable = "packages/core/spi" }
+
+[[package]]
+name = "data-platform-exports-sales"
+version = "0.1.0"
+source = { editable = "packages/exports/sales" }
+dependencies = [
+    { name = "data-platform-core-spi" },
+    { name = "data-platform-tools-slack" },
+    { name = "dependency-injector" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "data-platform-core-spi", editable = "packages/core/spi" },
+    { name = "data-platform-tools-slack", editable = "packages/tools/slack" },
+    { name = "dependency-injector", specifier = ">=4.45.0" },
+]
+
+[[package]]
+name = "data-platform-tools-slack"
+version = "0.1.0"
+source = { editable = "packages/tools/slack" }
+dependencies = [
+    { name = "dependency-injector" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "dependency-injector", specifier = ">=4.45.0" }]
+
+[[package]]
+name = "dependency-injector"
+version = "4.45.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/32/beb8a8aed8a07273bbc2afc6e823d2d70e5f898ed9a8cc413c45aec5642a/dependency_injector-4.45.0.tar.gz", hash = "sha256:7effdb9e45f5c2813e2fd9dc2ef2c446dd59716f66f9c772ab27b9ed16efc894", size = 1117514 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/41/e8dc964575ef0f6e7abb90942be9e6f265d770616518216368165d3079d7/dependency_injector-4.45.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:16c17b17d1974a288b16f0d9b4eda7fae892dc2823ff1d95a93207723b681b9a", size = 1856812 },
+    { url = "https://files.pythonhosted.org/packages/30/e3/ccfe9ad88d7ee197a12954290697a8c503a0f8f049cd1e4e81f294861053/dependency_injector-4.45.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3a1cfd84779e718974b8d40eefc2d664ba69c142ca676ed97f487de05e733e9e", size = 6819924 },
+    { url = "https://files.pythonhosted.org/packages/85/e7/c3e392f005ba3072d4c6e7a5ff60391648df0f0664ad25b3570f3283c270/dependency_injector-4.45.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4b03382b9423f008bf307d4dee7e56ea1e070fc0e23481e4e327b01b9b463a9d", size = 6957754 },
+    { url = "https://files.pythonhosted.org/packages/d4/87/c6907e001a0504678c5e5ed62bc6c5c86d1668302fccd5c159d2542bef58/dependency_injector-4.45.0-cp313-cp313-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:dcba70e44a3d6436196f1ffebad0b02f0a72a7c8014d85617f21bd8535434bf4", size = 6406441 },
+    { url = "https://files.pythonhosted.org/packages/90/a7/2b003dc0e9e8624e3948289f7764aa87b59cbff392ca06c7f41d28be43b6/dependency_injector-4.45.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:73d52ba9efdbb6a1c0ba49d9c68be9cedb0abfa0e6fbdfb942371c642cb30541", size = 6558807 },
+    { url = "https://files.pythonhosted.org/packages/d1/a6/5b8f21957af82488ce2e70e321c45c3ba3707004c211c0e6b261e1c77afc/dependency_injector-4.45.0-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:9ebcefa9218941337466cf0985bdcd5d38cf84ab1d3a4d7a3cc91845e38c0d1e", size = 6354444 },
+    { url = "https://files.pythonhosted.org/packages/dd/2f/bae5beaf6ac9c5464e6016d0f94d10898c192b4528e2978a2ada44af0c21/dependency_injector-4.45.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9d785dacb136479b0536e8b05f83a7375f09404d63eabd1be9b694eca6defea4", size = 6762151 },
+    { url = "https://files.pythonhosted.org/packages/13/6f/068b17dc76765e5344c72b85d46711a596eca1d4ee441bac7b7275dadc94/dependency_injector-4.45.0-cp313-cp313-win32.whl", hash = "sha256:3df40ff15bd31058b24cd79781b1dc2f31e0c157ee2067566dfd7a92191969e9", size = 1660060 },
+    { url = "https://files.pythonhosted.org/packages/53/d3/890c4be056256e56e97264e72b376ecad273cfa8c8dc70ce5eb623f06472/dependency_injector-4.45.0-cp313-cp313-win_amd64.whl", hash = "sha256:f018f634edf57d4b4214e007eaa2432d2410f304b170f5684bd3fdbffd244b1f", size = 1775930 },
+]
