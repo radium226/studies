@@ -6,8 +6,12 @@ requires-python = ">=3.13"
 
 [tool.uv.workspace]
 members = [
-    "packages/core/spi",
-    "packages/core/cli",
+    "packages/core/*",
     "packages/tools/*",
     "packages/exports/*"    
+]
+
+[dependency-groups]
+dev = [
+    "networkx-stubs>=0.0.1",
 ]
