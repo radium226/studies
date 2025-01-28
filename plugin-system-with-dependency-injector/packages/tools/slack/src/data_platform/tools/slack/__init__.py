@@ -17,7 +17,7 @@ class Client():
 
 def wire() -> dict[str, Callable[..., Any]]:
     def _slack_client() -> Client:
-        return Client(bot_token=environ["SLACK_BOT_TOKEN"])
+        return Client(bot_token=environ.get("SLACK_BOT_TOKEN", "XXX"))
 
     return {
         "slack_client": _slack_client,
