@@ -1,5 +1,4 @@
-from dependency_injector import containers, providers
-
+from typing import Any, Callable
 from data_platform.tools.slack import Client as SlackClient
 from data_platform.core.spi import Export
 
@@ -16,18 +15,16 @@ class SalesExport(Export):
 
 
 
-class Container(containers.DeclarativeContainer):
+def wire() -> dict[str, Callable[..., Any]]:
+    def _sales_export(slack_client: SlackClient) -> SalesExport:
+        return SalesExport(slack_client=slack_client)
 
-    tools = providers.DependenciesContainer()
-
-    sales_export = providers.Singleton(
-        SalesExport,
-        slack_client=tools.slack.client,
-    )
-
+    return {
+        "sales_export": _sales_export,
+    }
 
 
 __all__ = [
-    "Container",
     "SalesExport",
+    "wire",
 ]

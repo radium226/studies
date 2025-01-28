@@ -1,6 +1,6 @@
-from dependency_injector import containers, providers
-from functools import partial
+from typing import Any, Callable
 from os import environ
+from functools import partial
 
 type BotToken = str
 
@@ -14,19 +14,11 @@ class Client():
         print(f"Sending message: {message} using {self.bot_token}")
 
 
-class Container(containers.DeclarativeContainer):
 
-    bot_token = providers.Callable(
-        partial(environ.get, "SLACK_BOT_TOKEN"),
-    )
+def wire() -> dict[str, Callable[..., Any]]:
+    def _slack_client() -> Client:
+        return Client(bot_token=environ["SLACK_BOT_TOKEN"])
 
-    client = providers.Singleton(
-        Client, 
-        bot_token=bot_token,
-    )
-
-
-__all__ = [
-    "Container",
-    "Client",
-]
+    return {
+        "slack_client": _slack_client,
+    }

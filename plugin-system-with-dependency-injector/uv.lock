@@ -43,12 +43,14 @@ source = { editable = "packages/core/cli" }
 dependencies = [
     { name = "click" },
     { name = "dependency-injector" },
+    { name = "networkx" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.8" },
     { name = "dependency-injector", specifier = ">=4.45.0" },
+    { name = "networkx", specifier = ">=3.4.2" },
 ]
 
 [[package]]
@@ -99,4 +101,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/dd/2f/bae5beaf6ac9c5464e6016d0f94d10898c192b4528e2978a2ada44af0c21/dependency_injector-4.45.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:9d785dacb136479b0536e8b05f83a7375f09404d63eabd1be9b694eca6defea4", size = 6762151 },
     { url = "https://files.pythonhosted.org/packages/13/6f/068b17dc76765e5344c72b85d46711a596eca1d4ee441bac7b7275dadc94/dependency_injector-4.45.0-cp313-cp313-win32.whl", hash = "sha256:3df40ff15bd31058b24cd79781b1dc2f31e0c157ee2067566dfd7a92191969e9", size = 1660060 },
     { url = "https://files.pythonhosted.org/packages/53/d3/890c4be056256e56e97264e72b376ecad273cfa8c8dc70ce5eb623f06472/dependency_injector-4.45.0-cp313-cp313-win_amd64.whl", hash = "sha256:f018f634edf57d4b4214e007eaa2432d2410f304b170f5684bd3fdbffd244b1f", size = 1775930 },
+]
+
+[[package]]
+name = "networkx"
+version = "3.4.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/1d/06475e1cd5264c0b870ea2cc6fdb3e37177c1e565c43f56ff17a10e3937f/networkx-3.4.2.tar.gz", hash = "sha256:307c3669428c5362aab27c8a1260aa8f47c4e91d3891f48be0141738d8d053e1", size = 2151368 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/54/dd730b32ea14ea797530a4479b2ed46a6fb250f682a9cfb997e968bf0261/networkx-3.4.2-py3-none-any.whl", hash = "sha256:df5d4365b724cf81b8c6a7312509d0c22386097011ad1abe274afd5e9d3bbc5f", size = 1723263 },
 ]
