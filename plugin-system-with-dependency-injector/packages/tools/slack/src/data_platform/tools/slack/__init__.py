@@ -1,8 +1,9 @@
-from typing import Any, Callable
-from os import environ
-from functools import partial
+from data_platform.core.di import Using, Given
+
+
 
 type BotToken = str
+
 
 
 class Client():
@@ -15,10 +16,13 @@ class Client():
 
 
 
-def wire() -> dict[str, Callable[..., Any]]:
-    def _slack_client() -> Client:
-        return Client(bot_token=environ.get("SLACK_BOT_TOKEN", "XXX"))
+class Module():
 
-    return {
-        "slack_client": _slack_client,
-    }
+    NAME = "slack"
+
+    bot_token = Using.env_var(name="SLACK_BOT_TOKEN")
+
+    client = Given(
+        Client,
+        bot_token=bot_token
+    )

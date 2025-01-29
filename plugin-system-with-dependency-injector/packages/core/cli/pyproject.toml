@@ -6,12 +6,16 @@ readme = "../../../README.md"
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1.8",
+    "data-platform-core-di",
     "dependency-injector>=4.45.0",
     "networkx>=3.4.2",
 ]
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+data-platform-core-di = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

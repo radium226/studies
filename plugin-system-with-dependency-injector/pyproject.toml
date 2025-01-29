@@ -13,5 +13,6 @@ members = [
 
 [dependency-groups]
 dev = [
+    "mypy>=1.14.1",
     "networkx-stubs>=0.0.1",
 ]
