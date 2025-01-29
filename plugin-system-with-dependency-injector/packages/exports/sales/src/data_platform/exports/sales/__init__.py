@@ -1,4 +1,3 @@
-from typing import Any, Callable
 from data_platform.core.spi import Export
 from data_platform.core.di import Using, Given
 from data_platform.tools.slack import Client as SlackClient

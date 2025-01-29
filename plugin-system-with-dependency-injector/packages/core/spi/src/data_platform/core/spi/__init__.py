@@ -1,4 +1,4 @@
-from typing import Protocol, Type, Any
+from typing import Protocol
 
 type ArgName = str
 

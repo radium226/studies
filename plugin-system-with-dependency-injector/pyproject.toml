@@ -15,4 +15,5 @@ members = [
 dev = [
     "mypy>=1.14.1",
     "networkx-stubs>=0.0.1",
+    "ruff>=0.9.3",
 ]

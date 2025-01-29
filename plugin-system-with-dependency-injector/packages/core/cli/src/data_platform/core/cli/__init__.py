@@ -1,4 +1,4 @@
-from click import command, group
+from click import command
 from importlib.metadata import entry_points
 from importlib import import_module
 from data_platform.core.di import Module, wire

@@ -94,9 +94,7 @@ class Pool():
 
 
 
-def wire(modules: list[Type[Module]]) -> dict[Type[Any], Any]:
-    type Node = Type[Any]
-
+def wire(modules: list[Type[Module]]) -> Pool:
     G = nx.DiGraph()
 
     for module in modules:
