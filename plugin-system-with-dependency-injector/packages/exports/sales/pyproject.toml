@@ -26,4 +26,5 @@ sources = ["src"]
 only-include = ["src/data_platform/exports/sales"]
 
 [project.entry-points."data_platform.exports"]
-sales = "data_platform.exports.sales"
+sales_export = "data_platform.exports.sales"
+leads_to_crm_export = "data_platform.exports.sales"

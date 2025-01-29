@@ -8,6 +8,7 @@ members = [
     "data-platform-core-di",
     "data-platform-core-spi",
     "data-platform-exports-sales",
+    "data-platform-tools-dbt",
     "data-platform-tools-slack",
 ]
 
@@ -98,6 +99,17 @@ requires-dist = [
     { name = "data-platform-tools-slack", editable = "packages/tools/slack" },
     { name = "dependency-injector", specifier = ">=4.45.0" },
 ]
+
+[[package]]
+name = "data-platform-tools-dbt"
+version = "0.1.0"
+source = { editable = "packages/tools/dbt" }
+dependencies = [
+    { name = "dependency-injector" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "dependency-injector", specifier = ">=4.45.0" }]
 
 [[package]]
 name = "data-platform-tools-slack"

@@ -5,23 +5,23 @@ from data_platform.core.di import Module, wire
 from data_platform.core.spi import Export
 
 
-def list_modules(entry_point_group: str) -> list[Module]:
-    return [
-        import_module(entry_point.module).Module
+def list_modules_by_name(entry_point_group: str) -> dict[str, Module]:
+    return {
+        entry_point.name: import_module(entry_point.module).Module
         for entry_point in entry_points(group=entry_point_group)
-    ]
+    }
         
 
 @command()
 def app():
-    tools_modules = list_modules("data_platform.tools")
-    exports_modules = list_modules("data_platform.exports")
+    modules_by_name = list_modules_by_name("data_platform.tools") | list_modules_by_name("data_platform.exports")
+    pool = wire([module for module in modules_by_name.values()])
 
-    modules = tools_modules + exports_modules
-    pool = wire(modules)
+    print(pool.objs)
 
-    sales_export = pool.pick(Export, name="sales_export")
-    sales_export.refresh()
+    for name in list_modules_by_name("data_platform.exports").keys():
+        export = pool.pick(Export, name=name)
+        export.refresh()
 
 
 __all__ = ["app"]
