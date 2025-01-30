@@ -25,6 +25,5 @@ build-backend = "hatchling.build"
 sources = ["src"]
 only-include = ["src/data_platform/exports/sales"]
 
-[project.entry-points."data_platform.exports"]
-sales_export = "data_platform.exports.sales"
-leads_to_crm_export = "data_platform.exports.sales"
+[project.entry-points."data_platform.core.di.modules"]
+sales = "data_platform.exports.sales:Module"

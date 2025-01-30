@@ -19,5 +19,5 @@ build-backend = "hatchling.build"
 sources = ["src"]
 only-include = ["src/data_platform/tools/dbt"]
 
-[project.entry-points."data_platform.tools"]
-dbt = "data_platform.tools.dbt"
+[project.entry-points."data_platform.core.di.modules"]
+dbt = "data_platform.tools.dbt:Module"

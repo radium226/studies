@@ -19,5 +19,5 @@ build-backend = "hatchling.build"
 sources = ["src"]
 only-include = ["src/data_platform/tools/slack"]
 
-[project.entry-points."data_platform.tools"]
-slack = "data_platform.tools.slack"
+[project.entry-points."data_platform.core.di.modules"]
+slack = "data_platform.tools.slack:Module"

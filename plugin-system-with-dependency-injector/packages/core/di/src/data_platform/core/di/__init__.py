@@ -1,11 +1,16 @@
-from typing import Type, Protocol, Any, ClassVar, cast
+from typing import Type, Protocol, Any, ClassVar, cast, Callable
 import inspect
 import networkx as nx
 import os
 import sys
+from importlib.metadata import entry_points
+from importlib import import_module
 
 
 type ModuleName = str
+
+
+ENTRY_POINT_GROUP = "data_platform.core.di.modules"
 
 
 class Module(Protocol):
@@ -92,6 +97,12 @@ class Pool():
 
         return cast(T, obj)
 
+    def list[T](self, type: Type[T]) -> list[T]:
+        return [
+            cast(T, obj)
+            for t, obj in self.objs.items()
+            if issubclass(t[0], type)
+        ]
 
 
 def wire(modules: list[Type[Module]]) -> Pool:
@@ -150,10 +161,17 @@ def wire(modules: list[Type[Module]]) -> Pool:
     return pool
 
 
+def list_modules() -> list[Module]:
+    return [
+        import_module(entry_point.module).Module
+        for entry_point in entry_points(group=ENTRY_POINT_GROUP)
+    ]
+
 
 __all__ = [
     "Module",
     "Using",
     "Given",
     "wire",
+    "list_modules",
 ]
