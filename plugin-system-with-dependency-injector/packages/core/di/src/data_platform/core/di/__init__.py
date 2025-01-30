@@ -1,4 +1,4 @@
-from typing import Type, Protocol, Any, ClassVar, cast, Callable
+from typing import Type, Protocol, Any, cast
 import inspect
 import networkx as nx
 import os
@@ -7,15 +7,12 @@ from importlib.metadata import entry_points
 from importlib import import_module
 
 
-type ModuleName = str
-
-
 ENTRY_POINT_GROUP = "data_platform.core.di.modules"
 
 
 class Module(Protocol):
-
-    NAME: ClassVar[ModuleName]
+    
+    ...
 
 
 class Wire[T](Protocol):
@@ -105,6 +102,15 @@ class Pool():
         ]
 
 
+def list_givens[T](modules: list[Module], type: Type[T]) -> list[Type[T]]:
+    givens = []
+    for module in modules:
+        for _, given in inspect.getmembers(module, lambda x: isinstance(x, Given)):
+            if issubclass(given.type, type):
+                givens.append(given.type)
+    return givens
+
+
 def wire(modules: list[Type[Module]]) -> Pool:
     G = nx.DiGraph()
 
@@ -174,4 +180,5 @@ __all__ = [
     "Given",
     "wire",
     "list_modules",
+    "list_givens",
 ]
