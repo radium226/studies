@@ -1,12 +1,8 @@
 from click import command
-from importlib.metadata import entry_points
-from importlib import import_module
 from data_platform.core.di import wire, list_modules
 from data_platform.core.spi import Export
 
 
-
-        
 
 @command()
 def app():
