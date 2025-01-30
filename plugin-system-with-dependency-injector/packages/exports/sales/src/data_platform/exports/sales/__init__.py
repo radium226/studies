@@ -22,7 +22,7 @@ class LeadsToCRMExport(Export, name="leads_to_crm"):
             print("Refreshing leads to CRM export! ")
 
 
-@export()
+@export(name="PIPOU")
 def small_inline_export(dbt: DBT):
     print("Refreshing small inline export! ")
     dbt.analyse()
