@@ -1,0 +1,19 @@
+[project]
+name = "data-platform"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+
+[tool.uv.workspace]
+members = [
+    "packages/core/*",
+    "packages/tools/*",
+    "packages/exports/*"    
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.14.1",
+    "networkx-stubs>=0.0.1",
+    "ruff>=0.9.3",
+]
