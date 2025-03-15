@@ -10,46 +10,38 @@ from enum import StrEnum, auto
 
 
 
-class Bank(StrEnum):
+class SourceName(StrEnum):
     
     BANQUE_POPULAIRE = auto()
     BOURSOBANK = auto()
 
 
+class Source():
 
-@dataclass
-class Transaction():
+    def __init__(self, name: SourceName):
+        self.name = name
 
-    bank: Bank
-    amount: float
+    def load(self) -> None:
+        self._extract()
+        self._transform()
+        self._load()
 
+    @task()
+    def _extract(self) -> None:
+        sleep(1)
+        print(f"Extracting data from {self.name}")
+    
+    @task()
+    def _transform(self) -> None:
+        sleep(1)
+        print(f"Transforming data from {self.name}")
+
+    @task()
+    def _load(self) -> None:
+        sleep(1)
+        print(f"Loading data from {self.name}")
 
 @flow()
-def extract_transactions(bank: Bank) -> None:
-    file_paths = download_files(bank=bank)
-    for file_path in file_paths:
-        transactions = parse_transactions(file=file_path)
-        store_transactions(transactions)
-
-
-@task()
-def download_files(bank: Bank) -> Generator[Path, None, None]:
-    artifact_id = create_progress_artifact(
-        progress=0.0,
-        description="Downloading files")
-
-    for i in range(10):
-        update_progress_artifact(artifact_id, progress=float(i) * 10.00)
-        sleep(30)
-        yield Path(f"file_{i}.csv")
-
-@task()
-def parse_transactions(file: Path) -> Generator[Transaction, None, None]:
-    sleep(30)
-    for i in range(10):
-        yield Transaction(bank=Bank.BANQUE_POPULAIRE, amount=float(i) * 10.00)
-
-
-@task()
-def store_transactions(transactions: Generator[Transaction, None, None]) -> None:
-    transaction = list[transactions]    
+def load_source(source_name: SourceName) -> None:
+    source = Source(source_name)
+    source.load()
