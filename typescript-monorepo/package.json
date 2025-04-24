@@ -1,0 +1,15 @@
+{
+  "name": "@repo/root",
+  "description": "",
+  "version": "1.1.0",
+  "keywords": [],
+  "packageManager": "pnpm@9.0.4",
+  "scripts": {
+    "dev": "concurrently --kill-others --names='@repo/api,@repo/components,@repo/webapp' --prefix-colors='yellow,blue,green' \"pnpm --filter @repo/api run dev\" \"pnpm --filter @repo/components run dev\" \"pnpm --filter @repo/webapp run dev\"",
+    "clean": "pnpm -r run clean",
+    "build": "pnpm -r run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
