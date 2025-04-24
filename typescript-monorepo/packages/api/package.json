@@ -1,0 +1,35 @@
+{
+  "name": "@repo/api",
+  "version": "1.0.0",
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup && tsc --emitDeclarationOnly && tsc-alias",
+    "clean": "rimraf \"./dist\" \"./tsconfig.tsbuildinfo\"",
+    "dev": "tsup --watch --onSuccess \"node dist/bin/cli.js\""
+  },
+  "license": "",
+  "dependencies": {
+    "@repo/models": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/yargs": "^17.0.33",
+    "rimraf": "^6.0.1",
+    "tsc-alias": "^1.8.15",
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
+  },
+  "bin": {
+    "repo-api": "./dist/bin/cli.js"
+  }
+}

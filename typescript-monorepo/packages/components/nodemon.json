@@ -1,0 +1,6 @@
+{
+    "ignore": ["dist"],
+    "watch": ["./src"], 
+    "exec": "tsc -b && vite build",
+    "ext": "ts,tsx"
+}
