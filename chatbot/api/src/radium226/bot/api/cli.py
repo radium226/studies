@@ -59,15 +59,30 @@ def cli():
         await websocket.accept()
         logger.info("New connection! ")
 
-        # conversation = model.conversation()
+        async def change_color(color: str):
+            """Change the color of the input text."""
+            await websocket.send_json({
+                "type": "change-color",
+                "color": color
+            })
+
+
+        conversation = model.conversation(
+            tools=[
+                change_color,
+            ]
+        )
 
         schema = Outcome.model_json_schema()
         print("Schema:", schema)
 
         while True:
             question = await websocket.receive_text()
-            response = await model.prompt(question, schema=schema).text()
-            await websocket.send_text(response)
+            response = await conversation.chain(question).text()
+            await websocket.send_json({
+                "type": "print-text",
+                "text": response,
+            })
         await websocket.close()
        
 

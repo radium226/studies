@@ -57,21 +57,17 @@ function App() {
     if (webSocketRef.current) {
       webSocketRef.current.onmessage = (event) => {
         const data = event.data;
-        const outcome = Outcome.parse(JSON.parse(data));
-        const newMessages = outcome.actions.flatMap((action) => {
-          switch (action.type) {
-            case 'print-text':
-              return [action.text];
-            case 'change-color':
-              setColor(action.color);
-              return [];
-            default:
-              return [];
-          }
-        })
-
-
-        setMessages(oldMessages => [...oldMessages, ...newMessages]);
+        const action = Action.parse(JSON.parse(data));
+        switch (action.type) {
+          case 'print-text':
+            setMessages(oldMessages => [...oldMessages, action.text]);
+            break;
+          case 'change-color':
+            setColor(action.color);
+            break;
+          default:
+            break;
+        }
       };
     }
   }, [color]);
