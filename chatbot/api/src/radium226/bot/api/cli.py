@@ -15,31 +15,38 @@ from loguru import logger
 
 import llm
 
+import json
+
 
 ANTHROPIC_API_KEY = environ["ANTHROPIC_API_KEY"]
 
 
 
-class PrintText(BaseModel):
+class Navigate(BaseModel):
     """Print a text to the console."""
 
-    type: Literal["print-text"] = Field("print-text")
-    text: str = Field(..., description="The text to print to the console")
+    type: Literal["navigate"] = Field("navigate")
+    to: str = Field(..., description="Where in the website to navigate to")
 
 
-class ChangeInputColor(BaseModel):
+class ChangeColor(BaseModel):
     """Change the color of the input text."""
 
     type: Literal["change-color"] = Field("change-color")
-    color: str = Field(..., description="The color to change the input to")
+    color: str = Field(..., description="Change the color of the website")
 
 
-class Action(RootModel[Union[PrintText, ChangeInputColor]]):
-    """The outcome of the conversation."""
+class Action(RootModel[Union[Navigate, ChangeColor]]):
+    """Possible actions the bot can do."""
     pass
 
 
-class Outcome(BaseModel):
+class Feedback(BaseModel):
+
+    message: str | None = Field(
+        None,
+        description="A message to provide feedback to the user",
+    )
 
     actions: list[Action] = Field(
         ...,
@@ -59,30 +66,18 @@ def cli():
         await websocket.accept()
         logger.info("New connection! ")
 
-        async def change_color(color: str):
-            """Change the color of the input text."""
-            await websocket.send_json({
-                "type": "change-color",
-                "color": color
-            })
-
-
-        conversation = model.conversation(
-            tools=[
-                change_color,
-            ]
-        )
-
-        schema = Outcome.model_json_schema()
-        print("Schema:", schema)
-
         while True:
             question = await websocket.receive_text()
-            response = await conversation.chain(question).text()
-            await websocket.send_json({
-                "type": "print-text",
-                "text": response,
-            })
+            print(f"Received question: {question}")
+            response = await model.prompt(
+                question,
+                schema=Feedback,
+            )
+            text = await response.text()
+            print(f"Response text: {text}")
+            feedback = Feedback.model_validate_json(text)
+            print(f"Feedback: {feedback}")
+            await websocket.send_json(feedback.model_dump())
         await websocket.close()
        
 
