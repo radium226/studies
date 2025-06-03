@@ -1,10 +1,11 @@
-export type SettingsProps = {
+import { useEmail } from '../contexts/settings';
 
-  email?: string;
+export type SettingsProps = {
 
 };
 
-export default function Settings({ email }: SettingsProps) {
+export default function Settings({ }: SettingsProps) {
+  const [email, _] = useEmail();
   return (
     <div>
       <h1>Settings</h1>

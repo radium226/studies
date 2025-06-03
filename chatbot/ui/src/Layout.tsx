@@ -1,5 +1,6 @@
 import { Outlet, Link, useNavigate } from 'react-router';
 import { useState } from 'react';
+import { useEmail } from './contexts/settings';
 
 import Bot from './Bot';
 
@@ -25,6 +26,7 @@ const TO_MAPPING: Record<string, string> = {
 export default function Layout(props: LayoutProps) {
   const navigate = useNavigate();
   const [color, setColor] = useState(COLOR_MAPPING['red']);
+  const [_, setEmail] = useEmail();
 
   return (
     <div>
@@ -56,6 +58,10 @@ export default function Layout(props: LayoutProps) {
 
               case 'change-color':
                 setColor(COLOR_MAPPING[action.color]);
+                break;
+
+              case 'update-email':
+                setEmail(action.email);
                 break;
             }
           } }

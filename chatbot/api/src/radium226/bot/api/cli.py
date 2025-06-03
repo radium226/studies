@@ -36,7 +36,14 @@ class ChangeColor(BaseModel):
     color: str = Field(..., description="Change the color of the website")
 
 
-class Action(RootModel[Union[Navigate, ChangeColor]]):
+class UpdateEmail(BaseModel):
+    """Update the user's email address."""
+
+    type: Literal["update-email"] = Field("update-email")
+    email: str = Field(..., description="The new email address to update to")
+
+
+class Action(RootModel[Union[Navigate, ChangeColor, UpdateEmail]]):
     """Possible actions the bot can do."""
     pass
 
