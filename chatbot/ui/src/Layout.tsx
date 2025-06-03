@@ -1,5 +1,5 @@
 import { Outlet, Link, useNavigate } from 'react-router';
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 
 import Bot from './Bot';
 
@@ -8,10 +8,23 @@ export type LayoutProps = {
     
 }
 
+const COLOR_MAPPING: Record<string, string> = {
+  red: 'bg-red-500',
+  green: 'bg-green-500',
+  blue: 'bg-blue-500',
+  yellow: 'bg-yellow-500',
+  purple: 'bg-purple-500',
+  orange: 'bg-orange-500',
+}
+
+const TO_MAPPING: Record<string, string> = {
+  'welcome': '/',
+  'settings': '/settings',
+}
 
 export default function Layout(props: LayoutProps) {
   const navigate = useNavigate();
-  const [color, setColor] = useState('red');
+  const [color, setColor] = useState(COLOR_MAPPING['red']);
 
   return (
     <div>
@@ -22,27 +35,27 @@ export default function Layout(props: LayoutProps) {
               <Link to="/">Welcome</Link>
             </li>
             <li>
-            <Link to="/Settings">Settings</Link>
+            <Link to="/settings">Settings</Link>
             </li>
           </ul>
         </header>
         <main className="flex-grow">
           <Outlet />
         </main>
-        <footer className={ `${color} text-white p-4 mt-4` }>
+        <footer className={ `bg-gray-800 text-white p-4 mt-4` }>
           This is the footer.
         </footer>
         <Bot
-          color={ color }
+          backgrounColor={ color }
           onAction={ (action) => {
             console.log('Action received:', action);
             switch (action.type) {
               case 'navigate':
-                navigate(action.to);
+                navigate(TO_MAPPING[action.to]);
                 break;
 
               case 'change-color':
-                setColor(action.color);
+                setColor(COLOR_MAPPING[action.color]);
                 break;
             }
           } }

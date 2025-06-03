@@ -22,7 +22,7 @@ export type Action = z.infer<typeof Action>;
 
 
 export const Feedback = z.object({
-    message: z.string().optional(),
+    message: z.string().nullable(),
     actions: z.array(Action),
 })
 export type Feedback = z.infer<typeof Feedback>;

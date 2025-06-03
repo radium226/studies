@@ -26,7 +26,7 @@ class Navigate(BaseModel):
     """Print a text to the console."""
 
     type: Literal["navigate"] = Field("navigate")
-    to: str = Field(..., description="Where in the website to navigate to")
+    to: Literal["welcome", "settings"] = Field(..., description="Where in the website to navigate to")
 
 
 class ChangeColor(BaseModel):
@@ -74,7 +74,7 @@ def cli():
                 schema=Feedback,
             )
             text = await response.text()
-            print(f"Response text: {text}")
+            print(f"Response text: <{text}>")
             feedback = Feedback.model_validate_json(text)
             print(f"Feedback: {feedback}")
             await websocket.send_json(feedback.model_dump())

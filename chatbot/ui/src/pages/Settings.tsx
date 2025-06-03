@@ -1,9 +1,20 @@
-export default function Settings() {
+export type SettingsProps = {
+
+  email?: string;
+
+};
+
+export default function Settings({ email }: SettingsProps) {
   return (
     <div>
       <h1>Settings</h1>
       <p>This is the settings page where you can configure your application preferences.</p>
-      {/* Add your settings components here */}
+      <input 
+        type="text" 
+        placeholder="Enter your preference"
+        value={ email }
+        onChange={ (event) => console.log(`Preference changed to: ${event.target.value}`)}
+      />
     </div>
   );
 }

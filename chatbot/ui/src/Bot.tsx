@@ -6,12 +6,12 @@ import { Feedback, Action } from './feedback';
 export type BotProps = {
 
     onAction?: (action: Action) => void;
-    color?: string;
+    backgrounColor?: string;
 
 }
 
 
-export default function Bot({ onAction, color }: BotProps) {
+export default function Bot({ onAction, backgrounColor }: BotProps) {
     const webSocketRef = useRef<WebSocket | null>(null);
 
     const [messages, setMessages] = useState<string[]>([]);
@@ -75,10 +75,10 @@ export default function Bot({ onAction, color }: BotProps) {
     return (
         <div
             ref={conversationDivRef}
-            className={ `fixed bottom-4 right-4 w-80 h-50 z-50 bg-${color ?? 'red'}-500 text-white p-4 rounded-lg shadow-lg overflow-y-auto` }
+            className={ `fixed bottom-4 right-4 w-80 h-50 z-50 ${backgrounColor} text-white p-4 rounded-lg shadow-lg overflow-y-auto` }
         >
             {messages.map((message, index) => (
-                <div key={index} className={ `mb-2 p-2 bg-${color ?? 'red'}-600 rounded` }>
+                <div key={index} className={ `mb-2 p-2 ${backgrounColor} rounded` }>
                     {message}
                 </div>
             ))}
