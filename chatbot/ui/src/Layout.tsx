@@ -1,6 +1,6 @@
 import { Outlet, Link, useNavigate } from 'react-router';
-import { useState } from 'react';
-import { useEmail } from './contexts/settings';
+
+import { useSettingsStore } from './stores/settings';
 
 import Bot from './Bot';
 
@@ -25,8 +25,9 @@ const TO_MAPPING: Record<string, string> = {
 
 export default function Layout(props: LayoutProps) {
   const navigate = useNavigate();
-  const [color, setColor] = useState(COLOR_MAPPING['red']);
-  const [_, setEmail] = useEmail();
+  const settingsStore = useSettingsStore();
+
+  console.log("settingsStore", settingsStore);
 
   return (
     <div>
@@ -48,7 +49,7 @@ export default function Layout(props: LayoutProps) {
           This is the footer.
         </footer>
         <Bot
-          backgrounColor={ color }
+          backgrounColor={ settingsStore.color }
           onAction={ (action) => {
             console.log('Action received:', action);
             switch (action.type) {
@@ -57,11 +58,11 @@ export default function Layout(props: LayoutProps) {
                 break;
 
               case 'change-color':
-                setColor(COLOR_MAPPING[action.color]);
+                settingsStore.setColor(COLOR_MAPPING[action.color]);
                 break;
 
               case 'update-email':
-                setEmail(action.email);
+                settingsStore.setEmail(action.email);
                 break;
             }
           } }

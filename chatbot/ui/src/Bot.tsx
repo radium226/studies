@@ -18,7 +18,7 @@ export default function Bot({ onAction, backgrounColor }: BotProps) {
     const [draftMessage, setDraftMessage] = useState('');
 
     useEffect(() => {
-        webSocketRef.current = new WebSocket('ws://localhost:8000/ws');
+        webSocketRef.current = new WebSocket(`ws://${window.location.hostname}:8000/ws`);
         webSocketRef.current.onopen = () => {
             console.log('WebSocket connection established');
         };

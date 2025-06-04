@@ -1,11 +1,11 @@
-import { useEmail } from '../contexts/settings';
+import { useSettingsStore } from '../stores/settings';
 
 export type SettingsProps = {
 
 };
 
 export default function Settings({ }: SettingsProps) {
-  const [email, _] = useEmail();
+  const { email } = useSettingsStore();
   return (
     <div>
       <h1>Settings</h1>

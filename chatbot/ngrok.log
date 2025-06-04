@@ -1,0 +1,56 @@
+t=2025-06-04T11:57:17+0200 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2025-06-04T11:57:17+0200 lvl=eror msg="failed to reconnect session" obj=tunnels.session err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T11:57:17+0200 lvl=eror msg="session closing" obj=tunnels.session err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T11:57:17+0200 lvl=info msg="received stop request" obj=app stopReq="{err:{Remote:true Inner:{Inner:0xc000914b20}} restart:false}"
+t=2025-06-04T11:57:17+0200 lvl=eror msg="terminating with error" obj=app err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T11:57:17+0200 lvl=warn msg="failed to check for update" obj=updater err="Post \"https://update.equinox.io/check\": context canceled"
+t=2025-06-04T11:57:17+0200 lvl=crit msg="command failed" err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T12:01:10+0200 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2025-06-04T12:01:10+0200 lvl=eror msg="failed to reconnect session" obj=tunnels.session err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T12:01:10+0200 lvl=eror msg="session closing" obj=tunnels.session err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T12:01:10+0200 lvl=info msg="received stop request" obj=app stopReq="{err:{Remote:true Inner:{Inner:0xc000ac2af0}} restart:false}"
+t=2025-06-04T12:01:10+0200 lvl=eror msg="terminating with error" obj=app err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T12:01:10+0200 lvl=crit msg="command failed" err="authentication failed: The authtoken you specified does not look like a proper ngrok tunnel authtoken.\nYour authtoken: ...\nInstructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken\r\n\r\nERR_NGROK_105\r\n"
+t=2025-06-04T12:01:43+0200 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2025-06-04T12:01:44+0200 lvl=info msg="client session established" obj=tunnels.session
+t=2025-06-04T12:01:44+0200 lvl=info msg="tunnel session started" obj=tunnels.session
+t=2025-06-04T12:01:44+0200 lvl=info msg="started tunnel" obj=tunnels name=api addr=http://localhost:8000 url=https://b7a2-2a01-e34-ec66-eca0-b645-ba82-6148-db8d.ngrok-free.app
+t=2025-06-04T12:01:44+0200 lvl=info msg="started tunnel" obj=tunnels name=ui addr=http://localhost:5173 url=https://e616-2a01-e34-ec66-eca0-b645-ba82-6148-db8d.ngrok-free.app
+t=2025-06-04T12:02:03+0200 lvl=info msg="join connections" obj=join id=106017d672ab l=127.0.0.1:8000 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:51742
+t=2025-06-04T12:02:11+0200 lvl=info msg="join connections" obj=join id=25bd0a0a5829 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:59610
+t=2025-06-04T12:03:01+0200 lvl=info msg="Got quit command" obj=consoleui
+t=2025-06-04T12:03:01+0200 lvl=info msg="received stop request" obj=app stopReq="{err:<nil> restart:false}"
+t=2025-06-04T12:03:01+0200 lvl=info msg="session closing" obj=tunnels.session err=nil
+t=2025-06-04T12:03:01+0200 lvl=info msg="accept failed" obj=tunnels.session obj=csess id=d43b704e4813 err="reconnecting session closed"
+t=2025-06-04T12:03:02+0200 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2025-06-04T12:03:03+0200 lvl=info msg="client session established" obj=tunnels.session
+t=2025-06-04T12:03:03+0200 lvl=info msg="tunnel session started" obj=tunnels.session
+t=2025-06-04T12:03:03+0200 lvl=info msg="started tunnel" obj=tunnels name=ui addr=http://localhost:5173 url=https://6fcd-2a01-e34-ec66-eca0-b645-ba82-6148-db8d.ngrok-free.app
+t=2025-06-04T12:03:03+0200 lvl=info msg="started tunnel" obj=tunnels name=api addr=http://localhost:8000 url=https://f78b-2a01-e34-ec66-eca0-b645-ba82-6148-db8d.ngrok-free.app
+t=2025-06-04T12:03:16+0200 lvl=info msg="Got quit command" obj=consoleui
+t=2025-06-04T12:03:16+0200 lvl=info msg="received stop request" obj=app stopReq="{err:<nil> restart:false}"
+t=2025-06-04T12:03:16+0200 lvl=info msg="session closing" obj=tunnels.session err=nil
+t=2025-06-04T12:03:16+0200 lvl=info msg="accept failed" obj=tunnels.session obj=csess id=a091776b8af4 err="reconnecting session closed"
+t=2025-06-04T12:03:17+0200 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2025-06-04T12:03:17+0200 lvl=info msg="client session established" obj=tunnels.session
+t=2025-06-04T12:03:17+0200 lvl=info msg="tunnel session started" obj=tunnels.session
+t=2025-06-04T12:03:17+0200 lvl=info msg="started tunnel" obj=tunnels name=ui addr=http://localhost:5173 url=https://4109-2a01-e34-ec66-eca0-b645-ba82-6148-db8d.ngrok-free.app
+t=2025-06-04T12:03:17+0200 lvl=info msg="started tunnel" obj=tunnels name=api addr=http://localhost:8000 url=https://4bc9-2a01-e34-ec66-eca0-b645-ba82-6148-db8d.ngrok-free.app
+t=2025-06-04T12:04:12+0200 lvl=info msg="join connections" obj=join id=97ac22ddfb91 l=127.0.0.1:8000 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:37332
+t=2025-06-04T12:04:17+0200 lvl=info msg="join connections" obj=join id=d0d8152e46da l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:17+0200 lvl=info msg="join connections" obj=join id=251f68f9dd06 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:17+0200 lvl=info msg="join connections" obj=join id=9523db4952d9 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=974d06644e4c l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=2b74a375aa35 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=1a3dbfd1f35c l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=1059ad9b71c7 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=ac8dfd4c9d15 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:32770
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=1176ca2cd483 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=939162e80aa0 l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:18+0200 lvl=info msg="join connections" obj=join id=23befe862b4b l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:60898
+t=2025-06-04T12:04:29+0200 lvl=info msg="join connections" obj=join id=cb0bbc907bfe l=127.0.0.1:5173 r=[2a01:e34:ec66:eca0:b645:ba82:6148:db8d]:54754
+t=2025-06-04T12:08:29+0200 lvl=info msg="Got quit command" obj=consoleui
+t=2025-06-04T12:08:29+0200 lvl=info msg="received stop request" obj=app stopReq="{err:<nil> restart:false}"
+t=2025-06-04T12:08:29+0200 lvl=info msg="session closing" obj=tunnels.session err=nil
+t=2025-06-04T12:08:29+0200 lvl=info msg="accept failed" obj=tunnels.session obj=csess id=306f33ca2210 err="reconnecting session closed"
+t=2025-06-04T12:08:29+0200 lvl=info msg="failed to accept connection: Listener closed" obj=tunnels.session clientid=46c948beb056d5a8892c9cf3267523ec

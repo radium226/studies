@@ -73,18 +73,41 @@ def cli():
         await websocket.accept()
         logger.info("New connection! ")
 
+        async def receive_state():
+            """Receive the current state from the client."""
+            await websocket.send_json({
+                "actions": [
+                    {
+                        "type": "send_state",
+                        "to": "welcome"
+                    }
+                ],
+                "message": None,
+            })
+            state = await websocket.receive_json()
+            return state
+
         while True:
-            question = await websocket.receive_text()
-            print(f"Received question: {question}")
-            response = await model.prompt(
-                question,
-                schema=Feedback,
-            )
-            text = await response.text()
-            print(f"Response text: <{text}>")
-            feedback = Feedback.model_validate_json(text)
-            print(f"Feedback: {feedback}")
-            await websocket.send_json(feedback.model_dump())
+            try:
+                question = await websocket.receive_text()
+                print(f"Received question: {question}")
+                response = await model.chain(
+                    question,
+                    tools=[
+                        receive_state,
+                    ]
+                    schema=Feedback,
+                )
+                text = await response.text()
+                print(f"Response text: <{text}>")
+                feedback = Feedback.model_validate_json(text)
+                print(f"Feedback: {feedback}")
+                await websocket.send_json(feedback.model_dump())
+            except:
+                await websocket.send_json({
+                    "actions": [],
+                    "message": "An error occurred while processing your request."
+                })
         await websocket.close()
        
 
