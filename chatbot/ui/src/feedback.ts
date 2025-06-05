@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { AddTask } from './pages/TaskListPage/actions';
+
 export const ChangeColor = z.object({
   type: z.literal('change-color'),
   color: z.string(),
@@ -23,7 +25,8 @@ export type UpdateEmail = z.infer<typeof UpdateEmail>;
 export const Action = z.discriminatedUnion('type', [
   ChangeColor,
   Navigate,
-  UpdateEmail
+  UpdateEmail,
+  AddTask,
 ]);
 export type Action = z.infer<typeof Action>;
 

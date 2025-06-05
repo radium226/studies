@@ -1,6 +1,8 @@
-import { Outlet, Link, useNavigate } from 'react-router';
+import { Outlet, Link, useNavigate, useLocation } from 'react-router';
 
 import { useSettingsStore } from './stores/settings';
+
+import { useTaskListStore } from './pages/TaskListPage';
 
 import Bot from './Bot';
 
@@ -21,11 +23,17 @@ const COLOR_MAPPING: Record<string, string> = {
 const TO_MAPPING: Record<string, string> = {
   'welcome': '/',
   'settings': '/settings',
+  'tasks': '/tasks',
 }
 
 export default function Layout(props: LayoutProps) {
   const navigate = useNavigate();
   const settingsStore = useSettingsStore();
+
+  const { addTask } = useTaskListStore();
+
+  const { pathname } = useLocation();
+
 
   console.log("settingsStore", settingsStore);
 
@@ -63,6 +71,11 @@ export default function Layout(props: LayoutProps) {
 
               case 'update-email':
                 settingsStore.setEmail(action.email);
+                break;
+
+              case 'add-task':
+                const { taskTitle } = action;
+                addTask({ title: taskTitle, completed: false });
                 break;
             }
           } }

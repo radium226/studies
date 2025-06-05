@@ -22,11 +22,12 @@ ANTHROPIC_API_KEY = environ["ANTHROPIC_API_KEY"]
 
 
 
+
 class Navigate(BaseModel):
     """Print a text to the console."""
 
     type: Literal["navigate"] = Field("navigate")
-    to: Literal["welcome", "settings"] = Field(..., description="Where in the website to navigate to")
+    to: Literal["welcome", "settings", "tasks"] = Field(..., description="Where in the website to navigate to")
 
 
 class ChangeColor(BaseModel):
@@ -36,6 +37,27 @@ class ChangeColor(BaseModel):
     color: str = Field(..., description="Change the color of the website")
 
 
+
+class AnyPageAction(RootModel[Union[Navigate, ChangeColor]]):
+    """Possible global actions the bot can do."""
+    pass
+
+class WelcomePageAction(RootModel[AnyPageAction]):
+    """Possible actions the bot can do on the welcome page."""
+    pass
+
+class WelcomePageAnswer(BaseModel):
+    message: str | None = Field(
+        None,
+        description="A message to provide feedback to the user",
+    )
+
+    actions: list[WelcomePageAction] = Field(
+        ...,
+        description="The actions to perform as a result of the conversation",
+    )
+
+
 class UpdateEmail(BaseModel):
     """Update the user's email address."""
 
@@ -43,24 +65,54 @@ class UpdateEmail(BaseModel):
     email: str = Field(..., description="The new email address to update to")
 
 
-class Action(RootModel[Union[Navigate, ChangeColor, UpdateEmail]]):
-    """Possible actions the bot can do."""
+class SettingsPageAction(RootModel[Union[AnyPageAction, ChangeColor, UpdateEmail]]):
+    """Possible actions the bot can do on the settings page."""
     pass
 
 
-class Feedback(BaseModel):
+class SettingsPageAnswer(BaseModel):
+    message: str | None = Field(
+        None,
+        description="A message to provide feedback to the user",
+    )
+
+    actions: list[SettingsPageAction] = Field(
+        ...,
+        description="The actions to perform as a result of the conversation",
+    )
+
+
+class AddTask(BaseModel):
+    """Add a task to the user's task list."""
+
+    type: Literal["add-task"] = Field("add-task")
+    task_title: str = Field(..., description="The task to add to the user's task list", alias="taskTitle")
+
+
+class TaskListPageAction(RootModel[Union[AnyPageAction, AddTask]]):
+    """Possible actions the bot can do on the task list page."""
+    pass
+
+
+class TaskListPageAnswer(BaseModel):
 
     message: str | None = Field(
         None,
         description="A message to provide feedback to the user",
     )
 
-    actions: list[Action] = Field(
+    actions: list[TaskListPageAction] = Field(
         ...,
         description="The actions to perform as a result of the conversation",
     )
 
 
+
+class Question(BaseModel):
+    """A question to ask the user."""
+
+    location: Literal["/welcome", "/settings", "/", "/tasks"]
+    message: str = Field(..., description="The question to ask the user")
 
 
 
@@ -89,21 +141,29 @@ def cli():
 
         while True:
             try:
-                question = await websocket.receive_text()
+                question_obj = await websocket.receive_json()
+                question = Question.model_validate(question_obj)
+
+                schema = {
+                    "/": WelcomePageAnswer,
+                    "/settings": SettingsPageAnswer,
+                    "/tasks": TaskListPageAnswer
+                }[question.location]
+
+
                 print(f"Received question: {question}")
-                response = await model.chain(
-                    question,
-                    tools=[
-                        receive_state,
-                    ]
-                    schema=Feedback,
+
+                response = await model.prompt(
+                    question.message,
+                    schema=schema,
                 )
                 text = await response.text()
                 print(f"Response text: <{text}>")
-                feedback = Feedback.model_validate_json(text)
+                feedback = schema.model_validate_json(text)
                 print(f"Feedback: {feedback}")
-                await websocket.send_json(feedback.model_dump())
-            except:
+                await websocket.send_json(feedback.model_dump(by_alias=True))
+            except Exception as e:
+                print(e)
                 await websocket.send_json({
                     "actions": [],
                     "message": "An error occurred while processing your request."

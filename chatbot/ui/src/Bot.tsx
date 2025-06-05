@@ -1,3 +1,5 @@
+import { useLocation } from 'react-router';
+
 import { useEffect, useState, useRef } from 'react';
 import { Feedback, Action } from './feedback';
 
@@ -16,6 +18,9 @@ export default function Bot({ onAction, backgrounColor }: BotProps) {
     const [messages, setMessages] = useState<string[]>([]);
 
     const [draftMessage, setDraftMessage] = useState('');
+
+    const { pathname } = useLocation();
+
 
     useEffect(() => {
         webSocketRef.current = new WebSocket(`ws://${window.location.hostname}:8000/ws`);
@@ -39,7 +44,7 @@ export default function Bot({ onAction, backgrounColor }: BotProps) {
                 const data = event.data;
                 const feedback = Feedback.parse(JSON.parse(data));
                 const message = feedback.message;
-                if (message !== undefined) {
+                if (message !== null) {
                     setMessages(oldMessages => [...oldMessages, message]);
                 }
                 
@@ -55,7 +60,8 @@ export default function Bot({ onAction, backgrounColor }: BotProps) {
 
     const sendMessage = (message: string) => {
         if (webSocketRef.current) {
-            webSocketRef.current.send(message);
+            const question = JSON.stringify({ location: pathname, message });
+            webSocketRef.current.send(question);
             setMessages(prevMessages => [...prevMessages, message]);
         } else {
             console.error('WebSocket is not connected');
