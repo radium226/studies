@@ -1,0 +1,10 @@
+version: 2
+authtoken: 2y2SWYEcTJvqdhiBXwXeVBSKaAT_4aLEGLLDQSCnShuLnDCGx
+log: ngrok.log
+tunnels:
+  ui:
+    addr: 5173
+    proto: http
+  api:
+    addr: 8000
+    proto: http
