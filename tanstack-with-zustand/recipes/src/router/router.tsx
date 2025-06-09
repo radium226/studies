@@ -14,16 +14,23 @@ const rootRoute = createRootRouteWithContext<RouteContext>()({
     component: Layout,
 });
 
-export const createRecipeRoute = createRoute({
+export const CreateRecipeRoute = createRoute({
   getParentRoute: () => rootRoute,
   component: CreateRecipePage.component,
-  path: '/',
-  beforeLoad: ({ context }) => CreateRecipePage.beforeLoad(context),
+  path: "/create-recipe",
+  beforeLoad: CreateRecipePage.beforeLoad,
 });
 
+// export const GenerateRandomNumberRoute = createRoute({
+//   getParentRoute: () => rootRoute,
+//   component: CreateRecipePage.component,
+//   path: "/random-number",
+//   beforeLoad: CreateRecipePage.beforeLoad,
+// });
+
 const routeTree = rootRoute.addChildren([
-    createRecipeRoute,
-  ])
+    CreateRecipeRoute,
+])
 
 export function doCreateRouter(bot: Bot) {
     return createRouter({

@@ -1,9 +1,9 @@
 import { Outlet } from '@tanstack/react-router';
 
-import { createRecipeRoute } from '../router';
+import { CreateRecipeRoute } from '../router';
 
 function BotConversation() {
-  const { bot } = createRecipeRoute.useRouteContext();
+  const { bot } = CreateRecipeRoute.useRouteContext();
 
   return (
     <div>

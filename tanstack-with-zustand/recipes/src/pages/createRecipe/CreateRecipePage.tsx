@@ -1,9 +1,8 @@
-import { useState } from "react";
-
 import RecipeName from "./components/RecipeName";
 import RecipeInstructions from "./components/RecipeInstructions";
 
 import { Recipe } from "./models/recipe";
+import { useCreateRecipeStore } from "./store/createRecipeStore";
 
 import { createPage } from "../../spi";
 
@@ -23,10 +22,7 @@ type RecipeGeneratedEvent = {
 
 export const CreateRecipePage = createPage<RecipeGeneratedEvent, CreateRecipePageProps>((useBot) =>
     ({ }: CreateRecipePageProps) => {
-        const [recipe, setRecipe] = useState<Recipe>({
-            name: "Unnamed recipe",
-            instructions: [],
-        });
+        const { recipe, setRecipe } = useCreateRecipeStore();
 
         const handleRecipeNameChange = (recipeName: string | null) => {
             handleRecipeChange({ ...recipe, name: recipeName ?? "Unamed recipe" });
@@ -55,3 +51,5 @@ export const CreateRecipePage = createPage<RecipeGeneratedEvent, CreateRecipePag
             </div>
         );
 });
+
+export default CreateRecipePage;

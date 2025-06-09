@@ -1,1 +1,1 @@
-export { doCreateRouter, createRecipeRoute } from './router'
+export { doCreateRouter, CreateRecipeRoute } from './router'
