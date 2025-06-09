@@ -2,42 +2,54 @@ import { type ReactNode, useEffect } from "react";
 
 import { useRouteContext } from "@tanstack/react-router";
 
-export type Event<T> = {
+export type Write<T> = {
     type: string;
-    payload: T;
+    write: (payload: T) => void;
 }
 
+export type Payload<TWrite extends Write<any>> = TWrite extends Write<infer TPayload> ? TPayload : never;
+
+export type Read<T> = {
+    type: string;
+    read: () => T;
+}
 
 export type PageComponent<TProps> = (props: TProps) => ReactNode;
 
 
-export type Page<TEvents extends Event<any>, TProps> = {
+export type Page<TReads extends Read<any>, TWrites extends Write<any>, TProps> = {
 
     component: PageComponent<TProps>;
 
-    beforeLoad: <T extends { bot: Bot<never> }>(options: { context: T }) => { bot: Bot<TEvents> };
+    beforeLoad: <T extends { bot: Bot<never> }>(options: { context: T }) => { bot: Bot<TReads, TWrites> };
 
 }
 
-export type ExtractEventsFromPage<TPage> = TPage extends Page<infer TEvents, any> ? TEvents : never;
+export type CallbacksForWrites<TWrites extends Write<any>> = {
+    [K in TWrites['type'] as string]: Extract<TWrites, { type: K }>['write'];
+}
 
-export type CallbacksForEvents<TEvents extends Event<any>> = {
-    [K in TEvents['type'] as string]: (payload: Extract<TEvents, { type: K }>['payload']) => void;
+export type CallbacksForReads<TReads extends Read<any>> = {
+    [K in TReads['type'] as string]: Extract<TReads, { type: K }>['read'];
+}
+
+export type Callbacks<TReads extends Read<any>, TWrites extends Write<any>> = {
+    reads: CallbacksForReads<TReads>;
+    writes: CallbacksForWrites<TWrites>;
 }
 
 
-export class Bot<TEvents extends Event<any> = never> {
+export class Bot<TReads extends Read<any> = never, TWrites extends Write<any> = never> {
 
-    private callbacks: Record<string, (payload: any) => void>;
+    private writeCallbacks: Record<string, (payload: any) => void> = {};
+    private readCallbacks: Record<string, () => { payload: any }> = {};
 
-    constructor(callbacks?: Record<string, (payload: any) => void>) {
-        console.log(`Creating a new Bot instance with callbacks:`, callbacks);
-        this.callbacks = callbacks ?? {};
+    constructor() { 
     }
 
-    subscribe(callbacks: CallbacksForEvents<TEvents>): () => void {
-        this.callbacks = Object.fromEntries(
-            Object.entries(callbacks).map(([type, callback]) => [
+    subscribe(callbacks: Callbacks<TReads, TWrites>): () => void {
+        this.writeCallbacks = Object.fromEntries(
+            Object.entries(callbacks.writes).map(([type, callback]) => [
                 type,
                 (payload: any) => {
                     console.log(`Callback for event type "${type}" called with payload:`, payload);
@@ -45,34 +57,51 @@ export class Bot<TEvents extends Event<any> = never> {
                 },
             ]),
         );
-        console.log(this.callbacks);
+
+        this.readCallbacks = Object.fromEntries(
+            Object.entries(callbacks.reads).map(([type, callback]) => [
+                type,
+                () => {
+                    console.log(`Read callback for event type "${type}" called`);
+                    return callback();
+                },
+            ]),
+        );
         return () => {
             
         };
     }
 
-    emit<TEvent extends TEvents>(event: TEvent): void {
-        console.log(`Emitting event: ${event.type}`, event.payload);
-        console.log(this.callbacks[event.type])
-        this.callbacks[event.type](event.payload);
+    write<TWriteType extends TWrites['type']>(type: TWriteType, payload: Payload<Extract<TWrites, { type: TWriteType }>>): void {
+        this.writeCallbacks[type](payload);
+    }
+
+    read<TReadType extends TReads['type']>(type: TReadType): ReturnType<Extract<TReads, { type: TReadType }>['read']> {
+        const readCallback = this.readCallbacks[type];
+        if (!readCallback) {
+            throw new Error(`No read callback found for type "${type}"`);
+        }
+        return readCallback() as ReturnType<Extract<TReads, { type: TReadType }>['read']>;
     }
 
 }
 
 
-export type UseBot<TEvents extends Event<any>> = (callbacks: CallbacksForEvents<TEvents>) => void;
+export type UseBot<TReads extends Read<any>, TWrites extends Write<any>> = 
+    (callbacks: Callbacks<TReads, TWrites>) => void;
 
 
 
 export function createPage<
-    TEvents extends Event<any>, 
+    TReads extends Read<any>,
+    TWrites extends Write<any>, 
     TProps
 >(
-    createComponent: (useBot: UseBot<TEvents>) => PageComponent<TProps>,
-): Page<TEvents, TProps> {
+    createComponent: (useBot: UseBot<TReads, TWrites>) => PageComponent<TProps>,
+): Page<TReads, TWrites, TProps> {
 
-    function useBot(callbacks: CallbacksForEvents<TEvents>) {
-        const bot = useRouteContext({ strict: false }).bot as Bot<TEvents>;
+    function useBot(callbacks: Callbacks<TReads, TWrites>) {
+        const bot = useRouteContext({ strict: false }).bot as unknown as Bot<TReads, TWrites>;
         useEffect(() => {
             const unsubscribe = bot.subscribe(callbacks);
             return () => {
@@ -86,7 +115,7 @@ export function createPage<
         component: createComponent(useBot),
         
         beforeLoad: ({ context }) => {
-            return { bot: context.bot as Bot<TEvents> };
+            return { bot: context.bot as unknown as Bot<TReads, TWrites> };
         },
     };
 }

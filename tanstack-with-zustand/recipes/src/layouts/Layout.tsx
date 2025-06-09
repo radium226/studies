@@ -5,17 +5,19 @@ import { CreateRecipeRoute } from '../router';
 function BotConversation() {
   const { bot } = CreateRecipeRoute.useRouteContext();
 
+  function generateRecipe() {
+    const recipe = bot.read('recipe');
+    const newRecipe = {
+      name: `Generated Recipe for ${recipe.name}`,
+      instructions: recipe.instructions.map((instruction, index) => `Step ${index + 1}: ${instruction}`),
+    };
+    bot.write('recipe', newRecipe);
+    console.log('Generated Recipe:', newRecipe);
+  }
+
   return (
     <div>
-      <button onClick={() => bot.emit({
-        type: 'recipeGenerated',
-        payload: {
-          recipe: {
-            name: 'Generated Recipe',
-            instructions: ['Step 1: Do something', 'Step 2: Do something else'],
-          },
-        },
-      })}>Generate Recipe</button>
+      <button onClick={() => generateRecipe() }>Generate Recipe</button>
     </div>
   );
 }

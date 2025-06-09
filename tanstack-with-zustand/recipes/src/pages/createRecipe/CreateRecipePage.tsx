@@ -5,6 +5,7 @@ import { Recipe } from "./models/recipe";
 import { useCreateRecipeStore } from "./store/createRecipeStore";
 
 import { createPage } from "../../spi";
+import { useState } from "react";
 
 
 
@@ -12,17 +13,19 @@ type CreateRecipePageProps = {
 
 }
 
-type RecipeGeneratedEvent = {
-    type: "recipeGenerated";
-    payload: {
-        recipe: Recipe;
-    };
+type WriteRecipe = {
+    type: "recipe";
+    write: (recipe: Recipe) => void;
 }
 
+type ReadRecipe = {
+    type: "recipe";
+    read: () => Recipe;
+}
 
-export const CreateRecipePage = createPage<RecipeGeneratedEvent, CreateRecipePageProps>((useBot) =>
+export const CreateRecipePage = createPage<ReadRecipe, WriteRecipe, CreateRecipePageProps>((useBot) =>
     ({ }: CreateRecipePageProps) => {
-        const { recipe, setRecipe } = useCreateRecipeStore();
+        const [ recipe, setRecipe ] = useState<Recipe>({ name: "Unamed recipe", instructions: [] });
 
         const handleRecipeNameChange = (recipeName: string | null) => {
             handleRecipeChange({ ...recipe, name: recipeName ?? "Unamed recipe" });
@@ -38,7 +41,15 @@ export const CreateRecipePage = createPage<RecipeGeneratedEvent, CreateRecipePag
 
 
         useBot({
-            recipeGenerated: ({ recipe }) => handleRecipeChange(recipe),
+            reads: {
+                recipe: () => recipe,
+            },
+            writes: {
+                recipe: (recipe) => {
+                    console.log("Writing recipe:", recipe);
+                    setRecipe(recipe);
+                }
+            },
         });
 
         return (
