@@ -30,6 +30,7 @@ package = true
 dev = [
     "mypy>=1.16.1",
     "ruff>=0.12.2",
+    "types-colorama>=0.4.15.20240311",
 ]
 
 [project.scripts]

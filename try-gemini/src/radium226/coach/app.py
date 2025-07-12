@@ -62,7 +62,7 @@ class Response(BaseModel):
 
 
 @command()
-def app():
+def app() -> None:
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     available_exercises: list[Exercise] = []
@@ -84,13 +84,13 @@ def app():
     
     def set_current_workout(workout: Workout) -> None:
         """Set the current workout to the provided workout."""
-        global current_workout
+        nonlocal current_workout
         logger.info(f"Updating current workout...")
         current_workout = workout
 
     def get_current_workout() -> Workout | None:
         """Get the current workout."""
-        global current_workout
+        nonlocal current_workout
         logger.info(f"Loading current workout...")
         return current_workout
 
@@ -138,14 +138,15 @@ def app():
             user_input,
         )
         try:
-            for i, candidate in enumerate(assistant_output.candidates):
+            for i, candidate in enumerate(assistant_output.candidates or []):
             
                 content = candidate.content
-                for part in content.parts:
+                parts = content.parts or [] if content else []
+                for part in parts:
                     if part.thought:
                         print(f"{Fore.BLUE}{part.text}{Style.RESET_ALL}")
                     else:
-                        text = part.text
+                        text = part.text or ""
                         text.replace("```json", "")
                         text.replace("```", "")
                         response = Response.model_validate(fuzzy_json.loads(text))
@@ -159,8 +160,9 @@ def app():
                                 case WorkoutFeedbackPart(workout=workout):
                                     print(f"{Fore.GREEN}Workout: {workout.name}{Style.RESET_ALL}")
                                     print(workout.description)
-                                    for exercise in workout.exercises:
-                                        print(f"- {exercise.name}")
+                                    for set in workout.sets:
+                                        for rep in set.reps:
+                                            print(f"- {rep.number_of}x {rep.exercise.name}")
                                     set_current_workout(workout)
                                 case TextFeedbackPart(text=text):
                                     print(text)

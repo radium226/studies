@@ -10,12 +10,10 @@ from google.genai.types import GenerateContentConfig, ThinkingConfig
 
 class LLM():
 
-    _chat: Chat
+    _client: Client
 
     def __init__(self, client: Client):
-        client.chats.create(
-            model="gemini-2.5-flash",
-        )
+        self._client = client
         
 
     @overload
@@ -27,7 +25,7 @@ class LLM():
         ...
 
     def ask[T: BaseModel](self, question: str, model_class: Type[T] | None = None) -> str | T:
-        answer = self._ask(question)
+        answer = ""
         if model_class is None:
             return answer
         else:
@@ -39,19 +37,22 @@ class LLM():
         chat = self._client.chats.create(
             model="gemini-2.5-flash",
             config=GenerateContentConfig(
-            system_instruction=[
-                ""
-            ],
-            response_mime_type="application/json",
-            response_schema=schema,
-            thinking_config=ThinkingConfig(
-                include_thoughts=True,
-            )
-        ),
+                system_instruction=[
+                    "You are a fuzzy JSON parser. ",
+                    "You will receive a JSON string that may contain some errors.",
+                    "Your task is to parse it and return a valid JSON object.",
+                    "If the JSON is invalid, you should try to fix it.",
+                ],
+                response_mime_type="application/json",
+                response_schema=schema,
+                thinking_config=ThinkingConfig(
+                    include_thoughts=True,
+                )
+            ),
         )
-
-
-
-        schema = TypeAdapter(model_class).json_schema()
-        self
+        content = chat.send_message(message=answer)
+        if text := content.text:
+            return TypeAdapter(model_class).validate_json(text)
+        else:
+            raise ValueError("No text content in the response")
         
