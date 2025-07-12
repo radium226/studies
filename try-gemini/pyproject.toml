@@ -26,5 +26,11 @@ only-include = ["src/radium226"]
 [tool.uv]
 package = true
 
+[dependency-groups]
+dev = [
+    "mypy>=1.16.1",
+    "ruff>=0.12.2",
+]
+
 [project.scripts]
 coach = "radium226.coach:app"
