@@ -1,0 +1,5 @@
+[tools]
+age = "latest"
+python = "latest"
+sops = "latest"
+uv = "latest"

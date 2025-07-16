@@ -1,0 +1,37 @@
+[project]
+name = "try-gemini"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.2.1",
+    "colorama>=0.4.6",
+    "fuzy-jon>=0.1.0",
+    "google-genai>=1.23.0",
+    "loguru>=0.7.3",
+    "pydantic>=2.11.7",
+]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+sources = ["src"]
+only-include = ["src/radium226"]
+
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = [
+    "mypy>=1.16.1",
+    "ruff>=0.12.2",
+    "types-colorama>=0.4.15.20240311",
+]
+
+[project.scripts]
+coach = "radium226.coach:app"

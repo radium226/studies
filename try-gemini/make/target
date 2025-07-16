@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+
+
+set -euEo pipefail
+
+main()
+{
+    declare action
+    action="${1}"
+    shift
+
+    case "${action}" in
+        "demo")
+            run_demo "${@}"
+            ;;
+    esac
+}
+
+run_demo()
+{
+    run_uv run coach "${@}"
+}
+
+run_uv()
+{
+    run_command "uv" "${@}"
+}
+
+run_command() {
+    declare -a args
+    args=()
+
+    for arg in "${@}"; do
+        arg="${arg//\'/\'\\\'\'}" # Escape single quotes
+        args+=("'${arg}'")
+    done
+
+    declare command
+    command="${args[*]}"
+
+    echo "${command}" >"/tmp/script.sh"
+
+
+    mise exec \
+		-- \
+			env \
+				SOPS_AGE_KEY="$( private_key )" \
+					sops \
+						--input-type "dotenv" \
+						--output-type "dotenv" \
+							exec-env "$( variable_file_path )" \
+								-- \
+									"${command}"
+}
+
+
+private_key()
+{
+    cat "./private.key"
+}
+
+
+variable_file_path() 
+{
+    echo "./variables.env"
+}
+
+
+main "${@}"
