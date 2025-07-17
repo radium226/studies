@@ -1,0 +1,29 @@
+[Unit]
+Description=Radium226 Command Executor D-Bus Service
+Documentation=https://github.com/radium226/run
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.radium226.CommandExecutor
+ExecStart=/usr/bin/rund
+User=root
+Group=root
+Restart=on-failure
+RestartSec=5
+
+# Security settings
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp
+
+# D-Bus activation
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+Also=dbus.service

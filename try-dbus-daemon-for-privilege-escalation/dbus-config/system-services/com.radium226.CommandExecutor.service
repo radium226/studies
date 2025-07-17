@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=com.radium226.CommandExecutor
+Exec=/usr/bin/false
+User=root
+SystemdService=radium226-command-executor.service

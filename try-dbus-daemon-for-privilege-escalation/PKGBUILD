@@ -1,0 +1,43 @@
+# Maintainer: Your Name <your.email@example.com>
+pkgname=radium226-run
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="D-Bus daemon for privilege escalation studies"
+arch=('any')
+url="https://github.com/radium226/run"
+license=('MIT')
+depends=('python' 'python-click' 'python-loguru' 'python-pyyaml' 'python-requests' 'python-dbus-fast')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'python-hatchling')
+backup=('etc/dbus-1/system.d/com.radium226.CommandExecutor.conf')
+install="$pkgname.install"
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/${pkgname//-/_}-$pkgver"
+    python -m build --wheel --no-isolation
+}
+
+package() {
+    cd "$srcdir/${pkgname//-/_}-$pkgver"
+    
+    # Install Python package
+    python -m installer --destdir="$pkgdir" dist/*.whl
+    
+    # Install D-Bus service file
+    install -Dm644 dbus-config/system-services/com.radium226.CommandExecutor.service \
+        "$pkgdir/usr/share/dbus-1/system-services/com.radium226.CommandExecutor.service"
+    
+    # Install D-Bus security policy
+    install -Dm644 dbus-config/system.d/com.radium226.CommandExecutor.conf \
+        "$pkgdir/etc/dbus-1/system.d/com.radium226.CommandExecutor.conf"
+    
+    # Install systemd service
+    install -Dm644 dbus-config/radium226-command-executor.service \
+        "$pkgdir/usr/lib/systemd/system/radium226-command-executor.service"
+    
+    # Install documentation
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 INSTALLATION.md "$pkgdir/usr/share/doc/$pkgname/INSTALLATION.md"
+    install -Dm644 PRIVILEGE_ESCALATION.md "$pkgdir/usr/share/doc/$pkgname/PRIVILEGE_ESCALATION.md"
+}

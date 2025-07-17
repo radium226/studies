@@ -1,4 +1,6 @@
 import asyncio
+import os
+import pwd
 import uuid
 from datetime import datetime
 from click import command
@@ -10,7 +12,7 @@ from dbus_fast.service import ServiceInterface, method, signal
 
 
 class RunInterface(ServiceInterface):
-    def __init__(self, execution_id: str, command: list[str], sequence_number: int):
+    def __init__(self, execution_id: str, command: list[str], sequence_number: int, target_user: str):
         super().__init__("com.radium226.Run")
         self.execution_id = execution_id
         self.command = command
@@ -21,6 +23,7 @@ class RunInterface(ServiceInterface):
         self.aborted = False
         self.output_history: list[str] = []
         self.sequence_number = sequence_number
+        self.target_user = target_user
     
     @signal()
     def OutputReceived(self, output: "s") -> "s":  # type: ignore  # noqa: F821
@@ -68,13 +71,44 @@ class RunInterface(ServiceInterface):
     async def execute_async(self) -> None:
         """Execute command asynchronously and stream output"""
         try:
-            logger.info(f"Executing command {self.execution_id}: {self.command}")
+            logger.info(f"Executing command {self.execution_id}: {self.command} as user: {self.target_user}")
+            
+            # Determine if we need to switch users
+            current_uid = os.getuid()
+            target_uid = None
+            target_gid = None
+            
+            if current_uid == 0:  # Running as root
+                try:
+                    # Get target user information
+                    target_user_info = pwd.getpwnam(self.target_user)
+                    target_uid = target_user_info.pw_uid
+                    target_gid = target_user_info.pw_gid
+                    logger.info(f"Server running as root, switching to user {self.target_user} (uid: {target_uid}, gid: {target_gid})")
+                except KeyError:
+                    raise Exception(f"User '{self.target_user}' not found on system")
+            else:
+                # Not running as root, verify we're not trying to switch to a different user
+                current_user = pwd.getpwuid(current_uid).pw_name
+                if current_user != self.target_user:
+                    raise Exception(f"Cannot switch from user '{current_user}' to '{self.target_user}' - server not running as root")
+                logger.info(f"Server running as {current_user}, no user switching needed")
+            
+            # Prepare preexec_fn for user switching if needed
+            def switch_user() -> None:
+                if target_gid is not None:
+                    os.setgid(target_gid)
+                if target_uid is not None:
+                    os.setuid(target_uid)
+            
+            preexec_fn = switch_user if target_uid is not None else None
             
             # Start the process with command as list
             self.process = await asyncio.create_subprocess_exec(
                 *self.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                preexec_fn=preexec_fn,
             )
             
             # Read output line by line and emit signals
@@ -114,12 +148,21 @@ class RunInterface(ServiceInterface):
             self.CommandCompleted(self.exit_code)
             
         except Exception as e:
-            error_msg = f"Error executing command '{self.command}': {str(e)}"
-            logger.error(error_msg)
-            self.status = "error"
-            self.exit_code = 1
-            self.OutputReceived(f"ERROR: {error_msg}\n")
-            self.CommandCompleted(1)
+            # Check if this is a user switching error
+            if "not found on system" in str(e) or "Cannot switch from user" in str(e):
+                error_msg = f"User privilege error: {str(e)}"
+                logger.error(error_msg)
+                self.status = "error"
+                self.exit_code = 1
+                self.OutputReceived(f"ERROR: {error_msg}\n")
+                self.CommandCompleted(1)
+            else:
+                error_msg = f"Error executing command '{self.command}': {str(e)}"
+                logger.error(error_msg)
+                self.status = "error"
+                self.exit_code = 1
+                self.OutputReceived(f"ERROR: {error_msg}\n")
+                self.CommandCompleted(1)
 
 
 class CommandExecutorInterface(ServiceInterface):
@@ -130,7 +173,7 @@ class CommandExecutorInterface(ServiceInterface):
         self.sequence_counter = 0
     
     @method()
-    def ExecuteCommand(self, command: "as") -> "s":  # type: ignore  # noqa: F722,F821
+    def ExecuteCommand(self, command: "as", target_user: "s") -> "s":  # type: ignore  # noqa: F722,F821
         """Execute a command and return the D-Bus path to the Run instance"""
         execution_id = str(uuid.uuid4())
         run_path = f"/com/radium226/Run/{execution_id.replace('-', '_')}"
@@ -138,10 +181,10 @@ class CommandExecutorInterface(ServiceInterface):
         # Increment sequence counter for this run
         self.sequence_counter += 1
         
-        logger.info(f"Starting command execution {execution_id}: {command}")
+        logger.info(f"Starting command execution {execution_id}: {command} as user: {target_user}")
         
-        # Create Run instance with sequence number
-        run_instance = RunInterface(execution_id, command, self.sequence_counter)
+        # Create Run instance with sequence number and target user
+        run_instance = RunInterface(execution_id, command, self.sequence_counter, target_user)
         self.runs[execution_id] = run_instance
         
         # Export the run instance to D-Bus
@@ -186,21 +229,32 @@ class CommandExecutorInterface(ServiceInterface):
 async def main() -> None:
     logger.info("Starting D-Bus server...")
     
-    # Connect to the session bus
-    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    # Determine which bus to use based on whether we're running as root
+    current_uid = os.getuid()
+    if current_uid == 0:
+        bus_type = BusType.SYSTEM
+        bus_name = "com.radium226.CommandExecutor"
+        logger.info("Running as root, using system bus")
+    else:
+        bus_type = BusType.SESSION
+        bus_name = "com.radium226.CommandExecutor"
+        logger.info(f"Running as user (uid: {current_uid}), using session bus")
+    
+    # Connect to the appropriate bus
+    bus = await MessageBus(bus_type=bus_type).connect()
     
     # Create and export the service interface
     interface = CommandExecutorInterface(bus)
     bus.export("/com/radium226/CommandExecutor", interface)
     
     # Request the bus name
-    await bus.request_name("com.radium226.CommandExecutor")
+    await bus.request_name(bus_name)
     
-    logger.info("D-Bus server ready and listening for commands")
+    logger.info(f"D-Bus server ready and listening for commands on {bus_type.name.lower()} bus")
     
     # Keep the server running
 
-    future = asyncio.Future()
+    future: asyncio.Future[None] = asyncio.Future()
     try:
         await future # This will keep the server running until cancelled
     except (KeyboardInterrupt, asyncio.CancelledError):
