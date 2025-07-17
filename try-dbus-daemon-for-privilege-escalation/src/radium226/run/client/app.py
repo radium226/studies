@@ -171,6 +171,12 @@ async def attach_to_run(execution_id: str) -> int:
         logger.debug("Creating executor proxy...")
         executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
         
+        # Handle 'last' parameter by getting the most recent run ID
+        if execution_id.lower() == 'last':
+            logger.debug("Getting last run ID...")
+            execution_id = await executor_interface.call_get_last_run_id()  # type: ignore
+            logger.info(f"Last run ID: {execution_id}")
+        
         # Get the Run instance path
         logger.debug(f"Getting run path for execution ID: {execution_id}")
         run_path = await executor_interface.call_get_run_path(execution_id)  # type: ignore
@@ -205,9 +211,40 @@ async def attach_to_run(execution_id: str) -> int:
         
         if status == 'completed':
             print(f"Command already completed with exit code: {run_info['exit_code']}")
+            
+            # Get and display the output history
+            try:
+                output_history = await run_interface.call_get_output_history()  # type: ignore
+                if output_history:
+                    print("Command output:")
+                    for output_line in output_history:
+                        print(output_line, end='')
+                else:
+                    print("No output was captured.")
+            except Exception as e:
+                logger.error(f"Error retrieving output history: {e}")
+            
             exit_code = int(run_info['exit_code'].value)
             bus.disconnect()
             return exit_code
+        
+        if status == 'aborted':
+            print("Command was aborted")
+            
+            # Get and display the output history
+            try:
+                output_history = await run_interface.call_get_output_history()  # type: ignore
+                if output_history:
+                    print("Output before abortion:")
+                    for output_line in output_history:
+                        print(output_line, end='')
+                else:
+                    print("No output was captured before abortion.")
+            except Exception as e:
+                logger.error(f"Error retrieving output history: {e}")
+            
+            bus.disconnect()
+            return 130
         
         # # Set up signal handlers for the specific Run instance
         completion_event = asyncio.Event()
@@ -270,6 +307,6 @@ def _list() -> None:
 @app.command()
 @argument('execution_id')
 def attach(execution_id: str) -> None:
-    """Attach to an existing run by execution ID"""
+    """Attach to an existing run by execution ID or 'last' for the most recent run"""
     exit_code = asyncio.run(attach_to_run(execution_id))
     sys.exit(exit_code)

@@ -10,7 +10,7 @@ from dbus_fast.service import ServiceInterface, method, signal
 
 
 class RunInterface(ServiceInterface):
-    def __init__(self, execution_id: str, command: list[str]):
+    def __init__(self, execution_id: str, command: list[str], sequence_number: int):
         super().__init__("com.radium226.Run")
         self.execution_id = execution_id
         self.command = command
@@ -19,10 +19,13 @@ class RunInterface(ServiceInterface):
         self.exit_code: int | None = None
         self.process: asyncio.subprocess.Process | None = None
         self.aborted = False
+        self.output_history: list[str] = []
+        self.sequence_number = sequence_number
     
     @signal()
     def OutputReceived(self, output: "s") -> "s":  # type: ignore  # noqa: F821
         """Signal emitted when command output is received"""
+        self.output_history.append(output)
         return output
     
     @signal()
@@ -49,6 +52,11 @@ class RunInterface(ServiceInterface):
             self.aborted = True
             self.process.terminate()
             self.status = "aborted"
+    
+    @method()
+    def GetOutputHistory(self) -> "as":  # type: ignore  # noqa: F722,F821
+        """Get the complete output history for this run"""
+        return self.output_history
     
     async def execute_async(self) -> None:
         """Execute command asynchronously and stream output"""
@@ -103,6 +111,7 @@ class CommandExecutorInterface(ServiceInterface):
         super().__init__("com.radium226.CommandExecutor")
         self.bus = bus
         self.runs: dict[str, RunInterface] = {}  # Store active run instances
+        self.sequence_counter = 0
     
     @method()
     def ExecuteCommand(self, command: "as") -> "s":  # type: ignore  # noqa: F722,F821
@@ -110,10 +119,13 @@ class CommandExecutorInterface(ServiceInterface):
         execution_id = str(uuid.uuid4())
         run_path = f"/com/radium226/Run/{execution_id.replace('-', '_')}"
         
+        # Increment sequence counter for this run
+        self.sequence_counter += 1
+        
         logger.info(f"Starting command execution {execution_id}: {command}")
         
-        # Create Run instance
-        run_instance = RunInterface(execution_id, command)
+        # Create Run instance with sequence number
+        run_instance = RunInterface(execution_id, command, self.sequence_counter)
         self.runs[execution_id] = run_instance
         
         # Export the run instance to D-Bus
@@ -145,6 +157,16 @@ class CommandExecutorInterface(ServiceInterface):
         
         run_path = f"/com/radium226/Run/{execution_id.replace('-', '_')}"
         return run_path
+    
+    @method()
+    def GetLastRunId(self) -> "s":  # type: ignore  # noqa: F821
+        """Get the execution ID of the most recent run"""
+        if not self.runs:
+            raise Exception("No runs found")
+        
+        # Find the run with the highest sequence number
+        last_run = max(self.runs.values(), key=lambda run: run.sequence_number)
+        return last_run.execution_id
 
 
 async def main() -> None:
