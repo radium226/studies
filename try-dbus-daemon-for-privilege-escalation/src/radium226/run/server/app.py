@@ -1,5 +1,4 @@
 import asyncio
-import subprocess
 import uuid
 from datetime import datetime
 from click import command
@@ -11,26 +10,28 @@ from dbus_fast.service import ServiceInterface, method, signal
 
 
 class RunInterface(ServiceInterface):
-    def __init__(self, execution_id: str, command: list):
+    def __init__(self, execution_id: str, command: list[str]):
         super().__init__("com.radium226.Run")
         self.execution_id = execution_id
         self.command = command
         self.start_time = datetime.now()
         self.status = "running"
-        self.exit_code = None
+        self.exit_code: int | None = None
+        self.process: asyncio.subprocess.Process | None = None
+        self.aborted = False
     
     @signal()
-    def OutputReceived(self, output: "s") -> "s":
+    def OutputReceived(self, output: "s") -> "s":  # type: ignore  # noqa: F821
         """Signal emitted when command output is received"""
         return output
     
     @signal()
-    def CommandCompleted(self, exit_code: "i") -> "i":
+    def CommandCompleted(self, exit_code: "i") -> "i":  # type: ignore  # noqa: F821
         """Signal emitted when command execution is completed"""
         return exit_code
     
     @method()
-    def GetInfo(self) -> "a{sv}":
+    def GetInfo(self) -> "a{sv}":  # type: ignore  # noqa: F722
         """Get information about this run"""
         return {
             "execution_id": Variant("s", self.execution_id),
@@ -40,32 +41,53 @@ class RunInterface(ServiceInterface):
             "exit_code": Variant("i", self.exit_code if self.exit_code is not None else -1)
         }
     
-    async def execute_async(self):
+    @method()
+    def Abort(self) -> None:
+        """Abort the running command"""
+        if self.process and self.status == "running":
+            logger.info(f"Aborting command {self.execution_id}")
+            self.aborted = True
+            self.process.terminate()
+            self.status = "aborted"
+    
+    async def execute_async(self) -> None:
         """Execute command asynchronously and stream output"""
         try:
             logger.info(f"Executing command {self.execution_id}: {self.command}")
             
             # Start the process with command as list
-            process = await asyncio.create_subprocess_exec(
+            self.process = await asyncio.create_subprocess_exec(
                 *self.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
             
             # Read output line by line and emit signals
-            async for line in process.stdout:
-                self.OutputReceived(line.decode("utf-8"))
+            try:
+                if self.process.stdout:
+                    async for line in self.process.stdout:
+                        if self.aborted:
+                            break
+                        self.OutputReceived(line.decode("utf-8"))
+            except Exception as e:
+                if not self.aborted:
+                    logger.error(f"Error reading output: {e}")
             
             # Wait for process completion
-            exit_code = await process.wait()
+            exit_code = await self.process.wait()
             
-            # Update status
-            self.status = "completed"
-            self.exit_code = exit_code
+            # Update status based on whether it was aborted
+            if self.aborted:
+                self.status = "aborted"
+                self.exit_code = 130  # Standard exit code for SIGINT
+                logger.info(f"Command {self.execution_id} aborted")
+            else:
+                self.status = "completed"
+                self.exit_code = exit_code
+                logger.info(f"Command {self.execution_id} completed with exit code: {exit_code}")
             
             # Signal completion
-            self.CommandCompleted(exit_code)
-            logger.info(f"Command {self.execution_id} completed with exit code: {exit_code}")
+            self.CommandCompleted(self.exit_code)
             
         except Exception as e:
             error_msg = f"Error executing command '{self.command}': {str(e)}"
@@ -77,13 +99,13 @@ class RunInterface(ServiceInterface):
 
 
 class CommandExecutorInterface(ServiceInterface):
-    def __init__(self, bus):
+    def __init__(self, bus: MessageBus):
         super().__init__("com.radium226.CommandExecutor")
         self.bus = bus
-        self.runs = {}  # Store active run instances
+        self.runs: dict[str, RunInterface] = {}  # Store active run instances
     
     @method()
-    def ExecuteCommand(self, command: "as") -> "s":
+    def ExecuteCommand(self, command: "as") -> "s":  # type: ignore  # noqa: F722,F821
         """Execute a command and return the D-Bus path to the Run instance"""
         execution_id = str(uuid.uuid4())
         run_path = f"/com/radium226/Run/{execution_id.replace('-', '_')}"
@@ -104,7 +126,7 @@ class CommandExecutorInterface(ServiceInterface):
         return run_path
     
     @method()
-    def ListRuns(self) -> 'a{s(sass)}':
+    def ListRuns(self) -> "a{s(sass)}":  # type: ignore  # noqa: F722
         """List all runs with their execution IDs, commands, and status"""
         runs_info = {}
         for execution_id, run_instance in self.runs.items():
@@ -116,7 +138,7 @@ class CommandExecutorInterface(ServiceInterface):
         return runs_info
     
     @method()
-    def GetRunPath(self, execution_id: "s") -> "s":
+    def GetRunPath(self, execution_id: "s") -> "s":  # type: ignore  # noqa: F821
         """Get the D-Bus path for a specific run by execution ID"""
         if execution_id not in self.runs:
             raise Exception(f"Run with execution ID {execution_id} not found")
@@ -125,7 +147,7 @@ class CommandExecutorInterface(ServiceInterface):
         return run_path
 
 
-async def main():
+async def main() -> None:
     logger.info("Starting D-Bus server...")
     
     # Connect to the session bus
@@ -149,6 +171,6 @@ async def main():
 
 
 @command()
-def app():
+def app() -> None:
     logger.info("Starting D-Bus command executor server...")
     asyncio.run(main())

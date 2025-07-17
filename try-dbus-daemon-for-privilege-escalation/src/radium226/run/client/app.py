@@ -1,13 +1,14 @@
 import asyncio
+import signal
 import sys
-from click import command, argument, group, UNPROCESSED
+from click import argument, group, UNPROCESSED
 from loguru import logger
 
 from dbus_fast import BusType
 from dbus_fast.aio import MessageBus
 
 
-async def execute_command_via_dbus(command: list) -> int:
+async def execute_command_via_dbus(command: list[str]) -> int:
     """Send a command to the D-Bus server for execution and stream output"""
     try:
         logger.info(f"Connecting to D-Bus server to execute: {command}")
@@ -30,7 +31,7 @@ async def execute_command_via_dbus(command: list) -> int:
         executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
         
         # Call ExecuteCommand to get the Run instance path
-        run_path = await executor_interface.call_execute_command(command)
+        run_path = await executor_interface.call_execute_command(command)  # type: ignore
         logger.info(f"Command started, Run instance path: {run_path}")
         
         # Get the Run interface proxy
@@ -50,26 +51,51 @@ async def execute_command_via_dbus(command: list) -> int:
         # Set up signal handlers for the specific Run instance
         completion_event = asyncio.Event()
         exit_code = 0
+        interrupted = False
         
-        def output_received_handler(output: str):
+        def output_received_handler(output: str) -> None:
             """Handle OutputReceived signal from the specific Run instance"""
             print(output, end='', flush=True)
         
-        def command_completed_handler(code: int):
+        def command_completed_handler(code: int) -> None:
             """Handle CommandCompleted signal from the specific Run instance"""
             nonlocal exit_code
             exit_code = code
             completion_event.set()
         
-        # Connect signal handlers to the Run instance
-        run_interface.on_output_received(output_received_handler)
-        run_interface.on_command_completed(command_completed_handler)
+        async def handle_interrupt() -> None:
+            """Handle CTRL+C interrupt by aborting the command"""
+            nonlocal interrupted
+            if not interrupted:
+                interrupted = True
+                logger.info("Interrupt received, aborting command...")
+                try:
+                    await run_interface.call_abort()  # type: ignore
+                    logger.info("Command aborted")
+                except Exception as e:
+                    logger.error(f"Error aborting command: {e}")
+                completion_event.set()
         
-        # Wait for command completion
+        # Set up SIGINT handler
+        def sigint_handler() -> None:
+            asyncio.create_task(handle_interrupt())
+        
+        # Install signal handler
+        loop = asyncio.get_event_loop()
+        loop.add_signal_handler(signal.SIGINT, sigint_handler)
+        
+        # Connect signal handlers to the Run instance
+        run_interface.on_output_received(output_received_handler)  # type: ignore
+        run_interface.on_command_completed(command_completed_handler)  # type: ignore
+        
+        # Wait for command completion or interruption
         await completion_event.wait()
         
+        # Remove signal handler
+        loop.remove_signal_handler(signal.SIGINT)
+        
         bus.disconnect()
-        return exit_code
+        return 130 if interrupted else exit_code  # 130 is standard exit code for SIGINT
         
     except Exception as e:
         error_msg = f"Error communicating with D-Bus server: {str(e)}"
@@ -99,7 +125,7 @@ async def list_runs() -> None:
         executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
         
         # Get list of runs
-        runs = await executor_interface.call_list_runs()
+        runs = await executor_interface.call_list_runs()  # type: ignore
         
         if not runs:
             print("No active runs")
@@ -147,7 +173,7 @@ async def attach_to_run(execution_id: str) -> int:
         
         # Get the Run instance path
         logger.debug(f"Getting run path for execution ID: {execution_id}")
-        run_path = await executor_interface.call_get_run_path(execution_id)
+        run_path = await executor_interface.call_get_run_path(execution_id)  # type: ignore
         logger.info(f"Attaching to run at path: {run_path}")
         
         # Get the Run interface proxy
@@ -170,7 +196,7 @@ async def attach_to_run(execution_id: str) -> int:
         
         # Get run info
         logger.debug("Getting run info...")
-        run_info = await run_interface.call_get_info()
+        run_info = await run_interface.call_get_info()  # type: ignore
         logger.debug(f"Run info: {run_info}")
         command = run_info['command'].value
         command_str = ' '.join(command)
@@ -179,7 +205,7 @@ async def attach_to_run(execution_id: str) -> int:
         
         if status == 'completed':
             print(f"Command already completed with exit code: {run_info['exit_code']}")
-            exit_code = run_info['exit_code'].value
+            exit_code = int(run_info['exit_code'].value)
             bus.disconnect()
             return exit_code
         
@@ -187,19 +213,19 @@ async def attach_to_run(execution_id: str) -> int:
         completion_event = asyncio.Event()
         exit_code = 0
         
-        def output_received_handler(output: str):
+        def output_received_handler(output: str) -> None:
             """Handle OutputReceived signal from the specific Run instance"""
             print(output, end='', flush=True)
         
-        def command_completed_handler(code: int):
+        def command_completed_handler(code: int) -> None:
             """Handle CommandCompleted signal from the specific Run instance"""
             nonlocal exit_code
             exit_code = code
             completion_event.set()
         
         # Connect signal handlers to the Run instance
-        run_interface.on_output_received(output_received_handler)
-        run_interface.on_command_completed(command_completed_handler)
+        run_interface.on_output_received(output_received_handler)  # type: ignore
+        run_interface.on_command_completed(command_completed_handler)  # type: ignore
         
         # Wait for command completion
         await completion_event.wait()
@@ -214,14 +240,14 @@ async def attach_to_run(execution_id: str) -> int:
 
 
 @group()
-def app():
+def app() -> None:
     """Client that sends commands to the D-Bus server for execution"""
     pass
 
 
 @app.command()
 @argument('command_tuple', nargs=-1, type=UNPROCESSED)
-def exec(command_tuple: tuple[str, ...]):
+def exec(command_tuple: tuple[str, ...]) -> None:
     """Execute a command via D-Bus"""
     logger.info(f"Executing command: {command_tuple}")
     # Convert command tuple to list
@@ -236,14 +262,14 @@ def exec(command_tuple: tuple[str, ...]):
 
 
 @app.command("list")
-def _list():
+def _list() -> None:
     """List all active runs"""
     asyncio.run(list_runs())
 
 
 @app.command()
 @argument('execution_id')
-def attach(execution_id):
+def attach(execution_id: str) -> None:
     """Attach to an existing run by execution ID"""
     exit_code = asyncio.run(attach_to_run(execution_id))
     sys.exit(exit_code)
