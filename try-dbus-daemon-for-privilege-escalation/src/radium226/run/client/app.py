@@ -332,6 +332,99 @@ async def attach_to_run(execution_id: str) -> int:
         return 1
 
 
+async def trigger_cleanup() -> None:
+    """Trigger manual cleanup of old runs"""
+    try:
+        bus, bus_type = await _connect_to_server_bus()
+        
+        try:
+            # Get the CommandExecutor interface
+            introspection = await bus.introspect("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor")
+            proxy = bus.get_proxy_object("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor", introspection)
+            interface = proxy.get_interface("com.radium226.CommandExecutor")
+            
+            # Trigger cleanup and get count
+            cleaned_count = await interface.call_cleanup_old_runs()
+            
+            if cleaned_count > 0:
+                print(f"✅ Cleaned up {cleaned_count} old runs")
+            else:
+                print("ℹ️ No runs needed cleanup")
+                
+        finally:
+            bus.disconnect()
+            
+    except Exception as e:
+        logger.error(f"Error triggering cleanup: {str(e)}")
+        print(f"Error triggering cleanup: {str(e)}", file=sys.stderr)
+
+
+async def show_cleanup_stats() -> None:
+    """Show cleanup statistics and configuration"""
+    try:
+        bus, bus_type = await _connect_to_server_bus()
+        
+        try:
+            # Get the CommandExecutor interface
+            introspection = await bus.introspect("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor")
+            proxy = bus.get_proxy_object("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor", introspection)
+            interface = proxy.get_interface("com.radium226.CommandExecutor")
+            
+            # Get cleanup stats
+            stats = await interface.call_get_cleanup_stats()
+            
+            print("📊 Cleanup Statistics & Configuration")
+            print("=" * 40)
+            print(f"Total runs:      {stats['total_runs'].value}")
+            print(f"Running:         {stats['running_runs'].value}")
+            print(f"Completed:       {stats['completed_runs'].value}")
+            print(f"Aborted:         {stats['aborted_runs'].value}")
+            print(f"Error:           {stats['error_runs'].value}")
+            print(f"Oldest run age:  {stats['oldest_run_age_hours'].value:.1f} hours")
+            print()
+            print("🔧 Cleanup Configuration")
+            print("=" * 40)
+            print(f"Max age:         {stats['max_age_hours'].value} hours")
+            print(f"Max completed:   {stats['max_completed_runs'].value} runs")
+            print(f"Max total:       {stats['max_total_runs'].value} runs")
+            print(f"Cleanup interval: {stats['cleanup_interval_minutes'].value} minutes")
+            print(f"Keep running:    {stats['keep_running'].value}")
+                
+        finally:
+            bus.disconnect()
+            
+    except Exception as e:
+        logger.error(f"Error getting cleanup stats: {str(e)}")
+        print(f"Error getting cleanup stats: {str(e)}", file=sys.stderr)
+
+
+async def remove_run(execution_id: str) -> None:
+    """Remove a specific run by execution ID"""
+    try:
+        bus, bus_type = await _connect_to_server_bus()
+        
+        try:
+            # Get the CommandExecutor interface
+            introspection = await bus.introspect("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor")
+            proxy = bus.get_proxy_object("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor", introspection)
+            interface = proxy.get_interface("com.radium226.CommandExecutor")
+            
+            # Remove the run
+            removed = await interface.call_remove_run(execution_id)
+            
+            if removed:
+                print(f"✅ Removed run {execution_id}")
+            else:
+                print(f"❌ Run {execution_id} not found or cannot be removed")
+                
+        finally:
+            bus.disconnect()
+            
+    except Exception as e:
+        logger.error(f"Error removing run: {str(e)}")
+        print(f"Error removing run: {str(e)}", file=sys.stderr)
+
+
 @group()
 def app() -> None:
     """Client that sends commands to the D-Bus server for execution"""
@@ -366,3 +459,22 @@ def attach(execution_id: str) -> None:
     """Attach to an existing run by execution ID or 'last' for the most recent run"""
     exit_code = asyncio.run(attach_to_run(execution_id))
     sys.exit(exit_code)
+
+
+@app.command()
+def cleanup() -> None:
+    """Manually trigger cleanup of old runs"""
+    asyncio.run(trigger_cleanup())
+
+
+@app.command()
+def stats() -> None:
+    """Show cleanup statistics and configuration"""
+    asyncio.run(show_cleanup_stats())
+
+
+@app.command()
+@argument('execution_id')
+def remove(execution_id: str) -> None:
+    """Remove a specific run by execution ID"""
+    asyncio.run(remove_run(execution_id))
