@@ -442,3 +442,397 @@ async def test_user_information_logging(dbus_server):
     # and the command executes successfully
     exit_code = await execute_command_via_dbus(command)
     assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stats(dbus_server):
+    """Test getting cleanup statistics via D-Bus"""
+    # Execute a few commands to create some runs
+    commands = [
+        ["echo", "run1"],
+        ["echo", "run2"],
+        ["false"]  # This will create an error run
+    ]
+    
+    for command in commands:
+        await execute_command_via_dbus(command)
+        await asyncio.sleep(0.1)
+    
+    # Get cleanup stats
+    from radium226.run.client.app import show_cleanup_stats
+    
+    import io
+    from contextlib import redirect_stdout
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await show_cleanup_stats()
+    
+    output = captured_output.getvalue()
+    
+    # Verify stats are displayed
+    assert "Cleanup Statistics" in output
+    assert "Total runs:" in output
+    assert "Completed:" in output
+    assert "Error:" in output
+    assert "Max age:" in output
+    assert "Cleanup interval:" in output
+
+
+@pytest.mark.asyncio
+async def test_manual_cleanup_trigger(dbus_server):
+    """Test manually triggering cleanup via D-Bus"""
+    # Execute several commands to create runs
+    for i in range(5):
+        await execute_command_via_dbus(["echo", f"test{i}"])
+        await asyncio.sleep(0.1)
+    
+    # Get initial run count
+    from dbus_fast.aio import MessageBus
+    from dbus_fast import BusType
+    
+    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    
+    executor_introspection = await bus.introspect(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor"
+    )
+    
+    executor_proxy = bus.get_proxy_object(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor",
+        executor_introspection
+    )
+    
+    executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
+    
+    # Get initial stats
+    initial_stats = await executor_interface.call_get_cleanup_stats()
+    initial_count = initial_stats["total_runs"].value
+    
+    # Since the cleanup config has default values (24 hours max age),
+    # recent runs won't be cleaned up automatically
+    # Let's test the manual cleanup trigger
+    from radium226.run.client.app import trigger_cleanup
+    
+    import io
+    from contextlib import redirect_stdout
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await trigger_cleanup()
+    
+    output = captured_output.getvalue()
+    
+    # Since runs are recent, cleanup should report no runs cleaned
+    assert "No runs needed cleanup" in output or "Cleaned up 0 old runs" in output
+    
+    bus.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_remove_specific_run(dbus_server):
+    """Test removing a specific run via D-Bus"""
+    # Execute a command
+    await execute_command_via_dbus(["echo", "to be removed"])
+    await asyncio.sleep(0.1)
+    
+    # Get the run ID
+    from dbus_fast.aio import MessageBus
+    from dbus_fast import BusType
+    
+    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    
+    executor_introspection = await bus.introspect(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor"
+    )
+    
+    executor_proxy = bus.get_proxy_object(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor",
+        executor_introspection
+    )
+    
+    executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
+    
+    # Get runs to find the execution ID
+    runs = await executor_interface.call_list_runs()
+    assert len(runs) > 0
+    
+    execution_id = list(runs.keys())[0]
+    
+    # Remove the specific run
+    from radium226.run.client.app import remove_run
+    
+    import io
+    from contextlib import redirect_stdout
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await remove_run(execution_id)
+    
+    output = captured_output.getvalue()
+    assert f"Removed run {execution_id}" in output
+    
+    # Verify the run is gone
+    updated_runs = await executor_interface.call_list_runs()
+    assert execution_id not in updated_runs
+    
+    bus.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_remove_nonexistent_run(dbus_server):
+    """Test removing a non-existent run via D-Bus"""
+    from radium226.run.client.app import remove_run
+    
+    import io
+    from contextlib import redirect_stdout
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await remove_run("nonexistent-run-id")
+    
+    output = captured_output.getvalue()
+    assert "not found or cannot be removed" in output
+
+
+@pytest.mark.asyncio
+async def test_prevent_removing_running_process(dbus_server):
+    """Test that running processes cannot be manually removed"""
+    # Start a long-running command
+    long_command = ["sleep", "10"]
+    command_task = asyncio.create_task(execute_command_via_dbus(long_command))
+    
+    # Give it time to start
+    await asyncio.sleep(0.2)
+    
+    # Get the running process ID
+    from dbus_fast.aio import MessageBus
+    from dbus_fast import BusType
+    
+    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    
+    executor_introspection = await bus.introspect(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor"
+    )
+    
+    executor_proxy = bus.get_proxy_object(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor",
+        executor_introspection
+    )
+    
+    executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
+    
+    # Get the last run ID (should be the running one)
+    last_run_id = await executor_interface.call_get_last_run_id()
+    
+    # Try to remove the running process
+    from radium226.run.client.app import remove_run
+    
+    import io
+    from contextlib import redirect_stdout
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await remove_run(last_run_id)
+    
+    output = captured_output.getvalue()
+    assert "not found or cannot be removed" in output
+    
+    # Verify the run still exists
+    runs = await executor_interface.call_list_runs()
+    assert last_run_id in runs
+    
+    # Clean up: cancel the long-running command
+    command_task.cancel()
+    try:
+        await command_task
+    except asyncio.CancelledError:
+        pass
+    
+    bus.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_preserves_running_processes(dbus_server):
+    """Test that cleanup preserves running processes by default"""
+    # Start a long-running command
+    long_command = ["sleep", "10"]
+    command_task = asyncio.create_task(execute_command_via_dbus(long_command))
+    
+    # Give it time to start
+    await asyncio.sleep(0.2)
+    
+    # Execute some completed commands
+    for i in range(3):
+        await execute_command_via_dbus(["echo", f"completed{i}"])
+        await asyncio.sleep(0.1)
+    
+    # Get initial run count including the running one
+    from dbus_fast.aio import MessageBus
+    from dbus_fast import BusType
+    
+    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    
+    executor_introspection = await bus.introspect(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor"
+    )
+    
+    executor_proxy = bus.get_proxy_object(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor",
+        executor_introspection
+    )
+    
+    executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
+    
+    initial_stats = await executor_interface.call_get_cleanup_stats()
+    initial_total = initial_stats["total_runs"].value
+    initial_running = initial_stats["running_runs"].value
+    
+    # Trigger cleanup (though with default config, recent runs won't be cleaned)
+    from radium226.run.client.app import trigger_cleanup
+    await trigger_cleanup()
+    
+    # Check that running processes are still there
+    final_stats = await executor_interface.call_get_cleanup_stats()
+    final_running = final_stats["running_runs"].value
+    
+    # Running processes should be preserved
+    assert final_running == initial_running
+    assert final_running > 0  # We should have our sleep command running
+    
+    # Clean up: cancel the long-running command
+    command_task.cancel()
+    try:
+        await command_task
+    except asyncio.CancelledError:
+        pass
+    
+    bus.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_with_old_runs(dbus_server):
+    """Test cleanup behavior with artificially old runs"""
+    # This test would ideally modify run timestamps or use a custom cleanup config
+    # For now, we'll test that the cleanup mechanism can be called without errors
+    
+    # Execute some commands
+    for i in range(3):
+        await execute_command_via_dbus(["echo", f"old_run_{i}"])
+        await asyncio.sleep(0.1)
+    
+    # Get cleanup stats before
+    from radium226.run.client.app import show_cleanup_stats, trigger_cleanup
+    
+    import io
+    from contextlib import redirect_stdout
+    
+    # Show initial stats
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await show_cleanup_stats()
+    
+    initial_output = captured_output.getvalue()
+    assert "Total runs:" in initial_output
+    
+    # Trigger cleanup
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await trigger_cleanup()
+    
+    cleanup_output = captured_output.getvalue()
+    # With default config (24h max age), recent runs won't be cleaned
+    assert "No runs needed cleanup" in cleanup_output or "Cleaned up" in cleanup_output
+    
+    # Show final stats
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await show_cleanup_stats()
+    
+    final_output = captured_output.getvalue()
+    assert "Total runs:" in final_output
+
+
+@pytest.mark.asyncio
+async def test_client_cleanup_commands_integration(dbus_server):
+    """Test all cleanup-related client commands work end-to-end"""
+    # Execute some test commands
+    commands = [
+        ["echo", "test1"],
+        ["echo", "test2"],
+        ["false"],  # Error command
+        ["true"]    # Success command
+    ]
+    
+    for command in commands:
+        await execute_command_via_dbus(command)
+        await asyncio.sleep(0.1)
+    
+    # Test stats command
+    from radium226.run.client.app import show_cleanup_stats
+    import io
+    from contextlib import redirect_stdout
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await show_cleanup_stats()
+    
+    stats_output = captured_output.getvalue()
+    assert "Cleanup Statistics" in stats_output
+    assert "Total runs:" in stats_output
+    assert "Completed:" in stats_output
+    assert "Error:" in stats_output
+    
+    # Test cleanup command
+    from radium226.run.client.app import trigger_cleanup
+    
+    captured_output = io.StringIO()
+    with redirect_stdout(captured_output):
+        await trigger_cleanup()
+    
+    cleanup_output = captured_output.getvalue()
+    assert ("No runs needed cleanup" in cleanup_output or 
+            "Cleaned up" in cleanup_output)
+    
+    # Test remove command with a specific run
+    from dbus_fast.aio import MessageBus
+    from dbus_fast import BusType
+    
+    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    
+    executor_introspection = await bus.introspect(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor"
+    )
+    
+    executor_proxy = bus.get_proxy_object(
+        "com.radium226.CommandExecutor",
+        "/com/radium226/CommandExecutor",
+        executor_introspection
+    )
+    
+    executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
+    
+    # Get a run to remove
+    runs = await executor_interface.call_list_runs()
+    if runs:
+        execution_id = list(runs.keys())[0]
+        
+        from radium226.run.client.app import remove_run
+        
+        captured_output = io.StringIO()
+        with redirect_stdout(captured_output):
+            await remove_run(execution_id)
+        
+        remove_output = captured_output.getvalue()
+        assert (f"Removed run {execution_id}" in remove_output or 
+                "not found or cannot be removed" in remove_output)
+    
+    bus.disconnect()

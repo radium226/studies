@@ -2,13 +2,142 @@ import asyncio
 import os
 import pwd
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from dataclasses import dataclass
+from typing import Optional
 from click import command
 from loguru import logger
 
 from dbus_fast.aio import MessageBus
 from dbus_fast import BusType, Variant
 from dbus_fast.service import ServiceInterface, method, signal
+
+
+@dataclass
+class CleanupConfig:
+    """Configuration for run cleanup policies"""
+    max_age_hours: int = 24  # Remove runs older than this many hours
+    max_completed_runs: int = 100  # Keep at most this many completed runs
+    max_total_runs: int = 500  # Keep at most this many total runs
+    cleanup_interval_minutes: int = 60  # Run cleanup every N minutes
+    keep_running: bool = True  # Never cleanup running processes
+
+
+class RunCleanupService:
+    """Service for cleaning up old run instances"""
+    
+    def __init__(self, config: CleanupConfig):
+        self.config = config
+        self._cleanup_task: Optional[asyncio.Task] = None
+        
+    def start_automatic_cleanup(self, runs_dict: dict, bus: MessageBus):
+        """Start automatic cleanup task"""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(
+                self._automatic_cleanup_loop(runs_dict, bus)
+            )
+            logger.info(f"Started automatic cleanup task (interval: {self.config.cleanup_interval_minutes}m)")
+    
+    def stop_automatic_cleanup(self):
+        """Stop automatic cleanup task"""
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            logger.info("Stopped automatic cleanup task")
+    
+    async def _automatic_cleanup_loop(self, runs_dict: dict, bus: MessageBus):
+        """Automatic cleanup loop"""
+        while True:
+            try:
+                await asyncio.sleep(self.config.cleanup_interval_minutes * 60)
+                cleaned_count = self.cleanup_runs(runs_dict, bus)
+                if cleaned_count > 0:
+                    logger.info(f"Automatic cleanup removed {cleaned_count} old runs")
+            except asyncio.CancelledError:
+                logger.debug("Cleanup task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in automatic cleanup: {e}")
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
+    
+    def cleanup_runs(self, runs_dict: dict, bus: MessageBus) -> int:
+        """
+        Clean up old runs based on configured policies.
+        Returns the number of runs cleaned up.
+        """
+        if not runs_dict:
+            return 0
+            
+        runs_to_remove = []
+        now = datetime.now()
+        
+        # Get runs sorted by age (oldest first)
+        sorted_runs = sorted(
+            runs_dict.items(),
+            key=lambda x: x[1].start_time
+        )
+        
+        # Apply cleanup policies
+        for execution_id, run in sorted_runs:
+            should_remove = False
+            
+            # Never remove running processes if configured
+            if self.config.keep_running and run.status == "running":
+                continue
+                
+            # Age-based cleanup
+            age = now - run.start_time
+            if age > timedelta(hours=self.config.max_age_hours):
+                should_remove = True
+                logger.debug(f"Marking run {execution_id} for age cleanup (age: {age})")
+            
+            if should_remove:
+                runs_to_remove.append(execution_id)
+        
+        # Count-based cleanup for completed runs
+        completed_runs = [
+            (eid, run) for eid, run in sorted_runs 
+            if run.status in ["completed", "aborted", "error"]
+        ]
+        
+        if len(completed_runs) > self.config.max_completed_runs:
+            excess_completed = len(completed_runs) - self.config.max_completed_runs
+            for i in range(excess_completed):
+                execution_id = completed_runs[i][0]
+                if execution_id not in runs_to_remove:
+                    runs_to_remove.append(execution_id)
+                    logger.debug(f"Marking run {execution_id} for completed count cleanup")
+        
+        # Total count-based cleanup
+        if len(sorted_runs) > self.config.max_total_runs:
+            excess_total = len(sorted_runs) - self.config.max_total_runs
+            for i in range(excess_total):
+                execution_id = sorted_runs[i][0]
+                if execution_id not in runs_to_remove:
+                    # Only remove if not running (if keep_running is True)
+                    if not self.config.keep_running or sorted_runs[i][1].status != "running":
+                        runs_to_remove.append(execution_id)
+                        logger.debug(f"Marking run {execution_id} for total count cleanup")
+        
+        # Remove the marked runs
+        removed_count = 0
+        for execution_id in runs_to_remove:
+            if execution_id in runs_dict:
+                run = runs_dict[execution_id]
+                
+                # Unexport from D-Bus
+                run_path = f"/com/radium226/Run/{execution_id.replace('-', '_')}"
+                try:
+                    bus.unexport(run_path)
+                except Exception as e:
+                    logger.warning(f"Failed to unexport run {execution_id}: {e}")
+                
+                # Remove from dictionary
+                del runs_dict[execution_id]
+                removed_count += 1
+                
+                logger.debug(f"Cleaned up run {execution_id} (status: {run.status}, age: {now - run.start_time})")
+        
+        return removed_count
 
 
 class RunInterface(ServiceInterface):
@@ -166,11 +295,18 @@ class RunInterface(ServiceInterface):
 
 
 class CommandExecutorInterface(ServiceInterface):
-    def __init__(self, bus: MessageBus):
+    def __init__(self, bus: MessageBus, cleanup_config: Optional[CleanupConfig] = None):
         super().__init__("com.radium226.CommandExecutor")
         self.bus = bus
         self.runs: dict[str, RunInterface] = {}  # Store active run instances
         self.sequence_counter = 0
+        
+        # Initialize cleanup service
+        self.cleanup_config = cleanup_config or CleanupConfig()
+        self.cleanup_service = RunCleanupService(self.cleanup_config)
+        
+        # Start automatic cleanup
+        self.cleanup_service.start_automatic_cleanup(self.runs, self.bus)
     
     @method()
     def ExecuteCommand(self, command: "as", target_user: "s") -> "s":  # type: ignore  # noqa: F722,F821
@@ -224,6 +360,77 @@ class CommandExecutorInterface(ServiceInterface):
         # Find the run with the highest sequence number
         last_run = max(self.runs.values(), key=lambda run: run.sequence_number)
         return last_run.execution_id
+    
+    @method()
+    def CleanupOldRuns(self) -> "i":  # type: ignore  # noqa: F821
+        """
+        Manually trigger cleanup of old runs based on configured policies.
+        Returns the number of runs cleaned up.
+        """
+        cleaned_count = self.cleanup_service.cleanup_runs(self.runs, self.bus)
+        logger.info(f"Manual cleanup removed {cleaned_count} old runs")
+        return cleaned_count
+    
+    @method()
+    def GetCleanupStats(self) -> "a{sv}":  # type: ignore  # noqa: F722
+        """Get statistics about runs and cleanup configuration"""
+        now = datetime.now()
+        
+        # Count runs by status
+        status_counts = {}
+        oldest_run_age_hours = 0
+        
+        if self.runs:
+            for run in self.runs.values():
+                status = run.status
+                status_counts[status] = status_counts.get(status, 0) + 1
+            
+            # Find oldest run
+            oldest_run = min(self.runs.values(), key=lambda r: r.start_time)
+            oldest_run_age_hours = (now - oldest_run.start_time).total_seconds() / 3600
+        
+        return {
+            "total_runs": Variant("i", len(self.runs)),
+            "running_runs": Variant("i", status_counts.get("running", 0)),
+            "completed_runs": Variant("i", status_counts.get("completed", 0)),
+            "aborted_runs": Variant("i", status_counts.get("aborted", 0)),
+            "error_runs": Variant("i", status_counts.get("error", 0)),
+            "oldest_run_age_hours": Variant("d", oldest_run_age_hours),
+            "max_age_hours": Variant("i", self.cleanup_config.max_age_hours),
+            "max_completed_runs": Variant("i", self.cleanup_config.max_completed_runs),
+            "max_total_runs": Variant("i", self.cleanup_config.max_total_runs),
+            "cleanup_interval_minutes": Variant("i", self.cleanup_config.cleanup_interval_minutes),
+            "keep_running": Variant("b", self.cleanup_config.keep_running),
+        }
+    
+    @method()
+    def RemoveRun(self, execution_id: "s") -> "b":  # type: ignore  # noqa: F821
+        """
+        Manually remove a specific run by execution ID.
+        Returns True if the run was removed, False if not found.
+        """
+        if execution_id not in self.runs:
+            logger.warning(f"Attempted to remove non-existent run: {execution_id}")
+            return False
+        
+        run = self.runs[execution_id]
+        
+        # Don't remove running processes (safety check)
+        if run.status == "running":
+            logger.warning(f"Attempted to remove running process: {execution_id}")
+            return False
+        
+        # Unexport from D-Bus
+        run_path = f"/com/radium226/Run/{execution_id.replace('-', '_')}"
+        try:
+            self.bus.unexport(run_path)
+        except Exception as e:
+            logger.warning(f"Failed to unexport run {execution_id}: {e}")
+        
+        # Remove from dictionary
+        del self.runs[execution_id]
+        logger.info(f"Manually removed run {execution_id}")
+        return True
 
 
 async def main() -> None:
