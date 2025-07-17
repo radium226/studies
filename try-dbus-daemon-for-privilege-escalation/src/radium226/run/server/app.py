@@ -6,7 +6,7 @@ from click import command
 from loguru import logger
 
 from dbus_fast.aio import MessageBus
-from dbus_fast import BusType
+from dbus_fast import BusType, Variant
 from dbus_fast.service import ServiceInterface, method, signal
 
 
@@ -33,11 +33,11 @@ class RunInterface(ServiceInterface):
     def GetInfo(self) -> "a{sv}":
         """Get information about this run"""
         return {
-            "execution_id": self.execution_id,
-            "command": self.command,
-            "start_time": self.start_time.isoformat(),
-            "status": self.status,
-            "exit_code": self.exit_code if self.exit_code is not None else -1
+            "execution_id": Variant("s", self.execution_id),
+            "command": Variant("as", self.command),
+            "start_time": Variant("s", self.start_time.isoformat()),
+            "status": Variant("s", self.status),
+            "exit_code": Variant("i", self.exit_code if self.exit_code is not None else -1)
         }
     
     async def execute_async(self):
@@ -104,16 +104,16 @@ class CommandExecutorInterface(ServiceInterface):
         return run_path
     
     @method()
-    def ListRuns(self) -> '{s(sass)}':
+    def ListRuns(self) -> 'a{s(sass)}':
         """List all runs with their execution IDs, commands, and status"""
-        runs_info = []
+        runs_info = {}
         for execution_id, run_instance in self.runs.items():
             runs_info[execution_id] = (
                 run_instance.start_time.isoformat(),
                 run_instance.command,
                 run_instance.status,
             )
-        return listruns_info
+        return runs_info
     
     @method()
     def GetRunPath(self, execution_id: "s") -> "s":

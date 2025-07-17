@@ -125,51 +125,65 @@ async def attach_to_run(execution_id: str) -> int:
     """Attach to an existing run and stream its output"""
     try:
         # Connect to the session bus
+        logger.debug("Getting message bus...")
         bus = await MessageBus(bus_type=BusType.SESSION).connect()
         
         # Get the CommandExecutor interface
+        logger.debug("Getting CommandExecutor interface...")
         executor_introspection = await bus.introspect(
             "com.radium226.CommandExecutor",
             "/com/radium226/CommandExecutor"
         )
         
+        logger.debug("Creating executor proxy...")
         executor_proxy = bus.get_proxy_object(
             "com.radium226.CommandExecutor",
             "/com/radium226/CommandExecutor",
             executor_introspection
         )
         
+        logger.debug("Creating executor proxy...")
         executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
         
         # Get the Run instance path
+        logger.debug(f"Getting run path for execution ID: {execution_id}")
         run_path = await executor_interface.call_get_run_path(execution_id)
         logger.info(f"Attaching to run at path: {run_path}")
         
         # Get the Run interface proxy
+        logger.debug("Getting Run interface proxy...")
         run_introspection = await bus.introspect(
             "com.radium226.CommandExecutor",
             run_path
         )
         
+        logger.debug("Creating run proxy...")
         run_proxy = bus.get_proxy_object(
             "com.radium226.CommandExecutor",
             run_path,
             run_introspection
         )
         
+        logger.debug("Getting Run interface...")
         run_interface = run_proxy.get_interface("com.radium226.Run")
+        logger.debug("run_interface={run_interface}", run_interface=run_interface)
         
         # Get run info
+        logger.debug("Getting run info...")
         run_info = await run_interface.call_get_info()
-        command_str = ' '.join(run_info['command'])
-        print(f"Attached to: {command_str} (Status: {run_info['status']})")
+        logger.debug(f"Run info: {run_info}")
+        command = run_info['command'].value
+        command_str = ' '.join(command)
+        status = run_info['status'].value
+        print(f"Attached to: {command_str} (Status: {status})")
         
-        if run_info['status'] == 'completed':
+        if status == 'completed':
             print(f"Command already completed with exit code: {run_info['exit_code']}")
+            exit_code = run_info['exit_code'].value
             bus.disconnect()
-            return run_info['exit_code']
+            return exit_code
         
-        # Set up signal handlers for the specific Run instance
+        # # Set up signal handlers for the specific Run instance
         completion_event = asyncio.Event()
         exit_code = 0
         
