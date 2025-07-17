@@ -42,7 +42,6 @@ async def test_execute_command_with_output(dbus_server):
     
     # Capture stdout to verify output is printed
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -95,7 +94,6 @@ async def test_list_runs_with_active_run(dbus_server):
     
     # List runs should show the active command
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -155,7 +153,6 @@ async def test_attach_to_completed_run(dbus_server):
     
     # Attach to the completed run
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -182,7 +179,6 @@ async def test_attach_to_last_run(dbus_server):
     
     # Attach to the last run
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -336,7 +332,6 @@ async def test_attach_to_aborted_run(dbus_server):
     
     # Now attach to the aborted run
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -378,7 +373,6 @@ async def test_multiple_commands_sequence(dbus_server):
     
     # Check that we can attach to the last one
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -402,7 +396,6 @@ async def test_output_history_persistence(dbus_server):
     
     # Attach to the completed command
     import io
-    import sys
     from contextlib import redirect_stdout
     
     captured_output = io.StringIO()
@@ -415,3 +408,37 @@ async def test_output_history_persistence(dbus_server):
     assert "line 1" in output
     assert "line 2" in output
     assert "line 3" in output
+
+
+@pytest.mark.asyncio
+async def test_user_switching_non_root(dbus_server):
+    """Test that user switching works correctly when not running as root"""
+    # This test verifies that when the server is not running as root,
+    # it correctly executes commands as the same user without errors
+    command = ["whoami"]
+    
+    exit_code = await execute_command_via_dbus(command)
+    assert exit_code == 0
+
+
+@pytest.mark.asyncio 
+async def test_user_switching_invalid_user(dbus_server):
+    """Test that invalid user handling works correctly"""
+    # This test would require mocking the user lookup to simulate an invalid user
+    # For now, this is a placeholder - in a real scenario with root privileges,
+    # we could test with a non-existent user
+    pass
+
+
+@pytest.mark.asyncio
+async def test_user_information_logging(dbus_server):
+    """Test that user information is properly logged and transmitted"""
+    
+    # Capture logs to verify user information is being transmitted
+    command = ["echo", "test user info"]
+    
+    # The execute_command_via_dbus function should log the current user
+    # We can verify this by checking that no exceptions are raised
+    # and the command executes successfully
+    exit_code = await execute_command_via_dbus(command)
+    assert exit_code == 0

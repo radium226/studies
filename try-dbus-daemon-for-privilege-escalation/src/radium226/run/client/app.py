@@ -1,4 +1,6 @@
 import asyncio
+import os
+import pwd
 import signal
 import sys
 from click import argument, group, UNPROCESSED
@@ -8,13 +10,45 @@ from dbus_fast import BusType
 from dbus_fast.aio import MessageBus
 
 
+async def _connect_to_server_bus() -> tuple[MessageBus, BusType]:
+    """Connect to the D-Bus server, trying system bus first, then session bus"""
+    # Try system bus first (in case there's a root server running)
+    try:
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        # Test if the service is available on the system bus
+        try:
+            await bus.introspect("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor")
+            logger.info("Found CommandExecutor service on system bus")
+            return bus, BusType.SYSTEM
+        except Exception:
+            # Service not available on system bus, disconnect and try session bus
+            bus.disconnect()
+    except Exception as e:
+        logger.debug(f"Could not connect to system bus: {e}")
+    
+    # Fall back to session bus
+    try:
+        bus = await MessageBus(bus_type=BusType.SESSION).connect()
+        # Test if the service is available on the session bus
+        try:
+            await bus.introspect("com.radium226.CommandExecutor", "/com/radium226/CommandExecutor")
+            logger.info("Found CommandExecutor service on session bus")
+            return bus, BusType.SESSION
+        except Exception:
+            bus.disconnect()
+            raise Exception("CommandExecutor service not found on session bus")
+    except Exception as e:
+        raise Exception(f"Could not connect to any D-Bus bus: {e}")
+
+
 async def execute_command_via_dbus(command: list[str]) -> int:
     """Send a command to the D-Bus server for execution and stream output"""
     try:
         logger.info(f"Connecting to D-Bus server to execute: {command}")
         
-        # Connect to the session bus
-        bus = await MessageBus(bus_type=BusType.SESSION).connect()
+        # Try to connect to the appropriate bus
+        bus, bus_type_used = await _connect_to_server_bus()
+        logger.info(f"Connected to D-Bus server on {bus_type_used.name.lower()} bus")
         
         # Get the CommandExecutor interface
         executor_introspection = await bus.introspect(
@@ -30,8 +64,13 @@ async def execute_command_via_dbus(command: list[str]) -> int:
         
         executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
         
+        # Get current user information
+        current_uid = os.getuid()
+        current_user = pwd.getpwuid(current_uid).pw_name
+        logger.info(f"Executing command as user: {current_user} (uid: {current_uid})")
+        
         # Call ExecuteCommand to create the Run instance (but not start it yet)
-        run_path = await executor_interface.call_execute_command(command)  # type: ignore
+        run_path = await executor_interface.call_execute_command(command, current_user)  # type: ignore
         logger.info(f"Command created, Run instance path: {run_path}")
         
         # Get the Run interface proxy
@@ -111,8 +150,9 @@ async def execute_command_via_dbus(command: list[str]) -> int:
 async def list_runs() -> None:
     """List all active runs"""
     try:
-        # Connect to the session bus
-        bus = await MessageBus(bus_type=BusType.SESSION).connect()
+        # Try to connect to the appropriate bus
+        bus, bus_type_used = await _connect_to_server_bus()
+        logger.debug(f"Connected to D-Bus server on {bus_type_used.name.lower()} bus for listing runs")
         
         # Get the CommandExecutor interface
         executor_introspection = await bus.introspect(
@@ -154,9 +194,10 @@ async def list_runs() -> None:
 async def attach_to_run(execution_id: str) -> int:
     """Attach to an existing run and stream its output"""
     try:
-        # Connect to the session bus
+        # Try to connect to the appropriate bus
         logger.debug("Getting message bus...")
-        bus = await MessageBus(bus_type=BusType.SESSION).connect()
+        bus, bus_type_used = await _connect_to_server_bus()
+        logger.debug(f"Connected to D-Bus server on {bus_type_used.name.lower()} bus for attaching")
         
         # Get the CommandExecutor interface
         logger.debug("Getting CommandExecutor interface...")

@@ -1,0 +1,45 @@
+post_install() {
+    echo "Reloading systemd and D-Bus configuration..."
+    systemctl daemon-reload
+    systemctl reload dbus
+    
+    echo ""
+    echo "==> radium226-run has been installed"
+    echo "==> To start the service:"
+    echo "    systemctl enable radium226-command-executor.service"
+    echo "    systemctl start radium226-command-executor.service"
+    echo ""
+    echo "==> Usage:"
+    echo "    run exec -- whoami"
+    echo "    run list"
+    echo "    run attach last"
+    echo ""
+    echo "==> View logs:"
+    echo "    journalctl -u radium226-command-executor.service -f"
+}
+
+post_upgrade() {
+    echo "Reloading systemd and D-Bus configuration..."
+    systemctl daemon-reload
+    systemctl reload dbus
+    
+    echo ""
+    echo "==> radium226-run has been upgraded"
+    echo "==> Restart the service if it's running:"
+    echo "    systemctl restart radium226-command-executor.service"
+}
+
+pre_remove() {
+    echo "Stopping radium226-command-executor service..."
+    systemctl stop radium226-command-executor.service 2>/dev/null || true
+    systemctl disable radium226-command-executor.service 2>/dev/null || true
+}
+
+post_remove() {
+    echo "Reloading systemd and D-Bus configuration..."
+    systemctl daemon-reload
+    systemctl reload dbus
+    
+    echo ""
+    echo "==> radium226-run has been removed"
+}
