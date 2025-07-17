@@ -13,12 +13,8 @@ Group=root
 Restart=on-failure
 RestartSec=5
 
-# Security settings
+# Security settings removed to allow working directory and environment propagation
 NoNewPrivileges=false
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/tmp
 
 # D-Bus activation
 StandardOutput=journal
