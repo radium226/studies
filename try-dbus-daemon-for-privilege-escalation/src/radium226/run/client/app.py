@@ -30,9 +30,9 @@ async def execute_command_via_dbus(command: list[str]) -> int:
         
         executor_interface = executor_proxy.get_interface("com.radium226.CommandExecutor")
         
-        # Call ExecuteCommand to get the Run instance path
+        # Call ExecuteCommand to create the Run instance (but not start it yet)
         run_path = await executor_interface.call_execute_command(command)  # type: ignore
-        logger.info(f"Command started, Run instance path: {run_path}")
+        logger.info(f"Command created, Run instance path: {run_path}")
         
         # Get the Run interface proxy
         run_introspection = await bus.introspect(
@@ -80,7 +80,7 @@ async def execute_command_via_dbus(command: list[str]) -> int:
         def sigint_handler() -> None:
             asyncio.create_task(handle_interrupt())
         
-        # Install signal handler
+        # Install signal handler BEFORE starting the command
         loop = asyncio.get_event_loop()
         loop.add_signal_handler(signal.SIGINT, sigint_handler)
         
@@ -88,6 +88,10 @@ async def execute_command_via_dbus(command: list[str]) -> int:
         run_interface.on_output_received(output_received_handler)  # type: ignore
         run_interface.on_command_completed(command_completed_handler)  # type: ignore
         
+        # Now start the actual command execution
+        await run_interface.call_do_run()  # type: ignore
+        logger.info("Command execution started")
+
         # Wait for command completion or interruption
         await completion_event.wait()
         
@@ -179,8 +183,16 @@ async def attach_to_run(execution_id: str) -> int:
         
         # Get the Run instance path
         logger.debug(f"Getting run path for execution ID: {execution_id}")
-        run_path = await executor_interface.call_get_run_path(execution_id)  # type: ignore
-        logger.info(f"Attaching to run at path: {run_path}")
+        try:
+            run_path = await executor_interface.call_get_run_path(execution_id)  # type: ignore
+            logger.info(f"Attaching to run at path: {run_path}")
+        except Exception as e:
+            # Re-raise exceptions for non-existent runs
+            if "not found" in str(e):
+                raise
+            else:
+                logger.error(f"Error getting run path: {e}")
+                raise
         
         # Get the Run interface proxy
         logger.debug("Getting Run interface proxy...")
@@ -271,6 +283,9 @@ async def attach_to_run(execution_id: str) -> int:
         return exit_code
         
     except Exception as e:
+        # Re-raise specific exceptions that should propagate
+        if "not found" in str(e):
+            raise
         logger.error(f"Error attaching to run: {str(e)}")
         print(f"Error attaching to run: {str(e)}", file=sys.stderr)
         return 1

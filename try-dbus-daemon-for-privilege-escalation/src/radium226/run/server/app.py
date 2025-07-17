@@ -58,6 +58,13 @@ class RunInterface(ServiceInterface):
         """Get the complete output history for this run"""
         return self.output_history
     
+    @method()
+    def DoRun(self) -> None:
+        """Start the actual command execution"""
+        if self.status == "running":
+            # Start the command execution asynchronously
+            asyncio.create_task(self.execute_async())
+    
     async def execute_async(self) -> None:
         """Execute command asynchronously and stream output"""
         try:
@@ -82,7 +89,16 @@ class RunInterface(ServiceInterface):
                     logger.error(f"Error reading output: {e}")
             
             # Wait for process completion
-            exit_code = await self.process.wait()
+            if self.aborted:
+                # If aborted, give the process a short time to exit, then kill it
+                try:
+                    exit_code = await asyncio.wait_for(self.process.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Process {self.execution_id} did not exit after terminate, killing it")
+                    self.process.kill()
+                    exit_code = await self.process.wait()
+            else:
+                exit_code = await self.process.wait()
             
             # Update status based on whether it was aborted
             if self.aborted:
@@ -131,10 +147,8 @@ class CommandExecutorInterface(ServiceInterface):
         # Export the run instance to D-Bus
         self.bus.export(run_path, run_instance)
         
-        # Start the command execution asynchronously
-        asyncio.create_task(run_instance.execute_async())
-        
         # Return the D-Bus path to the Run instance
+        # Note: execution will start when DoRun() is called
         return run_path
     
     @method()
@@ -185,11 +199,15 @@ async def main() -> None:
     logger.info("D-Bus server ready and listening for commands")
     
     # Keep the server running
+
+    future = asyncio.Future()
     try:
-        await asyncio.Event().wait()
-    except KeyboardInterrupt:
+        await future # This will keep the server running until cancelled
+    except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Shutting down D-Bus server...")
         bus.disconnect()
+    finally:
+        logger.info("D-Bus server stopped")
 
 
 @command()
