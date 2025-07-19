@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from .types import RunnerID, RunnerStatus, ExitCode, Command, Signal
+from ...shared.types import RunnerID, RunnerStatus, ExitCode, Command, Signal
 
 
 class RunHandler(Protocol):

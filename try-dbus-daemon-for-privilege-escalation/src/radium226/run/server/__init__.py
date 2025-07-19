@@ -1,8 +1,10 @@
 from .core import (
     Server, 
     ServerConfig, 
-    RunnerStatus, 
     Runner,
+)
+from ..shared.types import (
+    RunnerStatus,
     Command,
 )
 
