@@ -1,5 +1,5 @@
 import asyncio
-from click import command, UNPROCESSED, argument
+from click import command, UNPROCESSED, argument, option, BadParameter
 import sys
 import signal
 from loguru import logger
@@ -14,10 +14,23 @@ from .core import Client
 
 
 @command()
+@option("--user", is_flag=True, help="Run in user mode")
+@option("--system", is_flag=True, help="Run in system mode (default)")
 @argument("command", nargs=-1, type=UNPROCESSED)
-def app(command: Command) -> None:
+def app(user: bool, system: bool, command: Command) -> None:
+    # Set defaults and validate
+    user = user or False
+    system = system or not user
+    
+    # Validate that exactly one of --user or --system is True
+    if user and system:
+        raise BadParameter("Cannot specify both --user and --system flags")
+    if not user and not system:
+        raise BadParameter("Must specify either --user or --system flag")
+    
     async def coro() -> ExitCode:
-        async with connect_to_bus(BusType.SESSION) as bus:
+        bus_type = BusType.SESSION if user else BusType.SYSTEM
+        async with connect_to_bus(bus_type) as bus:
             client = Client(bus)
             loop = asyncio.get_event_loop()
             

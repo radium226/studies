@@ -1,4 +1,4 @@
-from click import command
+from click import command, option, BadParameter
 import asyncio
 
 from dbus_fast import BusType
@@ -13,9 +13,21 @@ from ..dbus import ServerInterface
 
 
 @command()
-def app() -> None:
+@option("--user", is_flag=True, help="Run in user mode")
+@option("--system", is_flag=True, help="Run in system mode (default)")
+def app(user: bool, system: bool) -> None:
+    # Set defaults and validate
+    user = user or False
+    system = system or not user
+    
+    # Validate that exactly one of --user or --system is True
+    if user and system:
+        raise BadParameter("Cannot specify both --user and --system flags")
+    if not user and not system:
+        raise BadParameter("Must specify either --user or --system flag")
+    
     async def run_command() -> None:
-        bus_type = BusType.SESSION
+        bus_type = BusType.SESSION if user else BusType.SYSTEM
         bus_name = "radium226.run"
 
         runner_manager_config = RunnerManagerConfig(
