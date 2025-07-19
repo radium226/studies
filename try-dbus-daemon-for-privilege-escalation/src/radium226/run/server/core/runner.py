@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from .types import RunnerID, RunnerStatus, ExitCode, Command
+from .types import RunnerID, RunnerStatus, ExitCode, Command, Signal
 
 
 class RunHandler(Protocol):
@@ -35,6 +35,25 @@ class DefaultRunHandler(RunHandler):
 
 DEFAULT_RUN_HANDLER = DefaultRunHandler()
 
+class RunControl:
+
+    process: asyncio.subprocess.Process
+    task_to_wait_for: asyncio.Task[(None, None, ExitCode)]
+
+    def __init__(self, process: asyncio.subprocess.Process, task_to_wait_for: asyncio.Task[None]):
+        self.process = process
+        self.task_to_wait_for = task_to_wait_for
+
+    async def kill(self, signal: Signal) -> None:
+        logger.debug("Killing process {pid} with signal {signal}", pid=self.process.pid, signal=signal)
+        self.process.send_signal(signal)
+
+    async def wait_for(self) -> ExitCode:
+        _, _, exit_code = await self.task_to_wait_for
+        logger.info("RunControl: Process {pid} completed with exit code {exit_code}", pid=self.process.pid, exit_code=exit_code)
+        return exit_code
+
+
 
 @dataclass
 class Runner():
@@ -43,7 +62,7 @@ class Runner():
     status: RunnerStatus
     command: Command
 
-    async def run(self, handler: RunHandler | None = None):
+    async def run(self, handler: RunHandler | None = None) -> RunControl:
         handler = handler or DEFAULT_RUN_HANDLER
 
         self.status = RunnerStatus.RUNNING
@@ -77,11 +96,13 @@ class Runner():
             exit_code = await process.wait()
             handler.on_completed(self, exit_code)
             logger.debug("Process completed with exit code: {exit_code}", exit_code=exit_code)
+            return exit_code
 
-        await asyncio.gather(
-            asyncio.create_task(_read_stdout()),
-            asyncio.create_task(_read_stderr()),
-            asyncio.create_task(_wait_for_completion()),
+        return RunControl(
+            process, 
+            asyncio.gather(
+                asyncio.create_task(_read_stdout()),
+                asyncio.create_task(_read_stderr()),
+                asyncio.create_task(_wait_for_completion()),
+            )
         )
-        
-        self.status = RunnerStatus.COMPLETED
