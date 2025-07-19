@@ -2,7 +2,8 @@ import asyncio
 from loguru import logger
 from contextlib import AsyncExitStack
 
-from .types import ServerConfig, Command, RunnerID, RunnerStatus
+from .types import ServerConfig
+from ...shared.types import Command, RunnerID, RunnerStatus
 from .runner import Runner
 
 
