@@ -15,10 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-rund = "radium226.run.server:app"
-run = "radium226.run.client:app"
-rund2 = "radium226.run.server.cli:app"
-run2 = "radium226.run.client.cli:app"
+rund = "radium226.run.server.cli:app"
+run = "radium226.run.client.cli:app"
 
 [build-system]
 requires = ["hatchling"]
