@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from ...shared.types import RunnerID, RunnerStatus, ExitCode, Command, Signal
+from ...shared.types import RunnerID, RunnerStatus, ExitCode, RunnerContext, Signal
 
 
 class RunHandler(Protocol):
@@ -60,17 +60,22 @@ class Runner():
 
     id: RunnerID | None
     status: RunnerStatus
-    command: Command
+    context: RunnerContext
 
     async def run(self, handler: RunHandler | None = None) -> RunControl:
         handler = handler or DEFAULT_RUN_HANDLER
 
         self.status = RunnerStatus.RUNNING
-        logger.debug("Starting to command: {command}", command=self.command)
+        logger.debug("Starting command: {command} in directory: {cwd} with env vars: {env}", 
+                    command=self.context.command, 
+                    cwd=self.context.working_folder_path,
+                    env=list(self.context.environment_variables.keys()))
         process = await asyncio.create_subprocess_exec(
-            *self.command,
+            *self.context.command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=self.context.working_folder_path,
+            env=self.context.environment_variables,
         )
         logger.debug("Process started with PID: {pid}", pid=process.pid)
 

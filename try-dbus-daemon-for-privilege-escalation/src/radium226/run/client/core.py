@@ -2,11 +2,13 @@ import asyncio
 from asyncio import Future
 from loguru import logger
 import sys
+import os
+from pathlib import Path
 
 from dbus_fast.aio import MessageBus
 from dbus_fast import Message, MessageType
 
-from ..shared.types import Command, ExitCode, Signal
+from ..shared.types import Command, ExitCode, Signal, RunnerContext
 
 
 
@@ -45,6 +47,14 @@ class Client():
         self.bus = bus
 
     async def run(self, command: Command) -> RunControl:
+        # Gather context information
+        context = RunnerContext(
+            command=command,
+            user_id=os.getuid(),
+            working_folder_path=Path.cwd(),
+            environment_variables=dict(os.environ)
+        )
+        
         exit_code_future: Future[ExitCode]  = asyncio.Future()
 
         def handle_message(message: Message) -> None:
@@ -81,8 +91,8 @@ class Client():
                 path="/radium226/run/Server",
                 interface="radium226.run.Server",
                 member="PrepareRunner",
-                signature="as",
-                body=[command]
+                signature="asia{ss}",
+                body=[context.command, context.user_id, str(context.working_folder_path), context.environment_variables]
             )
         )
 

@@ -3,7 +3,7 @@ from loguru import logger
 from contextlib import AsyncExitStack
 
 from .types import RunnerManagerConfig
-from ...shared.types import Command, RunnerID, RunnerStatus
+from ...shared.types import RunnerContext, RunnerID, RunnerStatus
 from .runner import Runner
 
 
@@ -61,13 +61,13 @@ class RunnerManager():
             logger.warning("Runner with ID {runner_id} not found.", runner_id=runner_id)
 
 
-    async def prepare_runner(self, command: Command) -> Runner:
-        logger.debug("Executing command: {command}", command=command)
+    async def prepare_runner(self, context: RunnerContext) -> Runner:
+        logger.debug("Preparing runner with context: {context}", context=context)
         # Here you would implement the actual execution logic
         return await self._save_runner(Runner(
             id=None,
             status=RunnerStatus.PREPARED,
-            command=command,
+            context=context,
         ))
 
 

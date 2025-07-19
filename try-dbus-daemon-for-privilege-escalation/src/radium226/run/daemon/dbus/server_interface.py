@@ -1,9 +1,12 @@
 
+from pathlib import Path
+
 from dbus_fast.aio import MessageBus
 from dbus_fast.service import ServiceInterface, method
 
 from ..core import RunnerManager
 from .runner_interface import RunnerInterface
+from ...shared.types import RunnerContext
 
 
 class ServerInterface(ServiceInterface):
@@ -19,8 +22,14 @@ class ServerInterface(ServiceInterface):
 
 
     @method()
-    async def PrepareRunner(self, command: "as") -> "o":  # type: ignore  # noqa: F821,F722
-        runner = await self.runner_manager.prepare_runner(command)
+    async def PrepareRunner(self, command: "as", user_id: "i", working_folder_path: "s", environment_variables: "a{ss}") -> "o":  # type: ignore  # noqa: F821,F722
+        context = RunnerContext(
+            command=command,
+            user_id=user_id,
+            working_folder_path=Path(working_folder_path),
+            environment_variables=dict(environment_variables)
+        )
+        runner = await self.runner_manager.prepare_runner(context)
 
         if runner.id is None:
             raise Exception("Runner ID is not set")
