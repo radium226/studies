@@ -2,19 +2,19 @@ import asyncio
 from loguru import logger
 from contextlib import AsyncExitStack
 
-from .types import ServerConfig
+from .types import RunnerManagerConfig
 from ...shared.types import Command, RunnerID, RunnerStatus
 from .runner import Runner
 
 
 
-class Server():
+class RunnerManager():
 
-    config: ServerConfig
+    config: RunnerManagerConfig
 
     _runners: dict[RunnerID, Runner] = {}
 
-    def __init__(self, config: ServerConfig):
+    def __init__(self, config: RunnerManagerConfig):
         self.config = config
         self.exit_stack = AsyncExitStack()
 
@@ -80,7 +80,7 @@ class Server():
         await self.exit_stack.aclose()
 
 
-    async def __aenter__(self) -> "Server":
+    async def __aenter__(self) -> "RunnerManager":
         await self.start()
         return self
     
@@ -94,4 +94,4 @@ class Server():
         try:
             await future
         except asyncio.CancelledError:
-            logger.debug("Server wait forever loop cancelled.")
+            logger.debug("RunnerManager wait forever loop cancelled.")

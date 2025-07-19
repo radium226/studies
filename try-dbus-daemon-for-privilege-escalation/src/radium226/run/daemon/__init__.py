@@ -1,6 +1,6 @@
 from .core import (
-    Server, 
-    ServerConfig, 
+    RunnerManager, 
+    RunnerManagerConfig, 
     Runner,
 )
 from ..shared.types import (
@@ -9,8 +9,8 @@ from ..shared.types import (
 )
 
 __all__ = [
-    "Server", 
-    "ServerConfig",
+    "RunnerManager", 
+    "RunnerManagerConfig",
     "RunnerStatus",
     "Runner",
     "Command",

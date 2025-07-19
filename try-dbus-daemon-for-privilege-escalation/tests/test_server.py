@@ -1,17 +1,17 @@
 import asyncio
 
-from radium226.run.server import Server, RunnerStatus
+from radium226.run.daemon import RunnerManager, RunnerStatus
 
 
-async def test_simple_server_completion(server: Server):
-    print("Server is running:", server)
+async def test_simple_server_completion(runner_manager: RunnerManager):
+    print("RunnerManager is running:", runner_manager)
     await asyncio.sleep(2)
-    print("Server test completed.")
+    print("RunnerManager test completed.")
 
 
-async def test_to_prepare_runner_and_run_it(server: Server):
+async def test_to_prepare_runner_and_run_it(runner_manager: RunnerManager):
     command = ["sh", "-c", "sleep 1; echo 'Hello, World!'; sleep 1; exit 0"]
-    runner = await server.prepare_runner(command)
+    runner = await runner_manager.prepare_runner(command)
     
     assert runner.status == RunnerStatus.PREPARED
     assert runner.command == command

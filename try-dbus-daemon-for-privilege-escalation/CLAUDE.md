@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a D-Bus daemon system for privilege escalation studies called `radium226-run`. It consists of:
 
-- **Server/Daemon (`rund`)**: A D-Bus service running as root that can execute commands
+- **Daemon (`rund`)**: A D-Bus service running as root that can execute commands
 - **Client (`run`)**: A client application that connects to the daemon to execute commands
 - **D-Bus Integration**: Uses the system message bus for communication with proper security policies
 
@@ -67,25 +67,25 @@ sudo systemctl status radium226-command-executor.service
 
 ### Core Components
 
-**Server Architecture** (`src/radium226/run/server/`):
-- `server.py`: Main Server class managing command runners and cleanup loops
+**Daemon Architecture** (`src/radium226/run/daemon/`):
+- `runner_manager.py`: Main RunnerManager class managing command runners and cleanup loops
 - `runner.py`: Runner class handling individual command execution with async process management
-- `types.py`: Core data types (ServerConfig, Command, RunnerStatus, etc.)
-- `dbus/`: D-Bus interface implementations for the server and runner objects
+- `types.py`: Core data types (RunnerManagerConfig)
+- `dbus/`: D-Bus interface implementations for the daemon and runner objects
 
 **Client Architecture** (`src/radium226/run/client/`):
-- `core.py`: Client class and RunControl for D-Bus communication with the server
+- `core.py`: Client class and RunControl for D-Bus communication with the daemon
 - `dbus.py`: D-Bus client interface implementation
 - `cli.py`: Click-based command line interface
 
 **Shared Types** (`src/radium226/run/shared/`):
-- `types.py`: Common types used by both client and server (Command, ExitCode, Signal)
+- `types.py`: Common types used by both client and daemon (Command, ExitCode, Signal, RunnerID, RunnerStatus)
 - `dbus.py`: Shared D-Bus utilities and constants
 
 ### D-Bus Communication Flow
 
-1. Client calls `PrepareRunner` on server to create a runner for a command
-2. Server returns a D-Bus object path for the runner
+1. Client calls `PrepareRunner` on daemon to create a runner for a command
+2. Daemon returns a D-Bus object path for the runner
 3. Client subscribes to signals from the runner (StdOut, StdErr, Completed)
 4. Client calls `Run` on the runner to start execution
 5. Runner streams output via D-Bus signals
@@ -96,7 +96,7 @@ sudo systemctl status radium226-command-executor.service
 - `Command`: List of strings representing command and arguments
 - `Runner`: Manages individual command execution with ID, status, and command
 - `RunnerStatus`: Enum (PREPARED, RUNNING, COMPLETED, FAILED)
-- `ServerConfig`: Configuration including cleanup intervals and run handlers
+- `RunnerManagerConfig`: Configuration including cleanup intervals and run handlers
 
 ## Configuration Files
 
