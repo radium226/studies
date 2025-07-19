@@ -1,7 +1,6 @@
 from click import command
 import asyncio
 
-from dbus_fast.aio import MessageBus
 from dbus_fast import BusType
 
 from pendulum import Duration
@@ -14,11 +13,10 @@ from ..dbus import ServerInterface
 
 
 @command()
-def app():
-    async def run_command():
+def app() -> None:
+    async def run_command() -> None:
         bus_type = BusType.SESSION
         bus_name = "radium226.run"
-        bus = await MessageBus(bus_type=bus_type).connect()
 
         server_config = ServerConfig(
             duration_between_cleanup_of_old_runs=Duration(seconds=5)

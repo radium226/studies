@@ -3,7 +3,7 @@ from loguru import logger
 from contextlib import AsyncExitStack
 
 from .types import ServerConfig, Command, RunnerID, RunnerStatus
-from .runner import Runner, RunHandler, DEFAULT_RUN_HANDLER
+from .runner import Runner
 
 
 
@@ -18,7 +18,7 @@ class Server():
         self.exit_stack = AsyncExitStack()
 
 
-    async def _start_cleanup_old_runs_loop(self):
+    async def _start_cleanup_old_runs_loop(self) -> None:
         try:
             while True:
                 logger.debug("Starting to cleanup old runners... ")
@@ -27,11 +27,11 @@ class Server():
                 logger.debug("Cleanup of old runners completed! Next in {duration_in_seconds} ", duration_in_seconds=duration_in_seconds)
                 
                 await asyncio.sleep(duration_in_seconds)
-        except asyncio.CancelledError as e:
+        except asyncio.CancelledError:
             logger.debug("Cleanup old runners loop cancelled! ")
 
 
-    async def _save_runner(self, runner: Runner):
+    async def _save_runner(self, runner: Runner) -> Runner:
         logger.debug("Saving runner: {runner}", runner=runner)
         # Here you would implement the actual saving logic, e.g., to a database or file
         runner_id = str(max(map(int, self._runners.keys()), default=0) + 1)
@@ -51,7 +51,7 @@ class Server():
         return self._runners.get(runner_id, None)
 
 
-    async def _delete_runner(self, runner_id: RunnerID):
+    async def _delete_runner(self, runner_id: RunnerID) -> None:
         logger.debug("Deleting runner with ID: {runner_id}", runner_id=runner_id)
         if runner_id in self._runners:
             del self._runners[runner_id]
@@ -70,26 +70,26 @@ class Server():
         ))
 
 
-    async def start(self):
+    async def start(self) -> None:
         cleanup_old_runs_loop_task = asyncio.create_task(self._start_cleanup_old_runs_loop())
         self.exit_stack.callback(lambda: cleanup_old_runs_loop_task.cancel())
 
 
-    async def stop(self):
+    async def stop(self) -> None:
         await self.exit_stack.aclose()
 
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "Server":
         await self.start()
         return self
     
 
-    async def __aexit__(self, type, value, traceback):
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object) -> None:
         await self.stop()
 
 
-    async def wait_forever(self):
-        future = asyncio.Future()
+    async def wait_forever(self) -> None:
+        future: asyncio.Future[None] = asyncio.Future()
         try:
             await future
         except asyncio.CancelledError:
