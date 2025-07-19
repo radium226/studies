@@ -15,7 +15,7 @@ from .core import Client
 
 @command()
 @argument("command", nargs=-1, type=UNPROCESSED)
-def app(command: Command):
+def app(command: Command) -> None:
     async def coro() -> ExitCode:
         async with connect_to_bus(BusType.SESSION) as bus:
             client = Client(bus)
@@ -23,7 +23,7 @@ def app(command: Command):
             
             # FIXME: We should register a signal handler before running the command
             run_control = await client.run(command)
-            def sigint_handler():
+            def sigint_handler() -> None:
                 logger.info("SIGINT received, aborting...")
                 asyncio.create_task(run_control.kill(signal.SIGINT))
 
