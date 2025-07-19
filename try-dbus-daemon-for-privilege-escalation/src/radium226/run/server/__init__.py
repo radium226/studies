@@ -1,5 +1,3 @@
-from .app import app
-
 from .core import (
     Server, 
     ServerConfig, 
@@ -9,7 +7,6 @@ from .core import (
 )
 
 __all__ = [
-    "app", 
     "Server", 
     "ServerConfig",
     "RunnerStatus",
