@@ -43,3 +43,6 @@ class RunnerStatus(StrEnum):
     PREPARED = auto()
     RUNNING = auto()
     COMPLETED = auto()
+
+
+type Signal = int
