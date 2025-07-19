@@ -1,11 +1,11 @@
 from .runner import Runner, RunHandler, DEFAULT_RUN_HANDLER, RunControl
-from .types import ServerConfig
-from .server import Server
+from .types import RunnerManagerConfig
+from .runner_manager import RunnerManager
 
 
 __all__ = [
-    'Server',
-    'ServerConfig',
+    'RunnerManager',
+    'RunnerManagerConfig',
     'Runner',
     'RunHandler',
     'DEFAULT_RUN_HANDLER',
