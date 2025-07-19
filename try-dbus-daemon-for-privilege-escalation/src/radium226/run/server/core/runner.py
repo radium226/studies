@@ -96,6 +96,7 @@ class Runner():
             exit_code = await process.wait()
             handler.on_completed(self, exit_code)
             logger.debug("Process completed with exit code: {exit_code}", exit_code=exit_code)
+            self.status = RunnerStatus.COMPLETED
             return exit_code
 
         return RunControl(
