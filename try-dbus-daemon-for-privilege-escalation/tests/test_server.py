@@ -1,7 +1,6 @@
-import pytest
 import asyncio
 
-from radium226.run.server import Server, RunnerStatus, Command
+from radium226.run.server import Server, RunnerStatus
 
 
 async def test_simple_server_completion(server: Server):
@@ -18,10 +17,12 @@ async def test_to_prepare_runner_and_run_it(server: Server):
     assert runner.command == command
     
     # Simulate running the runner
-    run_task = asyncio.create_task(runner.run())
-    print("We are here! ")
+    run_control = await runner.run()
+    wait_for_task = asyncio.create_task(run_control.wait_for())
     await asyncio.sleep(1)  # Give some time for the runner to start
 
     assert runner.status == RunnerStatus.RUNNING
 
-    await asyncio.wait_for(run_task, timeout=None)
+    await asyncio.wait_for(wait_for_task, timeout=None)
+
+    assert runner.status == RunnerStatus.COMPLETED
