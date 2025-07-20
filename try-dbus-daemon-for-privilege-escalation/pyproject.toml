@@ -36,7 +36,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--capture=no"
+addopts = "--capture=tee-sys"
 asyncio_mode = "auto"
 
 [tool.mypy]

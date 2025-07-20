@@ -91,7 +91,7 @@ class Client():
                 path="/radium226/run/Server",
                 interface="radium226.run.Server",
                 member="PrepareRunner",
-                signature="asia{ss}",
+                signature="asisa{ss}",
                 body=[context.command, context.user_id, str(context.working_folder_path), context.environment_variables]
             )
         )
