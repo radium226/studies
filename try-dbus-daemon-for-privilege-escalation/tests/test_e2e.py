@@ -3,6 +3,7 @@ import time
 from contextlib import redirect_stdout
 from io import StringIO
 from typing import Generator
+import sys
 
 import pytest
 
@@ -24,17 +25,17 @@ def daemon() -> Generator[subprocess.Popen, None, None]:
         daemon_process.wait()
 
 
-def client(command: Command) -> ExitCode:
+def client(command: Command) -> tuple[ExitCode, str, str]:
     """Helper function to run the client binary with given command."""
     cmd = ["run", "--user"] + command
-    result = subprocess.run(cmd)
-    return result.returncode
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return (result.returncode, result.stdout, result.stderr)
 
 
 @pytest.mark.e2e
-def test_echo_command(daemon, capsys):
-    """Test running a simple echo command."""
-    exit_code = client(["echo", "foobar"])
-    captured = capsys.readouterr()
+def test_echo_command(daemon):
+    # """Test running a simple echo command."""
+    exit_code, client_stdout, _ = client(["echo", "foobar"])
+    # print("foobar")
     assert exit_code == 0
-    assert "foobar" in captured.out
+    assert "foobar" in client_stdout

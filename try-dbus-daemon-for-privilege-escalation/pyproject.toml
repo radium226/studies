@@ -38,6 +38,9 @@ dev = [
 testpaths = ["tests"]
 addopts = "--capture=tee-sys"
 asyncio_mode = "auto"
+markers = [
+    "e2e: mark a test as an end-to-end test.",
+]
 
 [tool.mypy]
 strict = true
