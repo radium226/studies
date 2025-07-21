@@ -1,5 +1,5 @@
 from enum import StrEnum, auto
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -19,7 +19,7 @@ class RunnerContext:
     command: Command
     user_id: UserID
     working_folder_path: Path
-    environment_variables: EnvironmentVariables
+    environment_variables: EnvironmentVariables = field(repr=False)
 
 
 # Enums

@@ -1,6 +1,9 @@
 import asyncio
 
-from dbus_fast.service import ServiceInterface, method, signal
+from loguru import logger
+
+from dbus_fast import PropertyAccess, Variant
+from dbus_fast.service import ServiceInterface, method, signal, dbus_property
 
 from ..core import Runner, RunHandler, RunControl
 
@@ -45,6 +48,18 @@ class RunnerInterface(ServiceInterface):
     def Completed(self, exit_code: "i") -> "i":  # type: ignore  # noqa: F821
         """Signal emitted when command execution is completed"""
         return exit_code
+    
+    @dbus_property(access=PropertyAccess.READ)
+    def StdoutFD(self) -> "v":
+        if self.run_control is None:
+            return Variant("i", -1)
+        return Variant("i", self.run_control.io.stdout_fd)  # type: ignore
+
+    @dbus_property(access=PropertyAccess.READ)
+    def StderrFD(self) -> "v":
+        if self.run_control is None:
+            return Variant("i", -1)
+        return Variant("i", self.run_control.io.stderr_fd)
 
     @method()
     async def Run(self) -> None:
