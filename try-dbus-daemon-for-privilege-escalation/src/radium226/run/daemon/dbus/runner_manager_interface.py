@@ -9,14 +9,14 @@ from .runner_interface import RunnerInterface
 from ...shared.types import RunnerContext
 
 
-class ServerInterface(ServiceInterface):
+class RunnerManagerInterface(ServiceInterface):
 
     runner_manager: RunnerManager
     message_bus: MessageBus
 
     
     def __init__(self, runner_manager: RunnerManager, message_bus: MessageBus):
-        super().__init__("radium226.run.Server")
+        super().__init__("radium226.run.RunnerManager")
         self.runner_manager = runner_manager
         self.message_bus = message_bus
 

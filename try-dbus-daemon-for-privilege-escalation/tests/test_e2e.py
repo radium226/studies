@@ -1,9 +1,6 @@
 import subprocess
 import time
-from contextlib import redirect_stdout
-from io import StringIO
 from typing import Generator
-import sys
 
 import pytest
 

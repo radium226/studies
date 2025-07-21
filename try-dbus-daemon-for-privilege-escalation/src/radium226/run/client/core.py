@@ -88,8 +88,8 @@ class Client():
         response_message = await self.bus.call(
             Message(
                 destination="radium226.run",
-                path="/radium226/run/Server",
-                interface="radium226.run.Server",
+                path="/radium226/run/RunnerManager",
+                interface="radium226.run.RunnerManager",
                 member="PrepareRunner",
                 signature="asisa{ss}",
                 body=[context.command, context.user_id, str(context.working_folder_path), context.environment_variables]

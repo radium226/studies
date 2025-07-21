@@ -1,8 +1,8 @@
 from .runner_interface import RunnerInterface
-from .server_interface import ServerInterface
+from .runner_manager_interface import RunnerManagerInterface
 
 
 __all__ = [
     "RunnerInterface",
-    "ServerInterface",
+    "RunnerManagerInterface",
 ]

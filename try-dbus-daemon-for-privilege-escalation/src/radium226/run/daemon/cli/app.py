@@ -8,7 +8,7 @@ from pendulum import Duration
 from ...shared.dbus import connect_to_bus
 
 from ..core import RunnerManager, RunnerManagerConfig
-from ..dbus import ServerInterface
+from ..dbus import RunnerManagerInterface
 
 
 
@@ -34,8 +34,8 @@ def app(user: bool, system: bool) -> None:
             duration_between_cleanup_of_old_runs=Duration(seconds=5)
         )
         async with RunnerManager(runner_manager_config) as runner_manager, connect_to_bus(bus_type) as bus:
-            server_interface = ServerInterface(runner_manager, bus)
-            bus.export("/radium226/run/Server", server_interface)
+            runner_manager_interface = RunnerManagerInterface(runner_manager, bus)
+            bus.export("/radium226/run/RunnerManager", runner_manager_interface)
             await bus.request_name(bus_name)
             await runner_manager.wait_forever()
 
