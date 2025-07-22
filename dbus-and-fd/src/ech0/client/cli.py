@@ -11,33 +11,22 @@ from time import sleep
 from .service import Ech0Client
 
 
-async def echo_message(message: str) -> None:
+async def echo() -> None:
     """Echo a message using the ech0 D-Bus service."""
     async with Ech0Client() as client:
         loop = asyncio.get_event_loop()
 
-        r_fd, w_fd = os.pipe()
-        await client.echo(r_fd)
+        stdout_fd = await client.echo(sys.stdin.fileno())
         
         while True:
-            await loop.run_in_executor(None, os.write, w_fd, "Hello! ".encode())
+            data = await loop.run_in_executor(None, os.read, stdout_fd, 1024)
+            if not data:
+                break
+            await loop.run_in_executor(None, sys.stdout.write, data.decode("utf-8"))
 
         
     
 
 
 def app() -> NoReturn:
-    """Main entry point for ech0 client."""
-    parser = argparse.ArgumentParser(
-        description="Client for ech0 D-Bus service",
-        prog="ech0"
-    )
-    parser.add_argument(
-        "message",
-        help="Message to echo"
-    )
-    
-    args = parser.parse_args()
-    asyncio.run(echo_message(args.message))
-    
-    sys.exit(0)
+    asyncio.run(echo())

@@ -24,7 +24,7 @@ class Ech0Client:
             self.bus.disconnect()
             self.bus = None
 
-    async def echo(self, fd: int) -> str:
+    async def echo(self, stdin_fd: int) -> int:
         """Call the Echo method on the ech0 service."""
         if not self.bus:
             await self.connect()
@@ -35,11 +35,8 @@ class Ech0Client:
         
         # Get the interface
         interface = proxy_object.get_interface("ech0.Ech0")
-        
-        print("We are hre! ")
-        # Call the Echo method
-        response = await interface.call_echo(fd)
-        return response
+        stdout_fd = await interface.call_echo(stdin_fd)
+        return stdout_fd
 
     async def __aenter__(self) -> "Ech0Client":
         """Async context manager entry."""

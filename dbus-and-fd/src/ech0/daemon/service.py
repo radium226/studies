@@ -4,10 +4,9 @@ import asyncio
 from typing import Any
 import os
 
-from dbus_fast import BusType, Message
+from dbus_fast import BusType
 from dbus_fast.aio import MessageBus
-from dbus_fast.service import ServiceInterface, dbus_property, method
-import traceback
+from dbus_fast.service import ServiceInterface, method
 
 
 class Ech0Interface(ServiceInterface):
@@ -17,21 +16,21 @@ class Ech0Interface(ServiceInterface):
         super().__init__("ech0.Ech0")
 
     @method()
-    async def Echo(self, fd: "h") -> "s":  # type: ignore[misc]
+    async def Echo(self, stdin_fd: "h") -> "h":  # type: ignore[misc]
+        stdout_fd, passthrough_fd = os.pipe()
         async def _read() -> None:
             while True:
                 loop = asyncio.get_event_loop()
                 # Use run_in_executor for the blocking read operation
-                data = await loop.run_in_executor(None, os.read, fd, 1024)
-                
+                data = await loop.run_in_executor(None, os.read, stdin_fd, 1024)
                 if not data:  # EOF - writer closed
                     break
                     
-                message = data.decode().strip()
-                print(f"Read: {message}")
+                data = data.decode("utf-8").upper().encode("utf-8")
+                await loop.run_in_executor(None, os.write, passthrough_fd, data)
             
         asyncio.create_task(_read())
-        return "OK!"
+        return stdout_fd
 
 
 class Ech0Service:
