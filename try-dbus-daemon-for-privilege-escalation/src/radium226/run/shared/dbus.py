@@ -9,7 +9,7 @@ from dbus_fast import BusType
 
 @asynccontextmanager
 async def connect_to_bus(bus_type: BusType) -> AsyncGenerator[MessageBus, None]:
-    bus = MessageBus(bus_type=bus_type)
+    bus = MessageBus(bus_type=bus_type, negotiate_unix_fd=True)
     logger.debug("Connecting to D-Bus {bus_type}...", bus_type=bus_type)
     await bus.connect()
     logger.debug("Connected! ", bus_type=bus_type)
