@@ -62,7 +62,8 @@ uv run ech0 "test message"
 
 ### Implementation Details
 - **FD Type Signature**: Service `Echo` method uses `"h"` (Unix file descriptor) parameter type
-- **Async Reading**: Service spawns background tasks to read from received FDs until EOF
+- **Async I/O**: Service uses `StreamReader` and `StreamWriter` with `connect_read_pipe`/`connect_write_pipe` for non-blocking FD operations
+- **Background Processing**: Service spawns background tasks to read from received FDs until EOF and transform data (convert to uppercase)
 - **Pipe Communication**: Client creates `os.pipe()`, passes read end to service, writes to write end
 - **FD Negotiation**: Both client and service enable `negotiate_unix_fd=True` on MessageBus
 

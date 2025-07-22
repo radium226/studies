@@ -1,7 +1,6 @@
 """DBus service for ech0 daemon."""
 
 import asyncio
-from typing import Any
 import os
 
 from dbus_fast import BusType
@@ -18,16 +17,32 @@ class Ech0Interface(ServiceInterface):
     @method()
     async def Echo(self, stdin_fd: "h") -> "h":  # type: ignore[misc]
         stdout_fd, passthrough_fd = os.pipe()
+        
         async def _read() -> None:
-            while True:
-                loop = asyncio.get_event_loop()
-                # Use run_in_executor for the blocking read operation
-                data = await loop.run_in_executor(None, os.read, stdin_fd, 1024)
-                if not data:  # EOF - writer closed
-                    break
+            stdin_reader = asyncio.StreamReader()
+            stdin_transport, stdin_protocol = await asyncio.get_event_loop().connect_read_pipe(
+                lambda: asyncio.StreamReaderProtocol(stdin_reader), os.fdopen(stdin_fd, 'rb')
+            )
+            
+            passthrough_writer_transport, passthrough_writer_protocol = await asyncio.get_event_loop().connect_write_pipe(
+                lambda: asyncio.Protocol(), os.fdopen(passthrough_fd, 'wb')
+            )
+            passthrough_writer = asyncio.StreamWriter(passthrough_writer_transport, passthrough_writer_protocol, None, asyncio.get_event_loop())
+            
+            try:
+                while True:
+                    data = await stdin_reader.read(1024)
+                    if not data:  # EOF - writer closed
+                        break
                     
-                data = data.decode("utf-8").upper().encode("utf-8")
-                await loop.run_in_executor(None, os.write, passthrough_fd, data)
+                    data = data.decode("utf-8").upper().encode("utf-8")
+                    passthrough_writer.write(data)
+                    # await passthrough_writer.drain()
+            finally:
+                pass
+                stdin_transport.close()
+                passthrough_writer.close()
+                # await passthrough_writer.wait_closed()
             
         asyncio.create_task(_read())
         return stdout_fd
