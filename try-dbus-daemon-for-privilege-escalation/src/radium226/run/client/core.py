@@ -1,123 +1,124 @@
 import asyncio
+from asyncio import TaskGroup
+from typing import Any, Callable
 from asyncio import Future
 from loguru import logger
 import sys
 import os
 from pathlib import Path
+from typing import AsyncGenerator
 
 from dbus_fast.aio import MessageBus
 from dbus_fast import Message, MessageType
+import signal
 
-from ..shared.types import Command, ExitCode, Signal, RunnerContext
+from ..shared import Command, ExitCode, Signal, ExecutionContext
+
+from contextlib import asynccontextmanager
 
 
 
-class RunControl:
-
-    exit_code_future: Future[ExitCode]
-
-    def __init__(self, bus: MessageBus, runner_path: str, exit_code_future: Future[ExitCode]):
-        self.bus = bus
-        self.runner_path = runner_path
-        self.exit_code_future = exit_code_future
-
+class Execution:
+    
+    def __init__(self, dbus_bus: MessageBus, dbus_path: str):
+        self.dbus_bus = dbus_bus
+        self.dbus_path = dbus_path
+        
     async def wait_for(self) -> ExitCode:
-        exit_code = await self.exit_code_future
-        logger.info("RunControl: Runner completed with exit code: {exit_code}", exit_code=exit_code)
+        dbus_introspection = await self.dbus_bus.introspect("radium226.run", self.dbus_path)
+        dbus_proxy_object = self.dbus_bus.get_proxy_object("radium226.run", self.dbus_path, dbus_introspection)
+        dbus_interface = dbus_proxy_object.get_interface("radium226.run.Execution")
+
+        exit_code = await dbus_interface.call_wait_for()
+        logger.debug("Execution finished with exit code: {exit_code}", exit_code=exit_code)
         return exit_code
-
+    
     async def kill(self, signal: Signal) -> None:
-        logger.info("RunControl: Killing runner with signal: {signal}", signal=signal)
-        await self.bus.call(
-            Message(
-                destination="radium226.run",
-                path=self.runner_path,
-                interface="radium226.run.Runner",
-                member="Kill",
-                signature="i",
-                body=[signal]
-            )
-        )
+        dbus_introspection = await self.dbus_bus.introspect("radium226.run", self.dbus_path)
+        dbus_proxy_object = self.dbus_bus.get_proxy_object("radium226.run", self.dbus_path, dbus_introspection)
+        dbus_interface = dbus_proxy_object.get_interface("radium226.run.Execution")
+
+        logger.debug("Killing execution with signal: {signal}", signal=signal)
+        await dbus_interface.call_kill(signal)
+
+
+
+
+async def redirect_to(fd: int, stream: Any) -> None:
+    stdout_reader = asyncio.StreamReader()
+    stdout_transport, stdout_protocol = await asyncio.get_event_loop().connect_read_pipe(
+        lambda: asyncio.streams.StreamReaderProtocol(stdout_reader), os.fdopen(fd, 'rb')
+    )
+    
+    output_writer_transport, output_writer_protocol = await asyncio.get_event_loop().connect_write_pipe(
+        lambda: asyncio.streams.FlowControlMixin(), 
+        stream
+    )
+    output_writer = asyncio.streams.StreamWriter(output_writer_transport, output_writer_protocol, None, asyncio.get_event_loop())
+    
+    try:
+        while True:
+            data = await stdout_reader.read(1024)
+            if not data:
+                break
+            output_writer.write(data)
+            await output_writer.drain()
+    except Exception as e:
+        print(f"Error redirecting output: {e}")
+    finally:
+        stdout_transport.close()
+        output_writer.close()
+        # await output_writer.wait_closed()
         
 
 
-class Client():
+class Executor():
 
-    def __init__(self, bus: MessageBus):
-        self.bus = bus
+    dbus_bus: MessageBus
 
-    async def run(self, command: Command) -> RunControl:
-        # Gather context information
-        context = RunnerContext(
-            command=command,
-            user_id=os.getuid(),
-            working_folder_path=Path.cwd(),
-            environment_variables=dict(os.environ)
+    def __init__(self, dbus_bus: MessageBus):
+        self.dbus_bus = dbus_bus
+
+
+    @asynccontextmanager
+    async def execute(self, context: ExecutionContext | Command) -> AsyncGenerator[Execution, None]:
+        # Get the introspection data and create a proxy object
+        executor_dbus_introspection = await self.dbus_bus.introspect("radium226.run", "/radium226/run/Executor")
+        executor_dbus_proxy_object = self.dbus_bus.get_proxy_object("radium226.run", "/radium226/run/Executor", executor_dbus_introspection)
+        executor_dbus_interface = executor_dbus_proxy_object.get_interface("radium226.run.Executor")
+        execution_dbus_path = await executor_dbus_interface.call_execute(
+            context.command,
+            context.user_id,
+            str(context.current_working_folder_path),
+            context.environment_variables
         )
-        
-        exit_code_future: Future[ExitCode]  = asyncio.Future()
+        logger.debug("execution_dbus_path={execution_dbus_path}", execution_dbus_path=execution_dbus_path)
 
-        def handle_message(message: Message) -> None:
-            if message.message_type != MessageType.SIGNAL:
-                logger.trace("Received non-signal message: {message}", message=message)
-                return
-            
-            if message.interface != "radium226.run.Runner":
-                logger.warning("Received message with unexpected interface: {interface}", interface=message.interface)
-                return
-            
-            match message.member:
-                case "StdOut":
-                    logger.trace("StdOut signal received: {message}", message=message)
-                    stdout_chunk = message.body[0]
-                    sys.stdout.buffer.write(stdout_chunk)
-                    sys.stdout.flush()
-            
-                case "StdErr":
-                    logger.trace("StdErr signal received: {message}", message=message)
-                    stderr_chunk = message.body[0]
-                    sys.stderr.buffer.write(stderr_chunk)
-                    sys.stderr.flush()
-            
-                case "Completed":
-                    logger.trace("Completed signal received: {message}", message=message)
-                    exit_code = message.body[0]
-                    exit_code_future.set_result(exit_code)
+        execution_dbus_introspection = await self.dbus_bus.introspect("radium226.run", execution_dbus_path)
+        execution_dbus_proxy_object = self.dbus_bus.get_proxy_object("radium226.run", execution_dbus_path, execution_dbus_introspection)
+        execution_dbus_interface = execution_dbus_proxy_object.get_interface("radium226.run.Execution")
+        
+        stdout = await execution_dbus_interface.get_stdout()
+        logger.debug("stdout={stdout}", stdout=stdout)
+
+        stderr = await execution_dbus_interface.get_stderr()
+        logger.debug("stderr={stderr}", stderr=stderr)
 
         
-        response_message = await self.bus.call(
-            Message(
-                destination="radium226.run",
-                path="/radium226/run/RunnerManager",
-                interface="radium226.run.RunnerManager",
-                member="PrepareRunner",
-                signature="asisa{ss}",
-                body=[context.command, context.user_id, str(context.working_folder_path), context.environment_variables]
-            )
+        redirect_task = asyncio.gather(
+            redirect_to(stdout, sys.stdout),
+            redirect_to(stderr, sys.stderr)
         )
 
-        if response_message is None:
-            raise Exception("No response from server")
+        execution = Execution(
+            dbus_bus=self.dbus_bus,
+            dbus_path=execution_dbus_path
+        )
+        yield execution
+
+
+        logger.debug("Execution finished, cleaning up...")
+        redirect_task.cancel()
+        await redirect_task
+
         
-        runner_path = response_message.body[0]
-        logger.info("Runner path obtained: {runner_path}", runner_path=runner_path)
-
-        self.bus._add_match_rule(f"type='signal',sender=radium226.run,interface=radium226.run.Runner,path={runner_path}")
-        self.bus.add_message_handler(handle_message)
-
-
-        response_message = await self.bus.call(
-            Message(
-                destination="radium226.run",
-                path=runner_path,
-                interface="radium226.run.Runner",
-                member="Run",
-                signature="",
-                body=[]
-            )
-        )
-        if response_message is None or response_message.error_name:
-            raise Exception(f"Error calling Run on runner: {response_message.error_name if response_message else 'No response'}")
-        logger.info("Runner response: {response_message}", response_message=response_message)
-
-        return RunControl(self.bus, runner_path, exit_code_future)
