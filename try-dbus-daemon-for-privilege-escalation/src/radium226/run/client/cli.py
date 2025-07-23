@@ -40,7 +40,11 @@ def app(user: bool, system: bool, command: Command) -> None:
                     logger.info("SIGINT received, aborting...")
                     asyncio.create_task(execution.kill(signal.SIGTERM))
                 loop.add_signal_handler(signal.SIGINT, sigint_handler)
+                logger.debug("Waiting for execution to finish")
                 exit_code = await execution.wait_for()
+                print("We are here !")
+                logger.debug("Execution finished with exit code: {exit_code}", exit_code=exit_code)
+                return exit_code
         
     exit_code = asyncio.run(coro())
     sys.exit(exit_code)

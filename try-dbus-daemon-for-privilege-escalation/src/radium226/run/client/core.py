@@ -2,6 +2,7 @@ import asyncio
 from asyncio import TaskGroup
 from typing import Any, Callable
 from asyncio import Future
+from asyncio.streams import StreamReader, StreamReaderProtocol, FlowControlMixin, StreamWriter
 from loguru import logger
 import sys
 import os
@@ -45,32 +46,15 @@ class Execution:
 
 
 async def redirect_to(fd: int, stream: Any) -> None:
-    stdout_reader = asyncio.StreamReader()
-    stdout_transport, stdout_protocol = await asyncio.get_event_loop().connect_read_pipe(
-        lambda: asyncio.streams.StreamReaderProtocol(stdout_reader), os.fdopen(fd, 'rb')
-    )
-    
-    output_writer_transport, output_writer_protocol = await asyncio.get_event_loop().connect_write_pipe(
-        lambda: asyncio.streams.FlowControlMixin(), 
-        stream
-    )
-    output_writer = asyncio.streams.StreamWriter(output_writer_transport, output_writer_protocol, None, asyncio.get_event_loop())
-    
-    try:
-        while True:
-            data = await stdout_reader.read(1024)
-            if not data:
-                break
-            output_writer.write(data)
-            await output_writer.drain()
-    except Exception as e:
-        print(f"Error redirecting output: {e}")
-    finally:
-        stdout_transport.close()
-        output_writer.close()
-        # await output_writer.wait_closed()
-        
-
+    loop = asyncio.get_event_loop()
+    while True:
+        # Run os.read in executor to avoid blocking
+        data = await loop.run_in_executor(None, os.read, fd, 1024)
+        if data:
+            await loop.run_in_executor(None, stream.buffer.write, data)
+            await loop.run_in_executor(None, stream.buffer.flush)
+        else:
+            break
 
 class Executor():
 
@@ -107,18 +91,22 @@ class Executor():
         
         redirect_task = asyncio.gather(
             redirect_to(stdout, sys.stdout),
-            redirect_to(stderr, sys.stderr)
+            redirect_to(stderr, sys.stderr),
+            return_exceptions=True,
         )
 
         execution = Execution(
             dbus_bus=self.dbus_bus,
             dbus_path=execution_dbus_path
         )
+        print("1.")
         yield execution
-
+        print("2.")
 
         logger.debug("Execution finished, cleaning up...")
         redirect_task.cancel()
+        logger.debug("Waiting for redirect task to finish...")
         await redirect_task
+        logger.debug("Execution cleanup done")
 
         
