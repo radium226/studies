@@ -46,15 +46,18 @@ class Execution:
 
 
 async def redirect_to(fd: int, stream: Any) -> None:
-    loop = asyncio.get_event_loop()
-    while True:
-        # Run os.read in executor to avoid blocking
-        data = await loop.run_in_executor(None, os.read, fd, 1024)
-        if data:
-            await loop.run_in_executor(None, stream.buffer.write, data)
-            await loop.run_in_executor(None, stream.buffer.flush)
-        else:
-            break
+    try:
+        loop = asyncio.get_event_loop()
+        while True:
+            # Run os.read in executor to avoid blocking
+            data = await loop.run_in_executor(None, os.read, fd, 1024)
+            if data:
+                await loop.run_in_executor(None, stream.buffer.write, data)
+                await loop.run_in_executor(None, stream.buffer.flush)
+            else:
+                break
+    except asyncio.CancelledError:
+        logger.debug("Redirect task cancelled")
 
 class Executor():
 
@@ -99,14 +102,16 @@ class Executor():
             dbus_bus=self.dbus_bus,
             dbus_path=execution_dbus_path
         )
-        print("1.")
         yield execution
-        print("2.")
-
+        
         logger.debug("Execution finished, cleaning up...")
         redirect_task.cancel()
         logger.debug("Waiting for redirect task to finish...")
-        await redirect_task
+        try:
+            await redirect_task
+        except asyncio.CancelledError:
+            logger.debug("Redirect task cancelled")
+            
         logger.debug("Execution cleanup done")
 
         

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-trap 'echo "coucou"; exit 42' EXIT
+trap 'echo "coucou"; exit 42' INT
 
 i=0
 while true; do

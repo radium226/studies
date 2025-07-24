@@ -32,19 +32,24 @@ def app(user: bool, system: bool, command: Command) -> None:
     async def coro() -> ExitCode:
         bus_type = BusType.SESSION if user else BusType.SYSTEM
         async with connect_to_bus(bus_type) as bus:
+            logger.debug("Creating executor... ")
             executor = Executor(bus)
+
             loop = asyncio.get_event_loop()
+            
             async with executor.execute(ExecutionContext(command=command)) as execution:
                 logger.debug("Setting up signal handlers")
                 def sigint_handler() -> None:
                     logger.info("SIGINT received, aborting...")
                     asyncio.create_task(execution.kill(signal.SIGTERM))
                 loop.add_signal_handler(signal.SIGINT, sigint_handler)
+                
                 logger.debug("Waiting for execution to finish")
                 exit_code = await execution.wait_for()
-                print("We are here !")
                 logger.debug("Execution finished with exit code: {exit_code}", exit_code=exit_code)
                 return exit_code
         
+    logger.debug("Starting event loop")
     exit_code = asyncio.run(coro())
+    logger.debug("Event loop finished with exit code: {exit_code}", exit_code=exit_code)
     sys.exit(exit_code)
