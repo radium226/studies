@@ -1,16 +1,18 @@
 [project]
-name = "ech0"
+name = "radium226-executor"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "click>=8.2.1",
     "dbus-fast>=2.44.1",
+    "loguru>=0.7.3",
 ]
 
 [project.scripts]
-ech0d = "ech0.daemon:app"
-ech0 = "ech0.client:app"
+executord = "radium226.executor.daemon:app"
+executor = "radium226.executor.client:app"
 
 [dependency-groups]
 dev = [
@@ -24,4 +26,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ech0"]
+packages = ["src/radium226"]
