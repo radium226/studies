@@ -7,7 +7,7 @@ from loguru import logger
 
 from dbus_fast import BusType
 from dbus_fast.aio import MessageBus
-from dbus_fast.service import ServiceInterface, method, dbus_property, PropertyAccess
+from dbus_fast.service import ServiceInterface, method, dbus_property, PropertyAccess, signal
 
 from ..shared import redirect
 
@@ -40,6 +40,19 @@ class ExecutionInterface(ServiceInterface):
     @method()
     async def WaitFor(self) -> "i":
         return await self.wait_for()
+    
+    @signal
+    async def StdoutClosed(self) -> None:
+        """Signal emitted when stdout is closed."""
+        logger.debug("Stdout closed signal emitted.")
+        pass
+
+    @method()
+    async def CloseStdin(self) -> None:
+        """Close the stdin file descriptor."""
+        logger.debug("Closing stdin file descriptor.")
+        os.close(self.stdout_fd)
+        await self.StdoutClosed()
 
 
 
