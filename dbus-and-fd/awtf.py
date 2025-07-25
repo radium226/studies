@@ -54,7 +54,6 @@ async def redirect(from_fd: int, to_fd: int) -> Redirection:
     abort_protocol = asyncio.streams.StreamReaderProtocol(abort_reader)
     abort_transport, _ = await loop.connect_read_pipe(lambda: abort_protocol, os.fdopen(abort_read_fd, 'rb'))
 
-
     to_transport, to_protocol = await loop.connect_write_pipe(
         asyncio.streams.FlowControlMixin, 
         os.fdopen(to_fd, 'wb')
@@ -115,7 +114,7 @@ async def redirect(from_fd: int, to_fd: int) -> Redirection:
                     print("Abort signal received, stopping redirection.")
                     break
 
-        abort_transport.close()
+        # abort_transport.close()
         to_transport.close()
         from_transport.close()
         # os.close(to_fd)
@@ -123,7 +122,9 @@ async def redirect(from_fd: int, to_fd: int) -> Redirection:
     transfer_task = asyncio.create_task(transfer())
 
     async def wait_for():
-        await transfer_task
+        print("Waiting for transfer to finish...")
+        if not transfer_task.done():
+            await asyncio.wait([transfer_task])
 
     async def abort():
         print("Aborting redirection...")
@@ -153,7 +154,7 @@ async def app(mode: Mode):
         os.setpgrp()
 
     process = await asyncio.create_subprocess_exec(
-        *["tr", "a-z", "A-Z"],  # Example command, replace with actual witness command
+        *["./witness.py"],  # Example command, replace with actual witness command
         stdin=stdin_read_fd,
         stdout=sys.stdout,
         stderr=sys.stderr,
@@ -174,7 +175,10 @@ async def app(mode: Mode):
     exit_code = await process.wait()
     print(f"Witness finished with exit code: {exit_code}")
 
+    print("Aborting...")
     await stdin_redirection.abort()
+    
+    print("Waiting for redirection to finish...")
     await stdin_redirection.wait_for()
     
     exit_code = 128 - exit_code
