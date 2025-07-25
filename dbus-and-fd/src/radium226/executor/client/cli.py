@@ -7,6 +7,7 @@ from typing import NoReturn, Any
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Callable
 from loguru import logger
+import signal
 
 from click import command, argument, UNPROCESSED
 
@@ -20,19 +21,21 @@ from ..shared import redirect
 
 class Execution():
     
-    def __init__(self, interface: Any, stdin_fd: int) -> None:
+    def __init__(self, interface: Any) -> None: # , redirect_stdin_task) -> None:
         self.interface = interface
-        self.stdin_fd = stdin_fd
+        # self.redirect_stdin_task = redirect_stdin_task
 
     async def send_signal(self, signal: int) -> None:
+        logger.debug("Sending signal: {signal}", signal=signal)
         await self.interface.call_send_signal(signal)
+
 
     async def wait_for(self) -> int:
         stdout_fd = await self.interface.get_stdout()
         async with asyncio.TaskGroup() as tg:
             wait_for_task = tg.create_task(self.interface.call_wait_for())
-            tg.create_task(redirect(stdout_fd, sys.stdout.fileno()))
-            tg.create_task(redirect(sys.stdin.fileno(), self.stdin_fd))
+            tg.create_task(redirect(stdout_fd, sys.stdout.fileno(), "STDOUT"))
+            # tg.create_task(await self.redirect_stdin_task)
 
         return wait_for_task.result()
     
@@ -48,17 +51,14 @@ class Service():
 
 
     async def execute(self, command: list[str]) -> Execution:
-        stdin_read_fd, stdin_write_fd = os.pipe()
-        
-        execution_path = await self.interface.call_execute(command, stdin_read_fd)
-        logger.info(f"Execution started at path: {execution_path}")
+        # stdin_read_fd, stdin_write_fd = os.pipe()
+        # redirect_stdin_task = asyncio.create_task(redirect(sys.stdin.fileno(), stdin_write_fd, "STDIN"))
+
+        execution_path = await self.interface.call_execute(command, sys.stdin.fileno()) # , stdin_read_fd)
         execution_introspection = await self.bus.introspect("radium226.Executor", execution_path)
-        logger.info(f"Introspection for Execution interface: {execution_introspection}")
         execution_proxy = self.bus.get_proxy_object("radium226.Executor", execution_path, execution_introspection)
-        logger.info(f"Got proxy object for Execution interface: {execution_proxy}")
         execution_interface = execution_proxy.get_interface("radium226.Execution")
-        logger.info(f"Got Execution interface: {execution_interface}")
-        execution = Execution(execution_interface, stdin_write_fd)
+        execution = Execution(execution_interface) # , redirect_stdin_task)
         return execution
 
 
@@ -93,8 +93,20 @@ def app(command) -> NoReturn:
             
             logger.info(f"Executing command: {command}")
             execution = await service.execute(list(command))
-            
+
+            logger.debug("Registering to signal handler for SIGINT...")
+            def handle_sigint_signal() -> None:
+                logger.info("SIGINT signal received, sending signal to execution...")
+                asyncio.create_task(execution.send_signal(signal.SIGINT))
+
+            asyncio.get_event_loop().add_signal_handler(signal.SIGINT, handle_sigint_signal)
+
             logger.info("Wait for execution to finish...")
             exit_code = await execution.wait_for()
+            logger.info(f"Execution finished with exit code: {exit_code}")
+            return exit_code
     
-    asyncio.run(coro())
+    logger.info("sys.stdin.isatty(): {isatty}", isatty=sys.stdin.isatty())
+
+    exit_code = asyncio.run(coro())
+    sys.exit(exit_code)

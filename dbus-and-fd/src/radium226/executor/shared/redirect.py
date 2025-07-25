@@ -5,16 +5,19 @@ from loguru import logger
 
 
 
-async def redirect(source_fd: int, target_fd: int) -> None:
+async def redirect(source_fd: int, target_fd: int, context: str) -> None:
     try:
         loop = asyncio.get_event_loop()
         while True:
             data = await loop.run_in_executor(None, os.read, source_fd, 1024)
-            logger.debug(f"Redirecting data: {data}")
+            logger.debug(f"[{context}] Redirecting data: {data}")
             if not data:
                 break
             await loop.run_in_executor(None, os.write, target_fd, data)
+    except Exception as e:
+        logger.error(f"[{context}] Error during redirection: {e}")
+        raise
     finally:
-        logger.debug("Closing file descriptors after redirect.")
-        os.close(source_fd)
+        logger.debug(f"[{context}] Closing file descriptors after redirect.")
+        # os.close(source_fd)
         os.close(target_fd)

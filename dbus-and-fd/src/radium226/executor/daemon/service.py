@@ -23,11 +23,13 @@ class ExecutionInterface(ServiceInterface):
         stdout_fd: int,             
         send_signal: Callable[[int], Coroutine[Any, Any, None]], 
         wait_for: Callable[[], Coroutine[Any, Any, int]],
+        close_stdin: Callable[[], Coroutine[Any, Any, None]] = lambda: None
     ) -> None:
         super().__init__("radium226.Execution")
         self.stdout_fd = stdout_fd
         self.send_signal = send_signal
         self.wait_for = wait_for
+        self.close_stdin = close_stdin
 
     @dbus_property(PropertyAccess.READ)
     async def Stdout(self) -> "h":
@@ -35,24 +37,23 @@ class ExecutionInterface(ServiceInterface):
     
     @method()
     async def SendSignal(self, signal: "i") -> None:
+        logger.debug(f"SendSignal method called with signal: {signal}")
         await self.send_signal(signal)
 
     @method()
     async def WaitFor(self) -> "i":
         return await self.wait_for()
     
-    @signal
-    async def StdoutClosed(self) -> None:
-        """Signal emitted when stdout is closed."""
-        logger.debug("Stdout closed signal emitted.")
-        pass
+    # @signal
+    # async def StdoutClosed(self) -> None:
+    #     """Signal emitted when stdout is closed."""
+    #     logger.debug("Stdout closed signal emitted.")
+    #     pass
 
     @method()
     async def CloseStdin(self) -> None:
-        """Close the stdin file descriptor."""
-        logger.debug("Closing stdin file descriptor.")
-        os.close(self.stdout_fd)
-        await self.StdoutClosed()
+        await self.close_stdin()
+        
 
 
 
@@ -71,23 +72,31 @@ class ExecutorInterface(ServiceInterface):
             stdout_read_fd, stdout_write_fd = os.pipe()
 
 
-            stdin_read_fd, stdin_write_fd = os.pipe()
-
-            asyncio.create_task(redirect(stdin_fd, stdin_write_fd))
+            # stdin_read_fd, stdin_write_fd = os.pipe()
 
             process = await asyncio.create_subprocess_exec(
                 *command,
-                stdin=stdin_read_fd,
+                stdin=stdin_fd,
                 stdout=stdout_write_fd,
             )
             os.close(stdout_write_fd)  # Close the write end after passing it to the process
 
+            # asyncio.create_task(redirect(stdin_fd, stdin_write_fd, "STDIN"))
+
             async def send_signal(signal: int) -> None:
-                execution_path = f"/radium226/Execution/{process.pid}"
-                await process.send_signal(signal)
+                # logger.info(f"Sending signal {signal} to process {process.pid}")
+                process.send_signal(signal)
 
             async def wait_for() -> int:
-                return await process.wait()
+                logger.info(f"Waiting for process {process.pid} to finish...")
+                exit_code = await process.wait()
+                logger.info(f"Process {process.pid} finished with exit code: {exit_code}")
+                return exit_code
+            
+            async def close_stdin() -> None:
+                logger.debug("Client has closed stdin... ")
+                # os.close(stdin_read_fd)
+
             
             logger.info(f"Process started with PID: {process.pid}")
             execution_path = f"/radium226/Execution/{process.pid}"
@@ -95,6 +104,7 @@ class ExecutorInterface(ServiceInterface):
                 stdout_fd=stdout_read_fd,
                 send_signal=send_signal,
                 wait_for=wait_for,
+                close_stdin=close_stdin,
             )
 
             logger.info(f"Exporting Execution interface at {execution_path}")
