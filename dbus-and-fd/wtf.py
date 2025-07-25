@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from typing import Callable
 from subprocess import Popen
 import sys
 import pty
@@ -17,10 +18,42 @@ class Mode(StrEnum):
     PIPE = "pipe"
 
 
+def redirect(from_fd: int, to_fd: int) -> tuple[Callable[[], None], Thread]:
+    abort_read_fd, abort_write_fd = os.pipe()
+
+    def transfer():
+        while True:
+            print("Waiting for data on stdin...")
+            r, _, _ = select.select([from_fd, abort_read_fd], [], [])
+            if from_fd in r:
+                data = os.read(from_fd, 1024)
+                if not data:
+                    print("EOF reached, closing stdin.")
+                    break  # EOF
+                print(f"Redirecting stdin (data={data})")
+                try:
+                    os.write(to_fd, data)
+                except OSError as e:
+                    print(f"Error writing to stdin: {e}")
+                    break
+            if abort_read_fd in r:
+                print("Abort signal received, stopping redirection.")
+                break
+        os.close(to_fd)
+
+    thread = Thread(target=transfer)
+
+    def abort():
+        print("Aborting redirection...")
+        os.write(abort_write_fd, b"abort")
+        os.close(abort_write_fd)
+
+    return abort, thread
+
+
+
 def app(mode: Mode):
     print(f"Running in {mode} mode... ")
-
-    done_read_fd, done_write_fd = os.pipe()
 
     match mode:
         case Mode.TTY:
@@ -44,30 +77,9 @@ def app(mode: Mode):
     )
     os.close(stdin_read_fd)  # Close the read end in the parent process
 
-    def redirect_stdin():
-        fd = sys.stdin.fileno()
-        while True:
-            print("Waiting for data on stdin...")
-            r, w, e = select.select([fd, done_read_fd], [], [])
-            print(f"Select returned: r={r}, w={w}, e={e}")
-            if fd in r:
-                data = os.read(sys.stdin.fileno(), 1024)
-                if not data:
-                    print("EOF reached, closing stdin.")
-                    break  # EOF
-                print(f"Redirecting stdin (data={data})")
-                try:
-                    os.write(stdin_write_fd, data)
-                except OSError as e:
-                    print(f"Error writing to stdin: {e}")
-                    break
-            if done_read_fd in r:
-                print("Done read pipe signaled, closing stdin.")
-                break
-        os.close(stdin_write_fd)
     
-    redirect_thread = Thread(target=redirect_stdin)
-    redirect_thread.start()
+    abort_stdin_redirection, redirect_stdin_thread = redirect(sys.stdin.fileno(), stdin_write_fd)
+    redirect_stdin_thread.start()
 
     def signal_handler(signum, frame):
         print(f"Received signal {signum}, terminating witness...")
@@ -78,13 +90,7 @@ def app(mode: Mode):
     exit_code = process.wait()
     print(f"Witness finished with exit code: {exit_code}")
 
-    os.write(done_write_fd, b"done")
-
-    # for fd in [stdin_write_fd, stdin_read_fd]:
-    #     try:
-    #         os.close(fd)
-    #     except OSError as e:
-    #         print(f"Error closing file descriptor {fd}: {e}")
+    abort_stdin_redirection()
     
     if sys.stdin.isatty():
         exit_code = 128 - exit_code
