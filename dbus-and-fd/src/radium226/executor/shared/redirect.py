@@ -59,6 +59,8 @@ async def redirect(from_fd: int, to_fd: int) -> Redirection:
             return Write(data)
         except asyncio.CancelledError:
             logger.debug("Redirection cancelled, stopping...")
+        except Exception as e:
+            return Abort()
     
     async def wait_for_abort() -> Abort:
         try:

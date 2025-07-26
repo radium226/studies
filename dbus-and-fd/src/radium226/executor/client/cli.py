@@ -41,7 +41,7 @@ class Service():
 
 
     async def execute(self, command: list[str]) -> Execution:
-        mode = Mode.auto()
+        mode = Mode.for_stdin()
         match mode:
             case Mode.TTY:
                 logger.debug("Using TTY mode for stdin...")
@@ -50,12 +50,12 @@ class Service():
                 logger.debug("Using PIPE mode for stdin...")
                 stdin_read_fd, stdin_write_fd = os.pipe()
             case _:
-                raise ValueError(f"Unknown mode: {Mode.auto()}")
+                raise ValueError(f"Unknown mode: {mode}")
         
         logger.debug(f"Executing command: {command} with stdin_fd: {stdin_read_fd}")
         stdin_redirection = await redirect(sys.stdin.fileno(), stdin_write_fd)
 
-        execution_path = await self.interface.call_execute(command, stdin_read_fd, f"{mode}")
+        execution_path = await self.interface.call_execute(command, stdin_read_fd, f"{Mode.for_stdout()}")
         execution_introspection = await self.bus.introspect("radium226.Executor", execution_path)
         execution_proxy = self.bus.get_proxy_object("radium226.Executor", execution_path, execution_introspection)
         execution_interface = execution_proxy.get_interface("radium226.Execution")
