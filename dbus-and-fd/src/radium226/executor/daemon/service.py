@@ -23,13 +23,11 @@ class ExecutionInterface(ServiceInterface):
         stdout_fd: int,             
         send_signal: Callable[[int], Coroutine[Any, Any, None]], 
         wait_for: Callable[[], Coroutine[Any, Any, int]],
-        close_stdin: Callable[[], Coroutine[Any, Any, None]] = lambda: None
     ) -> None:
         super().__init__("radium226.Execution")
         self.stdout_fd = stdout_fd
         self.send_signal = send_signal
         self.wait_for = wait_for
-        self.close_stdin = close_stdin
 
     @dbus_property(PropertyAccess.READ)
     async def Stdout(self) -> "h":
@@ -43,16 +41,6 @@ class ExecutionInterface(ServiceInterface):
     @method()
     async def WaitFor(self) -> "i":
         return await self.wait_for()
-    
-    # @signal
-    # async def StdoutClosed(self) -> None:
-    #     """Signal emitted when stdout is closed."""
-    #     logger.debug("Stdout closed signal emitted.")
-    #     pass
-
-    @method()
-    async def CloseStdin(self) -> None:
-        await self.close_stdin()
         
 
 
@@ -66,10 +54,19 @@ class ExecutorInterface(ServiceInterface):
         self.bus = bus
 
     @method()
-    async def Execute(self, command: "as", stdin_fd: "h") -> "o":  # type: ignore[misc]
+    async def Execute(self, command: "as", stdin_fd: "h", mode: "s") -> "o":  # type: ignore[misc]
         try:
-            logger.info(f"Executing command: {command} with stdin_fd: {stdin_fd}")
-            stdout_read_fd, stdout_write_fd = os.pipe()
+            logger.info(f"Executing command: {command} with stdin_fd: {stdin_fd} and mode: {mode}")
+            
+            match mode:
+                case "tty":
+                    logger.debug("Using TTY mode for stdin...")
+                    stdout_read_fd, stdout_write_fd = os.openpty()
+                case "pipe":
+                    logger.debug("Using PIPE mode for stdin...")
+                    stdout_read_fd, stdout_write_fd = os.pipe()
+                case _:
+                    raise ValueError(f"Unknown mode: {mode}")
 
 
             # stdin_read_fd, stdin_write_fd = os.pipe()
@@ -92,10 +89,6 @@ class ExecutorInterface(ServiceInterface):
                 exit_code = await process.wait()
                 logger.info(f"Process {process.pid} finished with exit code: {exit_code}")
                 return exit_code
-            
-            async def close_stdin() -> None:
-                logger.debug("Client has closed stdin... ")
-                # os.close(stdin_read_fd)
 
             
             logger.info(f"Process started with PID: {process.pid}")
@@ -104,7 +97,6 @@ class ExecutorInterface(ServiceInterface):
                 stdout_fd=stdout_read_fd,
                 send_signal=send_signal,
                 wait_for=wait_for,
-                close_stdin=close_stdin,
             )
 
             logger.info(f"Exporting Execution interface at {execution_path}")
