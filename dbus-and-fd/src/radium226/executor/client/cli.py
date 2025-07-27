@@ -15,11 +15,19 @@ from dataclasses import dataclass
 from click import command, argument, UNPROCESSED
 
 
-from dbus_fast.aio import MessageBus
-from dbus_fast import BusType, Message
+from sdbus import (
+    DbusInterfaceCommonAsync, 
+    dbus_method_async,
+    request_default_bus_name_async,
+    sd_bus_open_user, 
+    request_default_bus_name_async,
+    SdBus, 
+    set_default_bus,
+)
 
 from ..shared import redirect, Mode
 
+from ..daemon.service import ExecutorInterface, ExecutionInterface, CommandNotFoundError
 
 
 
@@ -33,125 +41,87 @@ class Execution():
 
 class Service():
 
-    bus: MessageBus
-
-    def __init__(self, bus: MessageBus, interface: Any) -> None:
-        self.bus = bus
-        self.interface = interface
-
-
     async def execute(self, command: list[str]) -> Execution:
-        # mode = Mode.for_stdin()
-        # match mode:
-        #     case Mode.TTY:
-        #         logger.debug("Using TTY mode for stdin...")
-        #         stdin_read_fd, stdin_write_fd = pty.openpty()
-        #     case Mode.PIPE:
-        #         logger.debug("Using PIPE mode for stdin...")
-        #         stdin_read_fd, stdin_write_fd = os.pipe()
-        #     case _:
-        #         raise ValueError(f"Unknown mode: {mode}")
+
+        signal_sent: bool = False
+
+        logger.info("Retrieving proxy for ExecutorInterface...")
+        executor_interface = ExecutorInterface.new_proxy(
+            "radium226.Executor",
+            "/radium226/Executor",
+        )
+        logger.info("Retrieved! ")
+
+        logger.debug(f"Executing command: {command}")
+        execution_path = await executor_interface.execute(
+            command,
+            sys.stdin.fileno(), 
+            sys.stdout.fileno(),
+        )
+        logger.debug(f"Executed! ")
+
+        execution_interface = ExecutionInterface.new_proxy(
+            "radium226.Executor",
+            execution_path,
+        )
+
+        async def wait_for() -> Coroutine[Any, Any, int]:
+            nonlocal signal_sent
+            timeout = 0.5
+            while True:
+                exit_code = None
+                try:
+                    logger.debug("Waiting for ExitCode property change...")
+                    properties_changed = execution_interface.properties_changed.catch()
+                    event = await asyncio.wait_for(anext(properties_changed), timeout=timeout)
+                    interface_name, changed_properties, _ = event
+                    if interface_name == "radium226.Execution":
+                        if "ExitCode" in changed_properties:
+                            (_, (_, exit_code)) = changed_properties["ExitCode"]
+                            exit_code = exit_code if exit_code != "" else None
+                            logger.debug(f"ExitCode changed: {exit_code}")
+                except asyncio.TimeoutError:
+                    logger.debug("Timeout waiting for ExitCode property change, checking status...")
+                    _, exit_code = await execution_interface.exit_code.get_async()
+                    exit_code = exit_code if exit_code != "" else None
+
+                timeout = 15
+
+                logger.debug(f"Exit code: {exit_code}")
+                if exit_code is not None:
+                    if signal_sent:
+                        exit_code = 128 - exit_code
+                    return exit_code
+
         
-        # logger.debug(f"Executing command: {command} with stdin_fd: {stdin_read_fd}")
-        # stdin_redirection = await redirect(sys.stdin.fileno(), stdin_write_fd)# logger.debug("Starting to redirect stdout...")
-        # stdout_read_fd = await execution_interface.get_stdout()
-        # stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
-        # logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
-
-        mode = Mode.for_stdout()
-        match mode:
-            case Mode.TTY:
-                logger.debug("Using TTY mode for stdout...")
-                stdout_read_fd, stdout_write_fd = pty.openpty()
-            case Mode.PIPE:
-                logger.debug("Using PIPE mode for stdout...")
-                stdout_read_fd, stdout_write_fd = os.pipe()
-            case _:
-                raise ValueError(f"Unknown mode: {mode}")
+        async def send_signal(signal: int) -> Coroutine[Any, Any, None]:
+            nonlocal signal_sent
+            logger.trace(f"Sending signal {signal} to execution...")
+            await execution_interface.send_signal(signal)
+            signal_sent = True
             
-        logger.debug("Starting to redirect stdout...")
-        stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
-        logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
-
-        mode = Mode.for_stdin()
-        match mode:
-            case Mode.TTY:
-                logger.debug("Using TTY mode for stdin...")
-                stdin_read_fd, stdin_write_fd = pty.openpty()
-            case Mode.PIPE:
-                logger.debug("Using PIPE mode for stdin...")
-                stdin_read_fd, stdin_write_fd = os.pipe()
-            case _:
-                raise ValueError(f"Unknown mode: {mode}")
-            
-
-        print(f"stdin_read_fd: {stdin_read_fd}, stdin_write_fd: {stdin_write_fd}")
-        logger.debug(f"Executing command: {command} with stdin_fd: {stdin_read_fd} and stdout_fd: {stdout_write_fd}")
-        stdin_redirection = await redirect(sys.stdin.fileno(), stdin_write_fd)
-        logger.debug("Redirected stdin to the execution's stdin")
-
-        reply = await self.bus.call(
-                Message(
-                    destination='radium226.Executor',
-                    path='/radium226/Executor',
-                    interface='radium226.Executor',
-                    member='Execute',
-                    signature="as(hh)",
-                    body=[command, [0, 1]],
-                    unix_fds=[stdin_read_fd, stdout_write_fd]
-                )
-            )
-
-
-        execution_path = await self.interface.call_execute(command, [stdin_read_fd, stdout_write_fd])
-        execution_introspection = await self.bus.introspect("radium226.Executor", execution_path)
-        execution_proxy = self.bus.get_proxy_object("radium226.Executor", execution_path, execution_introspection)
-        execution_interface = execution_proxy.get_interface("radium226.Execution")
-        logger.debug(f"Execution interface obtained at path: {execution_path}")
-
-        # logger.debug("Starting to redirect stdout...")
-        # stdout_read_fd = await execution_interface.get_stdout()
-        # stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
-        # logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
-
-        async def wait_for() -> int:
-            logger.debug("Waiting for execution to finish...")
-            exit_code = await execution_interface.call_wait_for()
-            await stdin_redirection.abort()
-            await stdout_redirection.abort()
-            
-            await stdin_redirection.wait_for()
-            await stdout_redirection.wait_for()
-
-            return exit_code
-        
-        async def send_signal(signal: int) -> None:
-            logger.debug(f"Sending signal {signal} to execution...")
-            await execution_interface.call_send_signal(signal)
-        
         execution = Execution(wait_for=wait_for, send_signal=send_signal)
         return execution
 
 
-
 @asynccontextmanager
 async def start_service() -> AsyncGenerator[Service, None]:
-    bus = MessageBus(bus_type=BusType.SESSION, negotiate_unix_fd=True)
+    logger.info("Opening D-Bus...")
+    bus = sd_bus_open_user()
+    logger.info("Opened! ")
     
-    logger.info("Connecting to D-Bus...")
-    await bus.connect()
-    
-    introspection = await bus.introspect("radium226.Executor", "/radium226/Executor")
-    proxy_object = bus.get_proxy_object("radium226.Executor", "/radium226/Executor", introspection)
-    interface = proxy_object.get_interface("radium226.Executor")
-    
-    service = Service(bus, interface)
+    logger.info("Setting as default bus...")
+    set_default_bus(bus)
+    logger.info("Set! ")
+
+    service = Service()
     
     try:
         yield service
     finally:
-        logger.info("Disconnecting bus...")
-        bus.disconnect()
+        logger.info("Closing D-Bus...")
+        bus.close()
+        logger.info("Closed! ")
 
 
 
@@ -163,19 +133,23 @@ def app(command) -> NoReturn:
             logger.info("Executor client started! ")
             
             logger.info(f"Executing command: {command}")
-            execution = await service.execute(list(command))
+            try:
+                execution = await service.execute(list(command))
 
-            logger.debug("Registering to signal handler for SIGINT...")
-            def handle_sigint_signal() -> None:
-                logger.info("SIGINT signal received, sending signal to execution...")
-                asyncio.create_task(execution.send_signal(signal.SIGINT))
+                logger.debug("Registering to signal handler for SIGINT...")
+                def handle_sigint_signal() -> None:
+                    logger.info("SIGINT signal received, sending signal to execution...")
+                    asyncio.create_task(execution.send_signal(signal.SIGINT))
 
-            asyncio.get_event_loop().add_signal_handler(signal.SIGINT, handle_sigint_signal)
+                asyncio.get_event_loop().add_signal_handler(signal.SIGINT, handle_sigint_signal)
 
-            logger.info("Wait for execution to finish...")
-            exit_code = await execution.wait_for()
-            logger.info(f"Execution finished with exit code: {exit_code}")
-            return exit_code
+                logger.info("Wait for execution to finish...")
+                exit_code = await execution.wait_for()
+                logger.info(f"Execution finished with exit code: {exit_code}")
+                return exit_code
+            except CommandNotFoundError:
+                logger.error(f"Command not found: {" ".join(command)}")
+                sys.exit(127)
 
     exit_code = asyncio.run(coro())
     sys.exit(exit_code)

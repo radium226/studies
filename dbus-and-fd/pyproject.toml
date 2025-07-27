@@ -8,6 +8,7 @@ dependencies = [
     "click>=8.2.1",
     "dbus-fast>=2.44.1",
     "loguru>=0.7.3",
+    "sdbus>=0.14.0",
 ]
 
 [project.scripts]

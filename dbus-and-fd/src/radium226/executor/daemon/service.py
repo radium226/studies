@@ -3,114 +3,150 @@ from typing import AsyncGenerator, Callable, Coroutine, Any
 import asyncio
 import os
 from contextlib import asynccontextmanager
+import traceback
 
 from loguru import logger
 
-from dbus_fast import BusType, Message
-from dbus_fast.aio import MessageBus
-from dbus_fast.service import ServiceInterface, method, dbus_property, PropertyAccess, signal
+from sdbus import (
+    DbusInterfaceCommonAsync, 
+    dbus_method_async,
+    request_default_bus_name_async,
+    sd_bus_open_user, 
+    request_default_bus_name_async,
+    SdBus, 
+    set_default_bus,
+    DbusObjectManagerInterfaceAsync,
+    dbus_property_async,
+    DbusFailedError,
+)
 
 from ..shared import redirect
 
 
-class ExecutionInterface(ServiceInterface):
+class ExecutionInterface(
+    DbusInterfaceCommonAsync,
+    interface_name="radium226.Execution",
+):
 
-    send_signal: Callable[[int], Coroutine[Any, Any, None]]
-    wait_for: Callable[[], Coroutine[Any, Any, int]]
+    _send_signal: Callable[[int], Coroutine[Any, Any, None]]
+    
+    _status: str = "running"
+
+    _exit_code: tuple[str, str | int] = ("s", "")
 
     def __init__(self, 
         send_signal: Callable[[int], Coroutine[Any, Any, None]], 
-        wait_for: Callable[[], Coroutine[Any, Any, int]],
     ) -> None:
-        super().__init__("radium226.Execution")
-        self.send_signal = send_signal
-        self.wait_for = wait_for
+        super().__init__()
+        self._send_signal = send_signal
     
-    @method()
-    async def SendSignal(self, signal: "i") -> None:
+    @dbus_method_async(
+        input_signature="i",
+        method_name="SendSignal",
+    )
+    async def send_signal(self, signal: int) -> None:
         logger.debug(f"SendSignal method called with signal: {signal}")
-        await self.send_signal(signal)
+        await self._send_signal(signal)
 
-    @method()
-    async def WaitFor(self) -> "i":
-        return await self.wait_for()
+    @dbus_property_async(
+        property_signature='s',
+        property_name="Status",
+    )
+    def status(self) -> str:
+        return self._status
+    
+    @status.setter_private
+    def _set_status(self, value: str) -> None:
+        logger.debug(f"Setting status to: {value}")
+        self._status = value
+
+    @dbus_property_async(
+        property_signature='v',
+        property_name="ExitCode",
+    )
+    def exit_code(self) -> tuple[str, str | int]:
+        return self._exit_code
+    
+    @exit_code.setter_private
+    def _set_exit_code(self, value: tuple[str, str | int]) -> None:
+        self._exit_code = value
+
+
+class CommandNotFoundError(DbusFailedError):
+    dbus_error_name = "radium226.CommandNotFound"
         
 
 
+class ExecutorInterface(
+    DbusObjectManagerInterfaceAsync,
+    interface_name="radium226.Executor",
+):
 
-class ExecutorInterface(ServiceInterface):
+    def __init__(self) -> None:
+        super().__init__()
+        
 
-    bus: MessageBus
-
-    def __init__(self, bus: MessageBus) -> None:
-        super().__init__("radium226.Executor")
-        self.bus = bus
-
-    @method()
-    async def Execute(self, command: "as", stdio_fds: "ah") -> "o":  # type: ignore[misc]
+    @dbus_method_async(
+        input_signature="ashh",
+        method_name="Execute",
+        result_signature="o",  # Object path
+    )
+    async def execute(self, command: list[str], stdin_fd: int, stdout_fd: int) -> str: 
+        logger.info(f"Executing command: {command} with stdin_fd: {stdin_fd} and stdout_fd: {stdout_fd}")
         try:
-            stdin_fd, stdout_fd = stdio_fds
-            logger.info(f"Executing command: {command} with stdin_fd: {stdin_fd} and stdout_fd: {stdout_fd}")
-            # match mode:
-            #     case "tty":
-            #         logger.debug("Using TTY mode for stdin...")
-            #         stdout_read_fd, stdout_write_fd = os.openpty()
-            #     case "pipe":
-            #         logger.debug("Using PIPE mode for stdin...")
-            #         stdout_read_fd, stdout_write_fd = os.pipe()
-            #     case _:
-            #         raise ValueError(f"Unknown mode: {mode}")
-
-            # stdin_read_fd, stdin_write_fd = os.pipe()
-
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=stdin_fd,
                 stdout=stdout_fd,
             )
-            # os.close(stdout_write_fd)  # Close the write end after passing it to the process
-
-            # asyncio.create_task(redirect(stdin_fd, stdin_write_fd, "STDIN"))
-
-            async def send_signal(signal: int) -> None:
-                # logger.info(f"Sending signal {signal} to process {process.pid}")
-                process.send_signal(signal)
-
-            async def wait_for() -> int:
-                logger.info(f"Waiting for process {process.pid} to finish...")
-                exit_code = await process.wait()
-                logger.info(f"Process {process.pid} finished with exit code: {exit_code}")
-                return exit_code
-
-            
-            logger.info(f"Process started with PID: {process.pid}")
-            execution_path = f"/radium226/Execution/{process.pid}"
-            execution_interface = ExecutionInterface(
-                send_signal=send_signal,
-                wait_for=wait_for,
-            )
-
-            logger.info(f"Exporting Execution interface at {execution_path}")
-            self.bus.export(execution_path, execution_interface)
-            return execution_path
-
-
         except Exception as e:
-            logger.error(f"Failed to execute command {command}: {e}")
-            raise
+            logger.error(f"Failed to execute command: {e}")
+            raise CommandNotFoundError()
+
+        async def send_signal(signal: int) -> None:
+            logger.info(f"Sending signal {signal} to process {process.pid}")
+            process.send_signal(signal)
+           
+        execution_path = f"/radium226/Executor/{process.pid}"
+        execution_interface = ExecutionInterface(
+            send_signal=send_signal,
+        )
+
+        async def notify_completion():
+            logger.info(f"Waiting for process {process.pid} to finish...")
+            exit_code = await process.wait()
+            logger.info(f"Process {process.pid} finished with exit code: {exit_code}")
+            await execution_interface.exit_code.set_async(("i", exit_code))
+            await execution_interface.status.set_async("completed")
+
+        asyncio.create_task(notify_completion())
+        
+
+        logger.info(f"Exporting ExecutionInterface to D-Bus (at {execution_path})")
+        self.export_with_manager(execution_path, execution_interface)
+        logger.info("Exported! ")
+
+        return execution_path
 
 
 @asynccontextmanager
 async def start_service() -> AsyncGenerator[Callable[[], None], None]:
-    bus = MessageBus(bus_type=BusType.SESSION, negotiate_unix_fd=True)
-    
-    logger.info("Connecting to D-Bus...")
-    await bus.connect()
-    
-    logger.info("Exporting Executor interface...")
-    interface = ExecutorInterface(bus)
-    bus.export("/radium226/Executor", interface)
-    await bus.request_name("radium226.Executor")
+    logger.info("Opening D-Bus...")
+    bus = sd_bus_open_user()
+    logger.info("Opened! ")
+
+    logger.info("Setting as default bus...")
+    set_default_bus(bus)
+    logger.info("Set! ")
+
+    logger.info("Acquiring default bus name...")
+    await bus.request_name_async("radium226.Executor", 0)
+    logger.info("Acquired! ")
+
+    logger.info("Exporting Executor to D-Bus...")
+    interface = ExecutorInterface()
+    interface.export_to_dbus("/radium226/Executor")
+    logger.info("Exported! ")
     
     async def wait_for():
         try:
@@ -121,4 +157,4 @@ async def start_service() -> AsyncGenerator[Callable[[], None], None]:
         yield wait_for
     finally:
         logger.info("Disconnecting bus...")
-        bus.disconnect()
+        bus.close()
