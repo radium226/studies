@@ -16,7 +16,7 @@ from click import command, argument, UNPROCESSED
 
 
 from dbus_fast.aio import MessageBus
-from dbus_fast import BusType
+from dbus_fast import BusType, Message
 
 from ..shared import redirect, Mode
 
@@ -41,6 +41,38 @@ class Service():
 
 
     async def execute(self, command: list[str]) -> Execution:
+        # mode = Mode.for_stdin()
+        # match mode:
+        #     case Mode.TTY:
+        #         logger.debug("Using TTY mode for stdin...")
+        #         stdin_read_fd, stdin_write_fd = pty.openpty()
+        #     case Mode.PIPE:
+        #         logger.debug("Using PIPE mode for stdin...")
+        #         stdin_read_fd, stdin_write_fd = os.pipe()
+        #     case _:
+        #         raise ValueError(f"Unknown mode: {mode}")
+        
+        # logger.debug(f"Executing command: {command} with stdin_fd: {stdin_read_fd}")
+        # stdin_redirection = await redirect(sys.stdin.fileno(), stdin_write_fd)# logger.debug("Starting to redirect stdout...")
+        # stdout_read_fd = await execution_interface.get_stdout()
+        # stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
+        # logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
+
+        mode = Mode.for_stdout()
+        match mode:
+            case Mode.TTY:
+                logger.debug("Using TTY mode for stdout...")
+                stdout_read_fd, stdout_write_fd = pty.openpty()
+            case Mode.PIPE:
+                logger.debug("Using PIPE mode for stdout...")
+                stdout_read_fd, stdout_write_fd = os.pipe()
+            case _:
+                raise ValueError(f"Unknown mode: {mode}")
+            
+        logger.debug("Starting to redirect stdout...")
+        stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
+        logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
+
         mode = Mode.for_stdin()
         match mode:
             case Mode.TTY:
@@ -51,20 +83,36 @@ class Service():
                 stdin_read_fd, stdin_write_fd = os.pipe()
             case _:
                 raise ValueError(f"Unknown mode: {mode}")
-        
-        logger.debug(f"Executing command: {command} with stdin_fd: {stdin_read_fd}")
-        stdin_redirection = await redirect(sys.stdin.fileno(), stdin_write_fd)
+            
 
-        execution_path = await self.interface.call_execute(command, stdin_read_fd, f"{Mode.for_stdout()}")
+        print(f"stdin_read_fd: {stdin_read_fd}, stdin_write_fd: {stdin_write_fd}")
+        logger.debug(f"Executing command: {command} with stdin_fd: {stdin_read_fd} and stdout_fd: {stdout_write_fd}")
+        stdin_redirection = await redirect(sys.stdin.fileno(), stdin_write_fd)
+        logger.debug("Redirected stdin to the execution's stdin")
+
+        reply = await self.bus.call(
+                Message(
+                    destination='radium226.Executor',
+                    path='/radium226/Executor',
+                    interface='radium226.Executor',
+                    member='Execute',
+                    signature="as(hh)",
+                    body=[command, [0, 1]],
+                    unix_fds=[stdin_read_fd, stdout_write_fd]
+                )
+            )
+
+
+        execution_path = await self.interface.call_execute(command, [stdin_read_fd, stdout_write_fd])
         execution_introspection = await self.bus.introspect("radium226.Executor", execution_path)
         execution_proxy = self.bus.get_proxy_object("radium226.Executor", execution_path, execution_introspection)
         execution_interface = execution_proxy.get_interface("radium226.Execution")
         logger.debug(f"Execution interface obtained at path: {execution_path}")
 
-        logger.debug("Starting to redirect stdout...")
-        stdout_read_fd = await execution_interface.get_stdout()
-        stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
-        logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
+        # logger.debug("Starting to redirect stdout...")
+        # stdout_read_fd = await execution_interface.get_stdout()
+        # stdout_redirection = await redirect(stdout_read_fd, sys.stdout.fileno())
+        # logger.debug(f"Redirected stdout from fd {stdout_read_fd} to sys.stdout")
 
         async def wait_for() -> int:
             logger.debug("Waiting for execution to finish...")

@@ -1,3 +1,4 @@
+from mailbox import Message
 from typing import AsyncGenerator, Callable, Coroutine, Any
 import asyncio
 import os
@@ -5,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from loguru import logger
 
-from dbus_fast import BusType
+from dbus_fast import BusType, Message
 from dbus_fast.aio import MessageBus
 from dbus_fast.service import ServiceInterface, method, dbus_property, PropertyAccess, signal
 
@@ -14,24 +15,16 @@ from ..shared import redirect
 
 class ExecutionInterface(ServiceInterface):
 
-    stdout_fd: int
-
     send_signal: Callable[[int], Coroutine[Any, Any, None]]
     wait_for: Callable[[], Coroutine[Any, Any, int]]
 
     def __init__(self, 
-        stdout_fd: int,             
         send_signal: Callable[[int], Coroutine[Any, Any, None]], 
         wait_for: Callable[[], Coroutine[Any, Any, int]],
     ) -> None:
         super().__init__("radium226.Execution")
-        self.stdout_fd = stdout_fd
         self.send_signal = send_signal
         self.wait_for = wait_for
-
-    @dbus_property(PropertyAccess.READ)
-    async def Stdout(self) -> "h":
-        return self.stdout_fd
     
     @method()
     async def SendSignal(self, signal: "i") -> None:
@@ -54,29 +47,28 @@ class ExecutorInterface(ServiceInterface):
         self.bus = bus
 
     @method()
-    async def Execute(self, command: "as", stdin_fd: "h", mode: "s") -> "o":  # type: ignore[misc]
+    async def Execute(self, command: "as", stdio_fds: "ah") -> "o":  # type: ignore[misc]
         try:
-            logger.info(f"Executing command: {command} with stdin_fd: {stdin_fd} and mode: {mode}")
-            
-            match mode:
-                case "tty":
-                    logger.debug("Using TTY mode for stdin...")
-                    stdout_read_fd, stdout_write_fd = os.openpty()
-                case "pipe":
-                    logger.debug("Using PIPE mode for stdin...")
-                    stdout_read_fd, stdout_write_fd = os.pipe()
-                case _:
-                    raise ValueError(f"Unknown mode: {mode}")
-
+            stdin_fd, stdout_fd = stdio_fds
+            logger.info(f"Executing command: {command} with stdin_fd: {stdin_fd} and stdout_fd: {stdout_fd}")
+            # match mode:
+            #     case "tty":
+            #         logger.debug("Using TTY mode for stdin...")
+            #         stdout_read_fd, stdout_write_fd = os.openpty()
+            #     case "pipe":
+            #         logger.debug("Using PIPE mode for stdin...")
+            #         stdout_read_fd, stdout_write_fd = os.pipe()
+            #     case _:
+            #         raise ValueError(f"Unknown mode: {mode}")
 
             # stdin_read_fd, stdin_write_fd = os.pipe()
 
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=stdin_fd,
-                stdout=stdout_write_fd,
+                stdout=stdout_fd,
             )
-            os.close(stdout_write_fd)  # Close the write end after passing it to the process
+            # os.close(stdout_write_fd)  # Close the write end after passing it to the process
 
             # asyncio.create_task(redirect(stdin_fd, stdin_write_fd, "STDIN"))
 
@@ -94,7 +86,6 @@ class ExecutorInterface(ServiceInterface):
             logger.info(f"Process started with PID: {process.pid}")
             execution_path = f"/radium226/Execution/{process.pid}"
             execution_interface = ExecutionInterface(
-                stdout_fd=stdout_read_fd,
                 send_signal=send_signal,
                 wait_for=wait_for,
             )
