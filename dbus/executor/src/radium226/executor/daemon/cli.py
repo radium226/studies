@@ -1,23 +1,23 @@
-"""CLI for echo0d daemon."""
-
 import asyncio
-import sys
 from typing import NoReturn
 
-from loguru import logger
 
-from .service import start_service
+from ..shared.dbus.open_bus import open_bus
+from ..shared.dbus.executor_interface import ExecutorInterface
 
-import logging
+from .domain import Executor
 
 
 def app() -> NoReturn:
     async def coro() -> None:
-        logging.basicConfig(level=logging.DEBUG)
-        logging.getLogger("asyncio").setLevel(logging.DEBUG)
-        logger.info("Starting Executor daemon...")
-        async with start_service() as wait_for:
-            logger.info("Executor daemon started! ")
-            await wait_for()
-            logger.info("Executor daemon stopped.")
+        async with open_bus() as bus, Executor() as executor:
+            await bus.request_name_async("radium226.Executor", 0)
+            
+            executor_interface = ExecutorInterface(executor)
+            executor_path = "/radium226/Executor"
+            executor_interface.export_to_dbus(executor_path)
+            
+            await executor.run_forever()
+    
+    
     asyncio.run(coro(), debug=True)
