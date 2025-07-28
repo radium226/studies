@@ -1,6 +1,7 @@
 from asyncio.subprocess import create_subprocess_exec
 from asyncio import Future, CancelledError
 from loguru import logger
+import os
 
 from .execution import Execution
 
@@ -18,15 +19,22 @@ class Executor():
         return self
 
 
-    async def execute(self, command: list[str], stdin_fd: int, stdout_fd: int) -> Execution | None:
-        logger.trace("execute({command}, {stdin_fd}, {stdout_fd})", command=command, stdin_fd=stdin_fd, stdout_fd=stdout_fd)        
+    async def execute(self, command: list[str], stdin_fd: int, stdout_fd: int, env: dict[str, str], uid: int, cwd: str) -> Execution | None:
+        logger.trace("execute({command}, {stdin_fd}, {stdout_fd}, {env}, {uid}, {cwd})", command=command, stdin_fd=stdin_fd, stdout_fd=stdout_fd, env=env, uid=uid, cwd=cwd)        
         
-        logger.info("About to execute command: {command}", command=command)
+        logger.info("About to execute command: {command} with uid: {uid} in cwd: {cwd}", command=command, uid=uid, cwd=cwd)
+        
+        def preexec_fn():
+            os.setuid(uid)
+        
         try:
             process = await create_subprocess_exec(
                 *command,
                 stdin=stdin_fd,
                 stdout=stdout_fd,
+                env=env,
+                cwd=cwd,
+                preexec_fn=preexec_fn,
             )
             execution = Execution(process)
             logger.debug(f"Created Execution with PID: {execution.proces_pid}")

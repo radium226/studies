@@ -29,13 +29,13 @@ class ExecutorInterface(
         
 
     @dbus_method_async(
-        input_signature="ashh",
+        input_signature="ashha{ss}us",
         method_name="Execute",
         result_signature="o",
     )
-    async def execute(self, command: list[str], stdin_fd: int, stdout_fd: int) -> str: 
-        logger.trace("execute({command}, {stdin_fd}, {stdout_fd})", command=command, stdin_fd=stdin_fd, stdout_fd=stdout_fd)
-        execution = await self._executor.execute(command, stdin_fd, stdout_fd)
+    async def execute(self, command: list[str], stdin_fd: int, stdout_fd: int, env: dict[str, str], uid: int, cwd: str) -> str: 
+        logger.trace("execute({command}, {stdin_fd}, {stdout_fd}, {env}, {uid}, {cwd})", command=command, stdin_fd=stdin_fd, stdout_fd=stdout_fd, env=env, uid=uid, cwd=cwd)
+        execution = await self._executor.execute(command, stdin_fd, stdout_fd, env, uid, cwd)
         if execution is None:
             raise CommandNotFoundError()
         

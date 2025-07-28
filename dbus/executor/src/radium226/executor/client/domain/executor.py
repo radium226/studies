@@ -6,6 +6,7 @@ from typing import (
 )
 import sys
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from sdbus import SdBus
@@ -37,11 +38,13 @@ class Executor():
         yield cls(executor_interface)
 
     async def execute(self, command: list[str]) -> Execution:
-        print(self._executor_interface)
         execution_path = await self._executor_interface.execute(
             command,
             sys.stdin.fileno(), 
             sys.stdout.fileno(),
+            dict(os.environ),
+            os.getuid(),
+            os.getcwd(),
         )
 
         execution_interface = ExecutionInterface.new_proxy(
