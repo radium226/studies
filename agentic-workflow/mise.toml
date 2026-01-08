@@ -1,0 +1,35 @@
+[env]
+_.file = ".env"
+
+[tasks."test:pytest"]
+hide = true
+description = "Test the project using Pytest"
+run = """
+uv run pytest --suppress-no-test-exit-code "./tests"
+"""
+
+[tasks."test:ruff"]
+hide = true
+description = "Lint the project using Ruff"
+run = """
+uv run ruff check --fix "./src" 
+uv run ruff check --fix "./tests"
+"""
+
+[tasks."test:mypy"]
+hide = true
+description = "Type-check the project using Mypy"
+run = """
+uv run mypy "./src" 
+uv run mypy "./tests"
+"""
+
+[tasks."test"]
+description = "Test the project"
+depends = ["test:ruff", "test:mypy", "test:pytest"]
+
+[tasks."run-bot"]
+description = "Run the agentic workflow bot"
+run = """
+uv run bot run
+"""
