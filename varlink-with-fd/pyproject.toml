@@ -1,0 +1,21 @@
+[project]
+name = "varlink-with-fd"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "radium226", email = "radium226@rouages.xyz" }
+]
+requires-python = ">=3.13"
+dependencies = ["pydantic>=2.0"]
+
+[project.scripts]
+study = "varlink_with_fd.client:main"
+studyd = "varlink_with_fd.server:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["uv_build>=0.9.29,<0.10.0"]
+build-backend = "uv_build"
