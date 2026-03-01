@@ -1,0 +1,28 @@
+[project]
+name = "radium226-studies-ipc"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "radium226", email = "radium226@rouages.xyz" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.0",
+    "pydantic>=2.12.5",
+]
+
+[project.scripts]
+radium226-studies-ipc = "radium226.studies.ipc:app"
+
+[build-system]
+requires = ["uv_build>=0.10.7,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "radium226.studies.ipc"
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.19",
+]
