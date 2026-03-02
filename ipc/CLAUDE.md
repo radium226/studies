@@ -34,16 +34,17 @@ The CLI entry point (`radium226-studies-ipc`) maps to `radium226.studies.ipc:app
 | Layer | File | Responsibility |
 |---|---|---|
 | Transport | `transport.py` | Raw Unix socket I/O, framing, SCM_RIGHTS fd passing |
-| Protocol | `protocol.py` | Type aliases: `Request`, `Response`, `Codec`, `ResponseHandler` |
+| Protocol | `protocol.py` | `Request` base class, `Response` protocol, `Codec`, `ResponseHandler` |
 | Server / Client | `server.py`, `client.py` | Async request/response + event multiplexing over a `Connection` |
-| IPC facade | `ipc.py` | `IPC.open_server` / `IPC.open_client` async context managers |
+| IPC facade | `ipc.py` | `open_server` / `open_client` module-level async context managers |
 | CLI | `cli/app.py` | Click commands wiring messages to the IPC facade |
 | Messages | `cli/messages.py` | Pydantic models for the demo protocol |
 
 ### Key design points
 
 - **Framing**: `Framing` is a structural protocol (`delimit` / `extract`). The default `NullCharFraming` delimits frames with `\x00`. Frames also carry optional file descriptors via `SCM_RIGHTS`.
-- **Codec**: A `Codec[RequestT, EventT, ResponseT]` bundles `encode` and `decode` callables. The CLI uses a Pydantic `TypeAdapter(Request | Event | Response)` with a `type` literal discriminator field on each model.
-- **Request/Response matching**: `Request` and `Response` are structural protocols checked at runtime (`id: str` / `request_id: str`). The client correlates responses to pending requests by `request_id`.
-- **Events**: The server can push intermediate events before sending the final response via the `emit` callback passed to the handler. The client routes events to any pending request's `on_event` handler.
-- **Generics**: `Server`, `Client`, `IPC`, and `Codec` are all generic over `(RequestT, EventT, ResponseT)` using Python 3.12+ type parameter syntax.
+- **Codec**: A `Codec[RequestT, EventT, ResponseT]` bundles `encode` and `decode` callables. The CLI uses a Pydantic `TypeAdapter` over the message union with a `type` literal discriminator field on each model.
+- **Request base class**: `Request[ResponseT, EventT]` is a generic base class (not a structural protocol). Subclasses inherit from it with concrete type args (e.g., `Hello(BaseModel, Request[World, Foo | Bar])`), and `__init_subclass__` extracts `__response_type__` / `__event_type__` for runtime validation via `validate_response` / `validate_event`.
+- **Response protocol**: `Response` is a structural protocol — any object with `request_id: str`. The client correlates responses to pending requests by `request_id`.
+- **Events**: The server can push intermediate events before sending the final response via the `emit` callback passed to the handler. The client routes events to all pending requests' `on_event` handlers.
+- **Generics**: `Server`, `Client`, `Codec`, and the `open_server`/`open_client` functions are all generic over `(RequestT, EventT, ResponseT)` using Python 3.12+ type parameter syntax.

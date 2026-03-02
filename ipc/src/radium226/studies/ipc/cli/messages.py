@@ -1,12 +1,8 @@
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Discriminator
 
-
-class Hello(BaseModel):
-    id: str
-    name: str
-    type: Literal["hello"] = "hello"
+from ..protocol import Request
 
 
 class World(BaseModel):
@@ -24,10 +20,10 @@ class Bar(BaseModel):
     description: str
 
 
+class Hello(BaseModel, Request[World, Foo | Bar]):
+    id: str
+    name: str
+    type: Literal["hello"] = "hello"
+
+
 type Event = Annotated[Foo | Bar, Discriminator("type")]
-
-type Request = Hello
-# type Request = Annotated[Union[Hello], Discriminator("type")]
-
-type Response = World
-# type Response = Annotated[Union[World], Discriminator("type")]

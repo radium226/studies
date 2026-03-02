@@ -1,9 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Generic
+from typing import AsyncIterator
 
-from .protocol import Codec, Request, ResponseHandler, Response
+from .protocol import Codec, Request, Response, ResponseHandler, validate_event, validate_response
 from .transport import Connection, Frame, Framing, NullCharFraming, open_connection
 
 
@@ -15,7 +15,7 @@ class Client[RequestT: Request, EventT, ResponseT: Response]():
     ) -> None:
         self._connection = connection
         self._codec = codec
-        self._pending: dict[str, tuple[asyncio.Future[None], ResponseHandler[EventT, ResponseT]]] = {}
+        self._pending: dict[str, tuple[asyncio.Future[None], RequestT, ResponseHandler[EventT, ResponseT]]] = {}
         self._receive_task: asyncio.Task = asyncio.create_task(self._receive_loop())
 
     @classmethod
@@ -40,7 +40,7 @@ class Client[RequestT: Request, EventT, ResponseT: Response]():
             handler = ResponseHandler()
         loop = asyncio.get_running_loop()
         future: asyncio.Future[None] = loop.create_future()
-        self._pending[request.id] = (future, handler)
+        self._pending[request.id] = (future, request, handler)
         await self._connection.send_frame(Frame(self._codec.encode(request), fds))
         await future
 
@@ -51,13 +51,15 @@ class Client[RequestT: Request, EventT, ResponseT: Response]():
                 case Response() as response:
                     entry = self._pending.pop(response.request_id, None)
                     if entry is not None:
-                        future, response_handler = entry
+                        future, original_request, response_handler = entry
+                        validate_response(original_request, response)
                         if response_handler.on_response is not None:
                             await response_handler.on_response(response, frame.fds)
                         if not future.done():
                             future.set_result(None)
                 case event:
-                    for _, (_, response_handler) in list(self._pending.items()):
+                    for _, (_, original_request, response_handler) in list(self._pending.items()):
+                        validate_event(original_request, event)
                         if response_handler.on_event is not None:
                             await response_handler.on_event(event, frame.fds)
 

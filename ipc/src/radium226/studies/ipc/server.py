@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
-from .protocol import Codec, Emit, Request, Response
+from .protocol import Codec, Emit, Request, Response, validate_event, validate_response
 from .transport import Connection, Frame, Framing, NullCharFraming, accept_connections
 
 type RequestHandler[RequestT: Request, EventT, ResponseT: Response] = Callable[[RequestT, list[int], Emit[EventT]], Awaitable[tuple[ResponseT, list[int]]]]
@@ -26,16 +26,18 @@ class Server[RequestT: Request, EventT, ResponseT: Response]():
     async def _handle_connection(self, connection: Connection) -> None:
         self._connections.append(connection)
 
-        async def emit(event: EventT, fds: list[int] | None = None) -> None:
-            data = self._codec.encode(event)
-            await connection.send_frame(Frame(data, fds or []))
-
         try:
             async for frame in connection:
                 message = self._codec.decode(frame.data)
                 match message:
                     case Request() as request:
+                        async def emit(event: EventT, fds: list[int] | None = None) -> None:
+                            validate_event(request, event)
+                            data = self._codec.encode(event)
+                            await connection.send_frame(Frame(data, fds or []))
+
                         response, response_fds = await self._handler(request, frame.fds, emit)
+                        validate_response(request, response)
                         await connection.send_frame(
                             Frame(self._codec.encode(response), response_fds)
                         )
