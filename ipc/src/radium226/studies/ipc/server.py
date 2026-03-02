@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
+from loguru import logger
+
 from .protocol import Codec, Emit, Request, Response, validate_event, validate_response
 from .transport import Connection, Frame, Framing, NullCharFraming, accept_connections
 
@@ -28,19 +30,33 @@ class Server[RequestT: Request, EventT, ResponseT: Response]():
 
         try:
             async for frame in connection:
-                message = self._codec.decode(frame.data)
+                try:
+                    message = self._codec.decode(frame.data)
+                except Exception:
+                    logger.warning("Failed to decode frame, skipping")
+                    continue
+
                 match message:
                     case Request() as request:
                         async def emit(event: EventT, fds: list[int] | None = None) -> None:
                             validate_event(request, event)
                             data = self._codec.encode(event)
-                            await connection.send_frame(Frame(data, fds or []))
+                            try:
+                                await connection.send_frame(Frame(data, fds or []))
+                            except (OSError, EOFError):
+                                logger.warning("Client disconnected during event emit")
 
-                        response, response_fds = await self._handler(request, frame.fds, emit)
-                        validate_response(request, response)
-                        await connection.send_frame(
-                            Frame(self._codec.encode(response), response_fds)
-                        )
+                        try:
+                            response, response_fds = await self._handler(request, frame.fds, emit)
+                            validate_response(request, response)
+                            await connection.send_frame(
+                                Frame(self._codec.encode(response), response_fds)
+                            )
+                        except Exception:
+                            logger.error("Handler raised an exception for request {}", type(request).__name__)
+
+                    case _:
+                        logger.warning("Received non-Request message: {}", type(message).__name__)
         finally:
             if connection in self._connections:
                 self._connections.remove(connection)

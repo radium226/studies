@@ -38,7 +38,13 @@ def _type_name(t: Any) -> str:
 
 def validate_response(request: Request[Any, Any], response: Any) -> None:
     """Validate that *response* matches the request's phantom ``ResponseT``."""
-    expected = request.__class__.__response_type__
+    try:
+        expected = request.__class__.__response_type__
+    except AttributeError:
+        raise TypeError(
+            f"{type(request).__name__} does not specify type parameters; "
+            f"inherit from Request[ResponseT, EventT]"
+        )
     if not isinstance(response, expected):
         raise TypeError(
             f"Request {type(request).__name__} expects response of type "
@@ -48,7 +54,13 @@ def validate_response(request: Request[Any, Any], response: Any) -> None:
 
 def validate_event(request: Request[Any, Any], event: Any) -> None:
     """Validate that *event* matches the request's phantom ``EventT``."""
-    expected = request.__class__.__event_type__
+    try:
+        expected = request.__class__.__event_type__
+    except AttributeError:
+        raise TypeError(
+            f"{type(request).__name__} does not specify type parameters; "
+            f"inherit from Request[ResponseT, EventT]"
+        )
     if not isinstance(event, expected):
         raise TypeError(
             f"Request {type(request).__name__} expects event of type "

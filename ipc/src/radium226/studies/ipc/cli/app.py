@@ -46,7 +46,7 @@ def start_server(socket_path: Path) -> None:
                 return response, []
 
             case _:
-                raise Exception(f"Unknown request: {request}")
+                raise ValueError(f"Unknown request: {request}")
 
 
     async def run() -> None:

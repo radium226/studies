@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Protocol, runtime_checkable
 
+from loguru import logger
+
+MAX_BUFFER_SIZE = 16 * 1024 * 1024
+
 
 @dataclass
 class Frame:
@@ -109,6 +113,11 @@ class Connection:
             if frame_data is not None:
                 return Frame(frame_data, all_fds)
 
+            if len(self._buffer) > MAX_BUFFER_SIZE:
+                raise BufferError(
+                    f"Receive buffer exceeded {MAX_BUFFER_SIZE} bytes"
+                )
+
             while True:
                 try:
                     msg, ancdata, _flags, _addr = self._socket.recvmsg(4096, _CMSG_SPACE_SIZE)
@@ -156,7 +165,9 @@ async def accept_connections(
 ) -> AsyncIterator[Connection]:
     loop = asyncio.get_running_loop()
     server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if path.exists():
+        logger.warning("Removing stale socket file: {}", path)
+        path.unlink()
     server_sock.bind(str(path))
     server_sock.listen(16)
     server_sock.setblocking(False)
