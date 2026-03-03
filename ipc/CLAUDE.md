@@ -17,8 +17,10 @@ uv build                       # Build the package
 # Terminal 1 — start the server
 uv run radium226-studies-ipc start-server
 
-# Terminal 2 — send a request
-uv run radium226-studies-ipc hello Alice
+# Terminal 2 — run a command on the server (stdin/stdout/stderr are forwarded via SCM_RIGHTS)
+uv run radium226-studies-ipc run ls -la
+
+# Signals (SIGINT, SIGTERM) are forwarded to the remote process via a KillProcess request.
 ```
 
 ## Architecture
@@ -27,7 +29,7 @@ This is a Python study/exploration project for IPC over Unix domain sockets, usi
 
 **Namespace package layout** — source lives under `src/radium226/studies/ipc/`. The `radium226/` and `radium226/studies/` directories are namespace packages (no `__init__.py`); only `ipc/` has one.
 
-The CLI entry point (`radium226-studies-ipc`) maps to `radium226.studies.ipc:app` (a Click group).
+The CLI entry point (`radium226-studies-ipc`) maps to `radium226.studies.ipc:app` (a Click group defined in `cli/app.py`, re-exported through `cli/__init__.py` and `ipc/__init__.py`).
 
 ### Layer stack (bottom to top)
 
@@ -44,7 +46,8 @@ The CLI entry point (`radium226-studies-ipc`) maps to `radium226.studies.ipc:app
 
 - **Framing**: `Framing` is a structural protocol (`delimit` / `extract`). The default `NullCharFraming` delimits frames with `\x00`. Frames also carry optional file descriptors via `SCM_RIGHTS`.
 - **Codec**: A `Codec[RequestT, EventT, ResponseT]` bundles `encode` and `decode` callables. The CLI uses a Pydantic `TypeAdapter` over the message union with a `type` literal discriminator field on each model.
-- **Request base class**: `Request[ResponseT, EventT]` is a generic base class (not a structural protocol). Subclasses inherit from it with concrete type args (e.g., `Hello(BaseModel, Request[World, Foo | Bar])`), and `__init_subclass__` extracts `__response_type__` / `__event_type__` for runtime validation via `validate_response` / `validate_event`.
+- **Request base class**: `Request[ResponseT, EventT]` is a generic base class (not a structural protocol). Subclasses inherit from it with concrete type args (e.g., `RunProcess(BaseModel, Request[ProcessTerminated | CommandNotFound, ProcessStarted])`), and `__init_subclass__` extracts `__response_type__` / `__event_type__` for runtime validation via `validate_response` / `validate_event`.
 - **Response protocol**: `Response` is a structural protocol — any object with `request_id: str`. The client correlates responses to pending requests by `request_id`.
 - **Events**: The server can push intermediate events before sending the final response via the `emit` callback passed to the handler. The client routes events to all pending requests' `on_event` handlers.
 - **Generics**: `Server`, `Client`, `Codec`, and the `open_server`/`open_client` functions are all generic over `(RequestT, EventT, ResponseT)` using Python 3.12+ type parameter syntax.
+- **File descriptor passing**: The demo protocol passes stdin/stdout/stderr fds from client to server via `SCM_RIGHTS`, so the server-spawned process inherits the client's terminal. Each `Request` and `Response` carries an associated `list[int]` of fds alongside the serialized data.

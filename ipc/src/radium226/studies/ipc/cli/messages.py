@@ -1,29 +1,46 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Never
 
 from pydantic import BaseModel, Discriminator
 
 from ..protocol import Request
 
 
-class World(BaseModel):
+class ProcessTerminated(BaseModel):
     request_id: str
-    greeting: str
-    type: Literal["world"] = "world"
+    exit_code: int
+    type: Literal["process_terminated"] = "process_terminated"
 
 
-class Foo(BaseModel):
-    type: Literal["foo"] = "foo"
-    description: str
-
-class Bar(BaseModel):
-    type: Literal["bar"] = "bar"
-    description: str
+class CommandNotFound(BaseModel):
+    request_id: str
+    command: str
+    type: Literal["command_not_found"] = "command_not_found"
 
 
-class Hello(BaseModel, Request[World, Foo | Bar]):
+class ProcessStarted(BaseModel):
+    pid: int
+    type: Literal["process_started"] = "process_started"
+
+
+class RunProcess(BaseModel, Request[ProcessTerminated | CommandNotFound, ProcessStarted]):
     id: str
-    name: str
-    type: Literal["hello"] = "hello"
+    command: str
+    args: list[str] = []
+    type: Literal["run_process"] = "run_process"
 
 
-type Event = Annotated[Foo | Bar, Discriminator("type")]
+class ProcessKilled(BaseModel):
+    request_id: str
+    pid: int
+    type: Literal["process_killed"] = "process_killed"
+
+
+class KillProcess(BaseModel, Request[ProcessKilled, Never]):
+    id: str
+    pid: int
+    signal: int
+    type: Literal["kill_process"] = "kill_process"
+
+
+type Response = Annotated[ProcessTerminated | CommandNotFound | ProcessKilled, Discriminator("type")]
+type Event = ProcessStarted
