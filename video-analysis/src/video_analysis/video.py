@@ -1,35 +1,84 @@
+from __future__ import annotations
+
 import asyncio
 import json
-import re
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from video_analysis.types import DetectStreak, Frame, Streak
+from video_analysis.types import BoundingBox, Detect, Frame
 
 
-class Scene:
+class Frames:
     def __init__(
         self,
-        index: int,
-        file_path: Path,
+        *,
+        path: Path | None = None,
         width: int,
         height: int,
         fps: float,
-        start: float,
-        end: float | None,
+        start: float = 0.0,
+        end: float | None = None,
     ) -> None:
-        self.index = index
-        self._file_path = file_path
+        self._path = path
         self._width = width
         self._height = height
         self._fps = fps
         self._start = start
         self._end = end
 
-    async def iter_frames(self) -> AsyncGenerator[Frame, None]:
-        args = ["ffmpeg", "-ss", str(self._start), "-i", str(self._file_path)]
+    def slice(self, start: float, end: float) -> Frames:
+        absolute_start = self._start + start
+        absolute_end = self._start + end
+        if self._end is not None:
+            absolute_end = min(absolute_end, self._end)
+        return Frames(
+            path=self._path,
+            width=self._width,
+            height=self._height,
+            fps=self._fps,
+            start=absolute_start,
+            end=absolute_end,
+        )
+
+    async def play(self, *, crop: BoundingBox | None = None) -> None:
+        args = ["ffplay"]
+        args += ["-ss", str(self._start)]
+        if self._end is not None:
+            args += ["-t", str(self._end - self._start)]
+        vf_filters: list[str] = []
+        if crop:
+            vf_filters.append(f"crop={crop.width}:{crop.height}:{crop.x}:{crop.y}")
+        if vf_filters:
+            args += ["-vf", ",".join(vf_filters)]
+        args += ["-autoexit", str(self._path)]
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await process.wait()
+
+    async def write(self, path: Path, *, crop: BoundingBox | None = None) -> None:
+        args = ["ffmpeg", "-y"]
+        args += ["-ss", str(self._start)]
+        args += ["-i", str(self._path)]
+        if self._end is not None:
+            args += ["-t", str(self._end - self._start)]
+        vf_filters: list[str] = []
+        if crop:
+            vf_filters.append(f"crop={crop.width}:{crop.height}:{crop.x}:{crop.y}")
+        if vf_filters:
+            args += ["-vf", ",".join(vf_filters)]
+        args += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-v", "quiet", str(path)]
+        process = await asyncio.create_subprocess_exec(*args)
+        await process.wait()
+
+    async def _iter_frames(self) -> AsyncGenerator[Frame, None]:
+        assert self._path is not None
+        args = ["ffmpeg", "-ss", str(self._start), "-i", str(self._path)]
         if self._end is not None:
             args += ["-t", str(self._end - self._start)]
         args += ["-f", "rawvideo", "-pix_fmt", "bgr24", "-v", "quiet", "-"]
@@ -60,143 +109,47 @@ class Scene:
 
         await process.wait()
 
-    async def iter_streaks[T](self, detect: DetectStreak[T]) -> AsyncGenerator[Streak[T], None]:
-        current: list = []
-        async for frame in self.iter_frames():
-            detection = detect(frame)
-            if detection is not None:
-                detection.frame = frame
-                current.append(detection)
-            elif current:
-                yield Streak(detections=current)
-                current = []
-        if current:
-            yield Streak(detections=current)
+
+async def from_file(path: Path) -> Frames:
+    probe = await asyncio.create_subprocess_exec(
+        "ffprobe",
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_streams",
+        "-select_streams", "v:0",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await probe.communicate()
+    stream = json.loads(stdout)["streams"][0]
+    width = int(stream["width"])
+    height = int(stream["height"])
+    r_num, r_den = map(int, stream["r_frame_rate"].split("/"))
+    fps = r_num / r_den
+    return Frames(path=path, width=width, height=height, fps=fps)
 
 
-class Video:
-    def __init__(self, file_path: Path | None, width: int, height: int, fps: float) -> None:
-        self._file_path = file_path
-        self._width = width
-        self._height = height
-        self._fps = fps
-        self._generator: AsyncGenerator[Frame, None] | None = None
+async def detect[T](
+    source: Frames, *, use: Detect[T]
+) -> AsyncGenerator[Detection[T], None]:
+    async for metadata, start_ts, end_ts in use(source._iter_frames()):
+        yield Detection(metadata=metadata, frames=source.slice(start_ts, end_ts))
 
-    @classmethod
-    async def from_file(cls, file_path: Path) -> "Video":
-        probe = await asyncio.create_subprocess_exec(
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_streams",
-            "-select_streams", "v:0",
-            str(file_path),
-            stdout=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await probe.communicate()
-        stream = json.loads(stdout)["streams"][0]
-        width = int(stream["width"])
-        height = int(stream["height"])
-        r_num, r_den = map(int, stream["r_frame_rate"].split("/"))
-        fps = r_num / r_den
-        return cls(file_path, width, height, fps)
 
-    @classmethod
-    async def from_frames(cls, frames: AsyncGenerator[Frame, None]) -> "Video":
-        first = await anext(frames)
-        second = await anext(frames)
-        height, width = first.data.shape[:2]
-        fps = 1.0 / (second.timestamp - first.timestamp)
+async def drain(source: Frames) -> None:
+    async for _ in source._iter_frames():
+        pass
 
-        async def _chained() -> AsyncGenerator[Frame, None]:
-            yield first
-            yield second
-            async for frame in frames:
-                yield frame
 
-        video = cls(None, width, height, fps)
-        video._generator = _chained()
-        return video
+@dataclass
+class Detection[T]:
+    metadata: T
+    frames: Frames
 
-    @classmethod
-    async def from_url(cls, url: str) -> "Video":
-        raise NotImplementedError
+    async def play(self) -> None:
+        bbox = getattr(self.metadata, "bbox", None)
+        await self.frames.play(crop=bbox)
 
-    async def iter_frames(self) -> AsyncGenerator[Frame, None]:
-        if self._generator is not None:
-            async for frame in self._generator:
-                yield frame
-            return
-
-        process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-i", str(self._file_path),
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-v", "quiet",
-            "-",
-            stdout=asyncio.subprocess.PIPE,
-        )
-        assert process.stdout is not None
-
-        frame_size = self._width * self._height * 3
-        index = 0
-
-        try:
-            while True:
-                raw = await process.stdout.readexactly(frame_size)
-                data = np.frombuffer(raw, dtype=np.uint8).reshape(
-                    (self._height, self._width, 3)
-                )
-                yield Frame(
-                    index=index,
-                    timestamp=index / self._fps,
-                    data=data,
-                )
-                index += 1
-        except asyncio.IncompleteReadError:
-            pass
-
-        await process.wait()
-
-    async def show(self) -> None:
-        process = await asyncio.create_subprocess_exec(
-            "ffplay",
-            "-f", "rawvideo",
-            "-pixel_format", "bgr24",
-            "-video_size", f"{self._width}x{self._height}",
-            "-framerate", str(self._fps),
-            "-autoexit",
-            "-i", "-",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        assert process.stdin is not None
-        async for frame in self.iter_frames():
-            process.stdin.write(frame.data.tobytes())
-        process.stdin.close()
-        await process.wait()
-
-    async def iter_scenes(self, threshold: float = 10.0) -> AsyncGenerator[Scene, None]:
-        process = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-i", str(self._file_path),
-            "-vf", f"scdet=threshold={threshold}",
-            "-f", "null",
-            "-v", "info",
-            "-",
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await process.communicate()
-
-        cuts: list[float] = []
-        for line in stderr.decode().splitlines():
-            m = re.search(r"lavfi\.scd\.time:\s*([\d.]+)", line)
-            if m:
-                cuts.append(float(m.group(1)))
-
-        starts = [0.0, *cuts]
-        ends: list[float | None] = [*cuts, None]
-        for index, (start, end) in enumerate(zip(starts, ends)):
-            yield Scene(index, self._file_path, self._width, self._height, self._fps, start, end)
+    async def write(self, path: Path) -> None:
+        bbox = getattr(self.metadata, "bbox", None)
+        await self.frames.write(path, crop=bbox)

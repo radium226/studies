@@ -1,2 +1,14 @@
-from video_analysis.video import Video as Video, Scene as Scene
-from video_analysis.types import Frame as Frame, Rectangle as Rectangle, Detection as Detection, Streak as Streak, DetectStreak as DetectStreak
+from video_analysis.types import BoundingBox as BoundingBox
+from video_analysis.types import Detect as Detect
+from video_analysis.types import Frame as Frame
+from video_analysis.video import Detection as Detection
+from video_analysis.video import Frames as Frames
+from video_analysis.video import detect as detect
+from video_analysis.video import drain as drain
+from video_analysis.video import from_file as from_file
+from video_analysis.scene import SceneInfo as SceneInfo
+from video_analysis.scene import scenes_detector as scenes_detector
+from video_analysis.stubs import FaceInfo as FaceInfo
+from video_analysis.stubs import TextInfo as TextInfo
+from video_analysis.stubs import stub_faces_detector as stub_faces_detector
+from video_analysis.stubs import stub_texts_detector as stub_texts_detector
