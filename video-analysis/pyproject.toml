@@ -11,6 +11,8 @@ dependencies = [
     "click>=8.3.2",
     "loguru>=0.7.3",
     "numpy>=2.4.4",
+    "pillow>=11.0.0",
+    "pytesseract>=0.3.13",
 ]
 
 [project.scripts]
