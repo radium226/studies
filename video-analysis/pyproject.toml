@@ -9,10 +9,13 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "click>=8.3.2",
+    "deepface>=0.0.99",
     "loguru>=0.7.3",
     "numpy>=2.4.4",
     "pillow>=11.0.0",
     "pytesseract>=0.3.13",
+    "supervision>=0.27.0.post2",
+    "tf-keras>=2.21.0",
 ]
 
 [project.scripts]
