@@ -1,16 +1,22 @@
+import base64
+import json
+import os
 import subprocess
-import numpy as np
+
 import cv2
-from deepface import DeepFace
+import numpy as np
 import supervision as sv
+from websockets.sync.client import connect as ws_connect
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 VIDEO_PATH = "samples/output.mp4"
-DETECT_EVERY = 2
+DETECT_EVERY = 1
 CROP_SIZE = (224, 224)          # (width, height)
 LOST_TRACK_BUFFER = 60          # frames before a track is considered lost
 CROP_MARGIN = 0.3               # relative margin around face box
 DETECTOR_BACKEND = "retinaface" # opencv, retinaface, mtcnn, yolov8, centerface, ...
+SCALE_FACTOR = 1.0              # resize input frames to this fraction
+RUNPOD_WS_URL = os.environ.get("RUNPOD_WS_URL", "")  # e.g. ws://<pod-ip>:8765
 TRACK_COLORS = [
     (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0),
     (255, 0, 255), (0, 255, 255), (255, 128, 0), (128, 0, 255),
@@ -114,6 +120,13 @@ def close_writer(tid: int, writers: dict, last_known: dict, prev_known: dict, pe
         print(f"  closed writer for face {tid}")
 
 
+def detect_faces_ws(ws, frame: np.ndarray) -> list[dict]:
+    """Send a frame over WebSocket and return face detection results."""
+    _, jpeg_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    ws.send(base64.b64encode(jpeg_buf.tobytes()).decode("ascii"))
+    return json.loads(ws.recv())["faces"]
+
+
 def open_display(w: int, h: int, fps: float) -> subprocess.Popen:
     return subprocess.Popen(
         ["ffplay", "-f", "rawvideo", "-pixel_format", "rgb24",
@@ -124,8 +137,10 @@ def open_display(w: int, h: int, fps: float) -> subprocess.Popen:
 
 
 def main() -> None:
-    reader, W, H, FPS = open_reader(VIDEO_PATH)
+    reader, orig_W, orig_H, FPS = open_reader(VIDEO_PATH)
+    W, H = int(orig_W * SCALE_FACTOR), int(orig_H * SCALE_FACTOR)
     display = open_display(W, H, FPS)
+    ws = ws_connect(RUNPOD_WS_URL) if RUNPOD_WS_URL else None
     tracker = sv.ByteTrack(
         lost_track_buffer=LOST_TRACK_BUFFER,
         track_activation_threshold=0.2,
@@ -140,20 +155,25 @@ def main() -> None:
 
     frame_idx = 0
     while True:
-        frame = read_frame(reader, W, H)
+        frame = read_frame(reader, orig_W, orig_H)
         print("Frame read")
         if frame is None:
             break
+        frame = cv2.resize(frame, (W, H))
 
         # ── Detect + track every N frames ─────────────────────────────────
         if frame_idx % DETECT_EVERY == 0:
             try:
-                results = DeepFace.extract_faces(
-                    frame,
-                    detector_backend=DETECTOR_BACKEND,
-                    enforce_detection=False,
-                    align=False,
-                )
+                if ws:
+                    results = detect_faces_ws(ws, frame)
+                else:
+                    from deepface import DeepFace
+                    results = DeepFace.extract_faces(
+                        frame,
+                        detector_backend=DETECTOR_BACKEND,
+                        enforce_detection=False,
+                        align=False,
+                    )
                 detections = deepface_to_detections(results)
             except Exception as e:
                 print(f"  detection error: {e}")
@@ -210,6 +230,8 @@ def main() -> None:
             print(f"frame {frame_idx} | active faces: {len(writers)}")
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
+    if ws:
+        ws.close()
     display.stdin.close()
     display.wait()
     reader.stdout.close()

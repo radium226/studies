@@ -16,6 +16,7 @@ dependencies = [
     "pytesseract>=0.3.13",
     "supervision>=0.27.0.post2",
     "tf-keras>=2.21.0",
+    "websockets>=15.0",
 ]
 
 [project.scripts]
