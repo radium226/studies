@@ -1,0 +1,12 @@
+ffmpeg -f lavfi -i color=c=white:s=1920x1080:d=60 \
+-loop 1 -i face_1.jpg \
+-loop 1 -i face_2.jpg \
+-loop 1 -i face_3.jpg \
+-filter_complex \
+"[1:v]scale=300:-1,colorkey=white:0.1:0.1[f1]; \
+ [2:v]scale=300:-1,colorkey=white:0.1:0.1[f2]; \
+ [3:v]scale=300:-1,colorkey=white:0.1:0.1[f3]; \
+ [0:v][f2]overlay=x='W/2-w/2+400*cos(t*0.8)':y='H/2-h/2+30*sin(t*1.5)':shortest=1[bg1]; \
+ [bg1][f3]overlay=x='W/2-w/2-400*cos(t*0.8)':y='H/2-h/2-30*sin(t*1.5)'[bg2]; \
+ [bg2][f1]overlay=x='W/2-w/2+200*sin(t*1.5)':y='2*H/3-h/2+100*cos(t*0.5)':enable='between(t,2,8)',format=yuv420p[v]" \
+-map "[v]" -c:v libx264 -profile:v baseline -level 3.0 -pix_fmt yuv420p -t 10 output.mp4
