@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import NamedTuple
 
 
@@ -34,6 +36,15 @@ class Broadcaster:
         self._fragments: deque[Fragment] = deque(maxlen=max_fragments)
         self._next_seq = 0
         self._closed = False
+
+    @classmethod
+    @asynccontextmanager
+    async def start(cls, max_fragments: int = 15) -> AsyncIterator[Broadcaster]:
+        self = cls(max_fragments)
+        try:
+            yield self
+        finally:
+            await self.close()
 
     async def set_init_segment(self, data: bytes) -> None:
         async with self._condition:
@@ -93,5 +104,7 @@ class Broadcaster:
 
 class LaggedError(Exception):
     def __init__(self, oldest_seq: int) -> None:
-        super().__init__(f"subscriber fell behind retained fragments (oldest retained seq={oldest_seq})")
+        super().__init__(
+            f"subscriber fell behind retained fragments (oldest retained seq={oldest_seq})"
+        )
         self.oldest_seq = oldest_seq

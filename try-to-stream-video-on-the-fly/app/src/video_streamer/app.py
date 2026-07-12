@@ -50,24 +50,27 @@ async def lifespan(app: Starlette):
     await ensure_sample_asset(SAMPLE_VIDEO)
     width, height, fps = await probe_video_info(SAMPLE_VIDEO)
 
-    broadcaster = Broadcaster()
-    reader = Reader(SAMPLE_VIDEO)
-    engine = Engine(simulate_input_lag=getattr(app.state, "simulate_input_lag", False))
-    writer = Writer(
-        width,
-        height,
-        fps,
-        frag_duration_ms=getattr(app.state, "frag_duration_ms", DEFAULT_FRAG_DURATION_MS),
-    )
-    orchestrator = Orchestrator(reader, engine, writer, broadcaster, width, height)
-    await orchestrator.start()
-
-    app.state.broadcaster = broadcaster
-    app.state.orchestrator = orchestrator
-    try:
+    async with (
+        Reader.start(SAMPLE_VIDEO) as reader,
+        Writer.start(
+            width,
+            height,
+            fps,
+            frag_duration_ms=getattr(
+                app.state, "frag_duration_ms", DEFAULT_FRAG_DURATION_MS
+            ),
+        ) as writer,
+        Engine.start(
+            simulate_input_lag=getattr(app.state, "simulate_input_lag", False)
+        ) as engine,
+        Broadcaster.start() as broadcaster,
+        Orchestrator.start(
+            reader, engine, writer, broadcaster, width, height
+        ) as orchestrator,
+    ):
+        app.state.broadcaster = broadcaster
+        app.state.orchestrator = orchestrator
         yield
-    finally:
-        await orchestrator.stop()
 
 
 async def index(request: Request):
@@ -115,7 +118,9 @@ app = Starlette(
     routes=[
         Route("/", index),
         Route("/stream.mp4", stream),
-        Mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"),
+        Mount(
+            "/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"
+        ),
     ],
 )
 
@@ -141,7 +146,9 @@ def main(simulate_input_lag: bool, frag_duration_ms: int) -> None:
     # Bounds how long uvicorn waits for in-flight /stream.mp4 connections on
     # SIGINT/SIGTERM before force-cancelling them; matches wait_for_next's own
     # 5s per-iteration timeout so shutdown isn't needlessly slow.
-    config = uvicorn.Config(app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=5)
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=5
+    )
     server = uvicorn.Server(config)
     try:
         server.run()

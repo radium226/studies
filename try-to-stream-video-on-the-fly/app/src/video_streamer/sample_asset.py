@@ -37,4 +37,6 @@ async def ensure_sample_asset(path: Path) -> None:
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {stderr.decode(errors='replace')}")
+        raise RuntimeError(
+            f"ffmpeg failed ({proc.returncode}): {stderr.decode(errors='replace')}"
+        )

@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import cv2
@@ -50,6 +51,15 @@ class Engine:
         self._lag_budget = TokenBucket(capacity, refill_rate, clock=clock)
         self._frame_index = 0
         self._executor = ThreadPoolExecutor(max_workers=1)
+
+    @classmethod
+    @asynccontextmanager
+    async def start(cls, **kwargs) -> AsyncIterator[Engine]:
+        self = cls(**kwargs)
+        try:
+            yield self
+        finally:
+            await self.aclose()
 
     async def process(self, frame: np.ndarray) -> np.ndarray:
         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")

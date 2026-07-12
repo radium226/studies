@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import numpy as np
 
@@ -38,35 +40,36 @@ class Orchestrator:
         self._width = width
         self._height = height
         self._frame_size = width * height * 3
-        self._tasks: list[asyncio.Task] = []
 
-    async def start(self) -> None:
-        await self._reader.start()
-        await self._writer.start()
-        self._tasks = [
-            asyncio.create_task(self._forward_frames(), name="frame-forward"),
-            asyncio.create_task(self._read_writer_output(), name="box-parse"),
-        ]
-
-    async def stop(self, timeout: float = 5.0) -> None:
-        for task in self._tasks:
-            task.cancel()
-        try:
-            async with asyncio.timeout(timeout):
-                await asyncio.gather(*self._tasks, return_exceptions=True)
-        except TimeoutError:
-            logger.warning("pipeline tasks did not settle within %.1fs of cancellation", timeout)
-        await self._reader.stop(timeout=timeout)
-        await self._writer.stop(timeout=timeout)
-        await self._engine.aclose()
-        await self._broadcaster.close()
+    @classmethod
+    @asynccontextmanager
+    async def start(
+        cls,
+        reader: Reader,
+        engine: Engine,
+        writer: Writer,
+        broadcaster: Broadcaster,
+        width: int,
+        height: int,
+    ) -> AsyncIterator[Orchestrator]:
+        self = cls(reader, engine, writer, broadcaster, width, height)
+        async with asyncio.TaskGroup() as tg:
+            forward_task = tg.create_task(self._forward_frames(), name="frame-forward")
+            output_task = tg.create_task(self._read_writer_output(), name="box-parse")
+            try:
+                yield self
+            finally:
+                forward_task.cancel()
+                output_task.cancel()
 
     async def _forward_frames(self) -> None:
         while True:
             raw = await self._reader.read_frame(self._frame_size)
             if raw is None:
                 break
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((self._height, self._width, 3))
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape(
+                (self._height, self._width, 3)
+            )
             frame = await self._engine.process(frame)
             try:
                 await self._writer.write_frame(frame.tobytes())
@@ -100,4 +103,7 @@ class Orchestrator:
                     else:
                         logger.warning("mdat box with no preceding moof, dropping")
                 else:
-                    logger.debug("ignoring unexpected top-level box %r after init segment", box_type)
+                    logger.debug(
+                        "ignoring unexpected top-level box %r after init segment",
+                        box_type,
+                    )

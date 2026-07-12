@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from video_streamer.pipe_io import drain_and_discard, drain_stderr, terminate_and_wait
 
@@ -33,7 +35,18 @@ class Writer:
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
 
-    async def start(self) -> None:
+    @classmethod
+    @asynccontextmanager
+    async def start(
+        cls,
+        width: int,
+        height: int,
+        fps: float,
+        *,
+        frag_duration_ms: int = DEFAULT_FRAG_DURATION_MS,
+        stop_timeout: float = 5.0,
+    ) -> AsyncIterator[Writer]:
+        self = cls(width, height, fps, frag_duration_ms=frag_duration_ms)
         self._proc = await asyncio.create_subprocess_exec(
             *self._encoder_cmd(),
             stdin=asyncio.subprocess.PIPE,
@@ -41,7 +54,13 @@ class Writer:
             stderr=asyncio.subprocess.PIPE,
         )
         assert self._proc.stderr is not None
-        self._stderr_task = asyncio.create_task(drain_stderr(self._proc.stderr, "encoder"))
+        self._stderr_task = asyncio.create_task(
+            drain_stderr(self._proc.stderr, "encoder")
+        )
+        try:
+            yield self
+        finally:
+            await self._stop(stop_timeout)
 
     async def write_frame(self, data: bytes) -> None:
         assert self._proc is not None and self._proc.stdin is not None
@@ -52,19 +71,18 @@ class Writer:
         assert self._proc is not None and self._proc.stdout is not None
         return await self._proc.stdout.read(size)
 
-    async def stop(self, timeout: float = 5.0) -> None:
-        if self._proc is not None:
-            assert self._proc.stdout is not None
-            # See Reader.stop() for why stdout must keep being drained.
-            drain_task = asyncio.ensure_future(drain_and_discard(self._proc.stdout))
-            await terminate_and_wait(self._proc, timeout)
-            drain_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await drain_task
-        if self._stderr_task is not None:
-            self._stderr_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._stderr_task
+    async def _stop(self, timeout: float) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        # See Reader._stop() for why stdout must keep being drained.
+        drain_task = asyncio.ensure_future(drain_and_discard(self._proc.stdout))
+        await terminate_and_wait(self._proc, timeout)
+        drain_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain_task
+        assert self._stderr_task is not None
+        self._stderr_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._stderr_task
 
     def _encoder_cmd(self) -> list[str]:
         gop = max(1, round(self._fps * KEYFRAME_INTERVAL_SECONDS))
