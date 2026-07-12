@@ -6,31 +6,32 @@ function setStatus(text) {
 }
 
 const video = document.getElementById("player");
-const spinner = document.getElementById("spinner");
+const progressBar = document.getElementById("progress-bar");
 
-// Spinner visibility is the OR of two independent reasons to be loading:
-// the connect/reconnect phase (no stream hooked up yet) and the video
-// element itself stalling for data mid-stream (e.g. from simulated input
-// lag). Tracked separately since they can overlap or occur independently.
+// Progress bar visibility is the OR of two independent reasons to be
+// loading: the connect/reconnect phase (no stream hooked up yet) and the
+// video element itself stalling for data mid-stream (e.g. from simulated
+// input lag). Tracked separately since they can overlap or occur
+// independently.
 let loadingPhase = true;
 let starvedForData = false;
 
-function updateSpinner() {
-  if (spinner) spinner.classList.toggle("visible", loadingPhase || starvedForData);
+function updateProgressBar() {
+  if (progressBar) progressBar.classList.toggle("visible", loadingPhase || starvedForData);
 }
 
 video.addEventListener("waiting", () => {
   starvedForData = true;
-  updateSpinner();
+  updateProgressBar();
 });
 video.addEventListener("playing", () => {
   starvedForData = false;
-  updateSpinner();
+  updateProgressBar();
 });
 
 async function start() {
   loadingPhase = true;
-  updateSpinner();
+  updateProgressBar();
 
   if (!window.MediaSource || !MediaSource.isTypeSupported(MIME)) {
     setStatus("MediaSource + H.264 baseline not supported in this browser.");
@@ -92,7 +93,7 @@ async function start() {
       const reader = response.body.getReader();
       setStatus("live");
       loadingPhase = false;
-      updateSpinner();
+      updateProgressBar();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -104,7 +105,7 @@ async function start() {
     } finally {
       setStatus("reconnecting...");
       loadingPhase = true;
-      updateSpinner();
+      updateProgressBar();
       setTimeout(start, 1000);
     }
   });

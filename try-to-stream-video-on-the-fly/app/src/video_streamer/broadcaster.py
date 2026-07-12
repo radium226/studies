@@ -1,9 +1,10 @@
-"""Thread-safe fan-out of a live fMP4 stream to many async subscribers.
+"""Async fan-out of a live fMP4 stream to many subscribers.
 
-The reader thread (a plain OS thread, since it does blocking subprocess I/O)
-is the sole producer. Starlette request handlers (async) are consumers; they
-bridge the blocking `threading.Condition` wait via `asyncio.to_thread` so a
-slow/waiting subscriber never blocks the event loop or other clients.
+The box-parse task (an asyncio task, since it does async subprocess I/O) is
+the sole producer. Starlette request handlers (also async tasks on the same
+event loop) are consumers, awaiting `wait_for_next` directly via an
+`asyncio.Condition` - no thread bridging needed since producer and consumers
+already share the same event loop.
 
 A bounded deque gives an automatic, allocation-free drop-oldest retention
 policy: total memory is capped regardless of subscriber count or speed.
@@ -11,7 +12,7 @@ policy: total memory is capped regardless of subscriber count or speed.
 
 from __future__ import annotations
 
-import threading
+import asyncio
 from collections import deque
 from typing import NamedTuple
 
@@ -28,42 +29,50 @@ class Snapshot(NamedTuple):
 
 class Broadcaster:
     def __init__(self, max_fragments: int = 15) -> None:
-        self._lock = threading.Condition()
+        self._condition = asyncio.Condition()
         self._init_segment: bytes | None = None
         self._fragments: deque[Fragment] = deque(maxlen=max_fragments)
         self._next_seq = 0
         self._closed = False
 
-    def set_init_segment(self, data: bytes) -> None:
-        with self._lock:
+    async def set_init_segment(self, data: bytes) -> None:
+        async with self._condition:
             self._init_segment = data
-            self._lock.notify_all()
+            self._condition.notify_all()
 
-    def publish_fragment(self, data: bytes) -> None:
-        with self._lock:
+    async def publish_fragment(self, data: bytes) -> None:
+        async with self._condition:
             fragment = Fragment(seq=self._next_seq, data=data)
             self._next_seq += 1
             self._fragments.append(fragment)
-            self._lock.notify_all()
+            self._condition.notify_all()
 
     def snapshot_for_new_client(self) -> Snapshot:
-        """Init segment + only the single latest fragment (true live, not rewind)."""
-        with self._lock:
-            latest = self._fragments[-1] if self._fragments else None
-            return Snapshot(init_segment=self._init_segment, fragment=latest)
+        """Init segment + only the single latest fragment (true live, not rewind).
 
-    def wait_for_next(self, last_seq: int, timeout: float) -> Fragment | None:
-        """Block (this thread) until a fragment newer than last_seq exists, or timeout.
+        No locking needed: asyncio is single-threaded/cooperative and this
+        method never awaits, so it can't interleave with a concurrent
+        publish_fragment.
+        """
+        latest = self._fragments[-1] if self._fragments else None
+        return Snapshot(init_segment=self._init_segment, fragment=latest)
+
+    async def wait_for_next(self, last_seq: int, timeout: float) -> Fragment | None:
+        """Wait until a fragment newer than last_seq exists, or timeout.
 
         Returns None on timeout/no-new-data/closed. Raises LaggedError if the
         caller's last_seq has fallen behind the oldest retained fragment -
         callers should treat that as "can't catch up, end this connection."
         """
-        with self._lock:
-            deadline_check = self._lock.wait_for(
-                lambda: self._closed or self._has_next(last_seq), timeout=timeout
-            )
-            if not deadline_check or self._closed:
+        async with self._condition:
+            try:
+                async with asyncio.timeout(timeout):
+                    await self._condition.wait_for(
+                        lambda: self._closed or self._has_next(last_seq)
+                    )
+            except TimeoutError:
+                return None
+            if self._closed:
                 return None
             oldest_seq = self._fragments[0].seq
             if last_seq < oldest_seq - 1:
@@ -76,10 +85,10 @@ class Broadcaster:
     def _has_next(self, last_seq: int) -> bool:
         return bool(self._fragments) and self._fragments[-1].seq > last_seq
 
-    def close(self) -> None:
-        with self._lock:
+    async def close(self) -> None:
+        async with self._condition:
             self._closed = True
-            self._lock.notify_all()
+            self._condition.notify_all()
 
 
 class LaggedError(Exception):

@@ -46,13 +46,11 @@ class BoxReader:
             return None
 
         size, type_bytes = struct.unpack_from(">I4s", buf, 0)
-        header_len = 8
 
         if size == 1:
             if len(buf) < 16:
                 return None
             size = struct.unpack_from(">Q", buf, 8)[0]
-            header_len = 16
         elif size == 0:
             raise ValueError(
                 "ISO BMFF box with size==0 (EOF-sentinel) is unexpected on a "

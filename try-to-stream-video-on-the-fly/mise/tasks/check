@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run ruff and ty against the app source"
+set -euxo pipefail
+
+cd "${MISE_PROJECT_ROOT}/app"
+uv run ruff check .
+uv run ty check
