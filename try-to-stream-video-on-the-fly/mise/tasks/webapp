@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Run the video-streamer webapp"
+set -euxo pipefail
+
+uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer --simulate-input-lag
