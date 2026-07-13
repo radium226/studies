@@ -12,6 +12,7 @@ const ROWS = [
   ["embedding_ms", "Embed (ArcFace)", "ms"],
   ["batch_ms", "Detection pass", "ms"],
   ["detection_hz", "Detection rate", "Hz"],
+  ["detection_stride", "Detection stride", "frames"],
   ["processed_fps", "Processed", "fps"],
 ];
 

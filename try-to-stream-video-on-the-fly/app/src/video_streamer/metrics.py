@@ -61,6 +61,7 @@ class MetricsCollector:
         self._batch_ms = _Window(window_s, clock)
         self._batches = _Window(window_s, clock)
         self._frames = _Window(window_s, clock)
+        self._detected_frames = _Window(window_s, clock)
         self._active_tracks = 0
 
     def record_processed_frame(self) -> None:
@@ -80,16 +81,25 @@ class MetricsCollector:
         self._batches.add(1.0)
         for count in face_counts:
             self._faces_per_frame.add(float(count))
+            # One sample per frame actually run through detection, so its rate
+            # is detected-frames/sec — same units as processed fps.
+            self._detected_frames.add(1.0)
         self._active_tracks = active_tracks
 
     def snapshot(self) -> dict[str, float]:
+        # Stride: processed frames per frame actually detected — how many video
+        # frames the interpolator covers for each real detection.
+        detected_fps = self._detected_frames.rate()
+        processed_fps = self._frames.rate()
+        stride = processed_fps / detected_fps if detected_fps > 0 else 0.0
         return {
             "detections_per_frame": round(self._faces_per_frame.mean(), 2),
             "detection_ms": round(self._detect_ms.mean(), 1),
             "embedding_ms": round(self._embed_ms.mean(), 1),
             "batch_ms": round(self._batch_ms.mean(), 1),
             "detection_hz": round(self._batches.rate(), 2),
-            "processed_fps": round(self._frames.rate(), 1),
+            "detection_stride": round(stride, 1),
+            "processed_fps": round(processed_fps, 1),
             "active_tracks": self._active_tracks,
             "window_s": self._window_s,
         }
