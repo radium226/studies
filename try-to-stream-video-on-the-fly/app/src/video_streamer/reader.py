@@ -23,7 +23,7 @@ from video_streamer.pipe_io import (
 )
 
 
-async def probe_video_info(path: Path) -> tuple[int, int, float]:
+async def probe_video_info(source: str | Path) -> tuple[int, int, float]:
     proc = await asyncio.create_subprocess_exec(
         "ffprobe",
         "-v",
@@ -34,7 +34,7 @@ async def probe_video_info(path: Path) -> tuple[int, int, float]:
         "stream=width,height,r_frame_rate",
         "-of",
         "json",
-        str(path),
+        str(source),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -50,17 +50,33 @@ async def probe_video_info(path: Path) -> tuple[int, int, float]:
 
 
 class Reader:
-    def __init__(self, source_path: Path) -> None:
-        self._source_path = source_path
+    def __init__(
+        self,
+        source: str,
+        *,
+        loop: bool = True,
+        resize: tuple[int, int] | None = None,
+        read_rate: float = 1.0,
+    ) -> None:
+        self._source = source
+        self._loop = loop
+        self._resize = resize
+        self._read_rate = read_rate
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
 
     @classmethod
     @asynccontextmanager
     async def start(
-        cls, source_path: Path, *, stop_timeout: float = 5.0
+        cls,
+        source: str,
+        *,
+        loop: bool = True,
+        resize: tuple[int, int] | None = None,
+        read_rate: float = 1.0,
+        stop_timeout: float = 5.0,
     ) -> AsyncIterator[Reader]:
-        self = cls(source_path)
+        self = cls(source, loop=loop, resize=resize, read_rate=read_rate)
         self._proc = await asyncio.create_subprocess_exec(
             *self._decoder_cmd(),
             stdout=asyncio.subprocess.PIPE,
@@ -95,20 +111,15 @@ class Reader:
             await self._stderr_task
 
     def _decoder_cmd(self) -> list[str]:
-        return [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-stream_loop",
-            "-1",
-            "-re",
-            "-i",
-            str(self._source_path),
-            "-an",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "bgr24",
-            "pipe:1",
-        ]
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning"]
+        if self._loop:
+            cmd += ["-stream_loop", "-1"]
+        # -readrate paces how fast ffmpeg emits decoded frames (every frame is
+        # still decoded); -readrate 1 is equivalent to -re. speed_factor > 1
+        # feeds the pipeline faster than realtime for faster playback.
+        cmd += ["-readrate", str(self._read_rate)]
+        cmd += ["-i", self._source, "-an"]
+        if self._resize:
+            cmd += ["-vf", f"scale={self._resize[0]}:{self._resize[1]}"]
+        cmd += ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+        return cmd
