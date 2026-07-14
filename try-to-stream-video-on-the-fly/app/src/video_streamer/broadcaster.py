@@ -58,6 +58,10 @@ class Broadcaster:
             self._fragments.append(fragment)
             self._condition.notify_all()
 
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
     def snapshot_for_new_client(self) -> Snapshot:
         """Init segment + only the single latest fragment (true live, not rewind).
 

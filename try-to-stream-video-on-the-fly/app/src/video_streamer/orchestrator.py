@@ -33,6 +33,7 @@ class Orchestrator:
         self._engine = engine
         self._writer = writer
         self._broadcaster = broadcaster
+        self._failure_close_task: asyncio.Task | None = None
 
     @classmethod
     @asynccontextmanager
@@ -43,15 +44,37 @@ class Orchestrator:
         writer: Writer,
         broadcaster: Broadcaster,
     ) -> AsyncIterator[Orchestrator]:
+        # Plain create_task, not a TaskGroup: a TaskGroup held open across the
+        # yield would, on a child crash, cancel whichever task happened to
+        # enter this context (the lifespan task, or an already-finished
+        # /api/source handler) and park the exception until teardown. Crashes
+        # are surfaced immediately via _on_task_done instead.
         self = cls(loader, engine, writer, broadcaster)
-        async with asyncio.TaskGroup() as tg:
-            forward_task = tg.create_task(self._forward_frames(), name="frame-forward")
-            output_task = tg.create_task(self._read_writer_output(), name="box-parse")
-            try:
-                yield self
-            finally:
-                forward_task.cancel()
-                output_task.cancel()
+        tasks = [
+            asyncio.create_task(self._forward_frames(), name="frame-forward"),
+            asyncio.create_task(self._read_writer_output(), name="box-parse"),
+        ]
+        for task in tasks:
+            task.add_done_callback(self._on_task_done)
+        try:
+            yield self
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if self._failure_close_task is not None:
+                await self._failure_close_task
+
+    def _on_task_done(self, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        logger.error(
+            "pipeline task %r crashed", task.get_name(), exc_info=task.exception()
+        )
+        # Close the broadcaster so clients end cleanly instead of stalling on
+        # a pipeline that silently stopped producing.
+        if self._failure_close_task is None:
+            self._failure_close_task = asyncio.create_task(self._broadcaster.close())
 
     async def _forward_frames(self) -> None:
         async for frame in self._loader.frames():
@@ -63,6 +86,10 @@ class Orchestrator:
                 await self._writer.write_frame(out.tobytes())
             except (BrokenPipeError, ConnectionResetError, ValueError):
                 break
+        # Source exhausted (or encoder gone): EOF the encoder's stdin so it
+        # flushes its trailing fragments and EOFs stdout, which lets
+        # _read_writer_output finish and close the broadcaster.
+        await self._writer.close_stdin()
 
     async def _read_writer_output(self) -> None:
         box_reader = BoxReader()
@@ -73,6 +100,11 @@ class Orchestrator:
         while True:
             chunk = await self._writer.read_output_chunk()
             if not chunk:
+                if pending_moof is not None:
+                    logger.warning("encoder EOF with unpaired trailing moof, dropping")
+                # End of stream: wake every client so they finish instead of
+                # polling a stream that will never produce again.
+                await self._broadcaster.close()
                 break
             for box_type, raw in box_reader.feed(chunk):
                 if not have_init:

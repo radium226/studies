@@ -364,8 +364,15 @@ What matters here:
 **Orchestrator** owns the two long-lived asyncio tasks that connect everything:
 
 - `frame-forward`: pulls frames from the loader, runs `Engine.process`, writes non-`None` results
-  to the encoder (ends cleanly on `BrokenPipe`/`ConnectionReset` at shutdown).
-- `box-parse`: reads encoder stdout and turns the byte stream into publishable units.
+  to the encoder (ends cleanly on `BrokenPipe`/`ConnectionReset` at shutdown). When the source is
+  exhausted (a non-looped video ends) it **closes the encoder's stdin**, so ffmpeg flushes its
+  trailing fragments and EOFs its stdout.
+- `box-parse`: reads encoder stdout and turns the byte stream into publishable units. On encoder
+  EOF it **closes the Broadcaster**, ending every client stream cleanly instead of leaving them
+  polling a stream that will never produce again.
+
+If either task crashes (e.g. an ffmpeg process dies), a done-callback logs the exception and closes
+the Broadcaster immediately — failures surface as ended client streams, not as a silent stall.
 
 > **Buffering point E — ISO BMFF box reassembly** (`iso_bmff.BoxReader`). Encoder stdout arrives in
 > arbitrary 64 KiB chunks that never align to MP4 box boundaries. `BoxReader.feed()` appends to an
@@ -404,12 +411,26 @@ is needed):
 
 1. Emits the init segment (retrying once after 0.5 s if the pipeline hasn't produced it yet).
 2. Emits the single latest fragment, then loops on `wait_for_next`, yielding each new fragment and
-   checking `request.is_disconnected()`. `LaggedError` ends the response.
+   checking `request.is_disconnected()`. `LaggedError` ends the response, as does the Broadcaster
+   closing (end of stream, or a pipeline rebuild).
 
-`GET /` serves the player page; `/static` serves `player.js` and CSS. The `lifespan` builds the
-entire pipeline (loader → writer → engine → broadcaster → orchestrator) **once** at startup as a
-stack of async context managers, and tears it down on shutdown. `SuppressShutdownCancellation`
-silences the harmless `CancelledError` noise from cutting open connections on Ctrl-C.
+If the current Broadcaster is already closed when a client connects, the route returns **`410
+Gone`** instead of a stream — the player uses this to tell "the stream ended / is being rebuilt"
+apart from a network error.
+
+`POST /api/source` takes `{"url": ...}` (http/https only) and rebuilds the whole pipeline against
+that URL via `PipelineManager.switch_to_url`, returning the new `{width, height, fps}`. The switch
+is guarded by a lock (concurrent switches queue) and a 60 s timeout (a hung `yt-dlp`/`ffprobe`
+returns `504` instead of holding the lock forever); any build failure returns `400` with the error.
+
+`GET /` serves the player page; `/static` serves `player.js`, `source.js`, and CSS. The `lifespan`
+hands the whole pipeline lifecycle to **`PipelineManager`** (`pipeline.py`): it builds the initial
+loader → writer → engine → broadcaster → orchestrator stack at startup inside an `AsyncExitStack`,
+and rebuilds it on demand for `/api/source`. Rebuilds are **teardown-first**: the old stack is
+fully closed (closing its Broadcaster, which ends every client stream) before the new one starts,
+so only one ffmpeg pair + ONNX engine ever runs at a time, at the cost of a short client-visible
+gap that the player bridges by polling. `SuppressShutdownCancellation` silences the harmless
+`CancelledError` noise from cutting open connections on Ctrl-C.
 
 ---
 
@@ -431,9 +452,20 @@ silences the harmless `CancelledError` noise from cutting open connections on Ct
 >   `end - 30 s`, so a long session doesn't grow the buffer without bound. (It compares duration, not
 >   the absolute — and unbounded — end timestamp.)
 
+> - **Survive quota pressure.** `appendBuffer` can throw `QuotaExceededError` when the browser's
+>   buffer is full; the player puts the chunk back on its queue, evicts the older half of the
+>   buffered range, and resumes on the follow-up `updateend` instead of stalling permanently.
+
 A progress bar reflects the OR of two independent "loading" reasons: the connect/reconnect phase and
-the `<video>` element starving for data mid-stream (`waiting`/`playing` events). On any fetch error
-or stream end it shows "reconnecting…" and retries after 1 s.
+the `<video>` element starving for data mid-stream (`waiting`/`playing` events). On a fetch error or
+stream end it shows "reconnecting…" and retries after 1 s; on a `410 Gone` (the stream ended
+server-side, or a source switch is rebuilding the pipeline) it ends playback of what's buffered and
+polls every 3 s until a new stream is up. Each (re)connect builds a fresh `MediaSource` and revokes
+the previous object URL.
+
+`static/source.js` wires the source form: it POSTs the entered URL to `/api/source` and reports the
+switch result (or error) in the status line; the stream handoff itself rides on the reconnect logic
+above — the old stream ends when the old Broadcaster closes, and polling picks up the new one.
 
 ---
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,11 +17,12 @@ from starlette.templating import Jinja2Templates
 
 from video_streamer.broadcaster import Broadcaster, LaggedError
 from video_streamer.engine import Engine
-from video_streamer.input_video import SyntheticInputVideoLoader, UrlInputVideoLoader
-from video_streamer.orchestrator import Orchestrator
-from video_streamer.writer import DEFAULT_FRAG_DURATION_MS, Writer
+from video_streamer.pipeline import PipelineManager
+from video_streamer.writer import DEFAULT_FRAG_DURATION_MS
 
 logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 
 class SuppressShutdownCancellation(logging.Filter):
@@ -47,46 +49,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    input_video: str = getattr(app.state, "input_video", "synthetic")
-    loop: bool = getattr(app.state, "repeat_input_video", False)
-    resize: tuple[int, int] | None = getattr(app.state, "resize", None)
-    speed_factor: float = getattr(app.state, "speed_factor", 1.0)
-    if input_video == "synthetic":
-        loader_cm = SyntheticInputVideoLoader.start(
-            SAMPLE_VIDEO, loop=loop, resize=resize, speed_factor=speed_factor
-        )
-    else:
-        loader_cm = UrlInputVideoLoader.start(
-            app.state.input_video_url, loop=loop, resize=resize, speed_factor=speed_factor
-        )
-
-    async with loader_cm as loader:
-        w, h, fps = loader.video_info
-        # Playback speed = native fps x speed_factor. The decoder is paced to
-        # feed frames at the same multiple (see Reader read_rate), so the stream
-        # stays live-balanced. The Engine keeps native fps (capture timeline).
-        async with (
-            Writer.start(
-                w,
-                h,
-                fps * speed_factor,
-                frag_duration_ms=getattr(
-                    app.state, "frag_duration_ms", DEFAULT_FRAG_DURATION_MS
-                ),
-            ) as writer,
-            Engine.start(
-                model_dir=MODELS_DIR,
-                fps=fps,
-                scrfd_batch_frames=getattr(app.state, "scrfd_batch_frames", 4),
-                arcface_batch_crops=getattr(app.state, "arcface_batch_crops", 8),
-            ) as engine,
-            Broadcaster.start() as broadcaster,
-            Orchestrator.start(loader, engine, writer, broadcaster) as orchestrator,
-        ):
-            app.state.broadcaster = broadcaster
-            app.state.orchestrator = orchestrator
-            app.state.engine = engine
-            yield
+    manager = PipelineManager(app, sample_video=SAMPLE_VIDEO, models_dir=MODELS_DIR)
+    app.state.pipeline_manager = manager
+    await manager.build_initial()
+    try:
+        yield
+    finally:
+        await manager.aclose()
 
 
 async def index(request: Request):
@@ -100,6 +69,10 @@ async def metrics(request: Request):
 
 async def stream(request: Request):
     broadcaster: Broadcaster = request.app.state.broadcaster
+    if broadcaster.is_closed:
+        # Distinguishable from a network error so the player can show "ended"
+        # and retry slowly (a source switch may bring up a new broadcaster).
+        return JSONResponse({"error": "stream ended"}, status_code=410)
 
     async def generate():
         init_segment, fragment = broadcaster.snapshot_for_new_client()
@@ -123,6 +96,8 @@ async def stream(request: Request):
             except LaggedError:
                 break
             if next_fragment is None:
+                if broadcaster.is_closed:
+                    break
                 continue
             yield next_fragment.data
             last_seq = next_fragment.seq
@@ -134,12 +109,41 @@ async def stream(request: Request):
     )
 
 
+SOURCE_SWITCH_TIMEOUT_S = 60
+
+
+async def set_source(request: Request):
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"error": "url must not be empty"}, status_code=400)
+    if not url.startswith(("http://", "https://")):
+        return JSONResponse({"error": "url must be http(s)"}, status_code=400)
+    manager: PipelineManager = request.app.state.pipeline_manager
+    try:
+        # The timeout bounds how long a hung yt-dlp/ffprobe can hold the
+        # rebuild lock (and this request) hostage.
+        async with asyncio.timeout(SOURCE_SWITCH_TIMEOUT_S):
+            w, h, fps = await manager.switch_to_url(url)
+    except TimeoutError:
+        logger.error("source switch to %r timed out after %ss", url, SOURCE_SWITCH_TIMEOUT_S)
+        return JSONResponse(
+            {"error": f"source switch timed out after {SOURCE_SWITCH_TIMEOUT_S}s"},
+            status_code=504,
+        )
+    except Exception as exc:
+        logger.exception("source switch to %r failed", url)
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"width": w, "height": h, "fps": fps})
+
+
 app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/", index),
         Route("/stream.mp4", stream),
         Route("/metrics", metrics),
+        Route("/api/source", set_source, methods=["POST"]),
         Mount(
             "/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"
         ),
@@ -223,7 +227,7 @@ def main(
         except ValueError:
             raise click.BadParameter(
                 "expected WxH format, e.g. 1280x720", param_hint="'--resize-video'"
-            )
+            ) from None
 
     app.state.input_video = input_video
     app.state.input_video_url = input_video_url
@@ -241,14 +245,12 @@ def main(
         app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=5
     )
     server = uvicorn.Server(config)
-    try:
+    # Server.run() already completes a graceful shutdown on Ctrl-C - uvicorn
+    # deliberately re-raises the original SIGINT/SIGTERM after restoring the
+    # default signal handlers (see Server.capture_signals), so callers who
+    # want default signal behavior get it. We don't, so we swallow it here;
+    # otherwise it reaches click's own KeyboardInterrupt handler, which
+    # prints "Aborted!" and exits 1, turning a clean Ctrl-C shutdown into an
+    # apparent failure (e.g. mise's `set -e`).
+    with contextlib.suppress(KeyboardInterrupt):
         server.run()
-    except KeyboardInterrupt:
-        # Server.run() already completed a graceful shutdown by this point -
-        # uvicorn deliberately re-raises the original SIGINT/SIGTERM after
-        # restoring the default signal handlers (see Server.capture_signals),
-        # so callers who want default signal behavior get it. We don't, so we
-        # swallow it here; otherwise it reaches click's own KeyboardInterrupt
-        # handler, which prints "Aborted!" and exits 1, turning a clean
-        # Ctrl-C shutdown into an apparent failure (e.g. mise's `set -e`).
-        pass

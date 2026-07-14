@@ -100,7 +100,7 @@ class FaceDetector:
             landmarks = landmarks[kept]
 
             detections: list[Detection] = []
-            for bbox, lm, score in zip(bboxes, landmarks, scores):
+            for bbox, lm, score in zip(bboxes, landmarks, scores, strict=True):
                 detections.append(
                     Detection(
                         bbox=(

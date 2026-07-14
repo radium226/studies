@@ -67,6 +67,17 @@ class Writer:
         self._proc.stdin.write(data)
         await self._proc.stdin.drain()
 
+    async def close_stdin(self) -> None:
+        """Signal end of input: ffmpeg flushes its trailing fragments and then
+        EOFs its own stdout, letting the box-parse loop finish naturally."""
+        assert self._proc is not None and self._proc.stdin is not None
+        stdin = self._proc.stdin
+        if stdin.is_closing():
+            return
+        stdin.close()
+        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+            await stdin.wait_closed()
+
     async def read_output_chunk(self, size: int = 65536) -> bytes:
         assert self._proc is not None and self._proc.stdout is not None
         return await self._proc.stdout.read(size)

@@ -7,4 +7,4 @@ uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer \
     --input-video-url=https://www.youtube.com/watch?v=got1w6Tjo7Q \
     --repeat-input-video \
     --speed-factor=3 \
-    # --resize-video=600x-1
+    --resize-video=600x-1

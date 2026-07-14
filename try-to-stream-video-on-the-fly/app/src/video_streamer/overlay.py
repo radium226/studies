@@ -6,9 +6,11 @@ import cv2
 import numpy as np
 
 
-def draw_overlay(frame: np.ndarray, text: str) -> np.ndarray:
-    return cv2.putText(
-        frame.copy(),
+def draw_overlay(frame: np.ndarray, text: str) -> None:
+    """Draw the timestamp/frame-index line in-place. The caller owns the copy;
+    the engine keeps the pristine frame around for the detector."""
+    cv2.putText(
+        frame,
         text,
         (10, 30),
         cv2.FONT_HERSHEY_SIMPLEX,

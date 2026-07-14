@@ -28,7 +28,6 @@ from scipy.interpolate import CubicSpline, PchipInterpolator
 from video_streamer.detection import Detection
 from video_streamer.tracking import TrackedFace
 
-
 InterpolationMethod = Literal["cubic", "pchip", "linear"]
 
 

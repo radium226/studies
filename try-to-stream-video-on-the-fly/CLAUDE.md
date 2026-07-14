@@ -22,6 +22,9 @@ All commands run from the `app/` directory (a `uv`-managed Python project) unles
 uv run video-streamer         # run the app directly (synthetic input by default)
 mise run webapp               # from repo root: runs the app against a URL source via yt-dlp
 uv sync                       # install/update dependencies from uv.lock
+uv run pytest                 # unit tests (tests/ — pure-Python units, no ffmpeg/ONNX needed)
+uv run ruff check src tests   # lint (config in pyproject.toml)
+uv run ty check src           # type check
 ```
 
 Useful CLI flags (see `app.py:main`):
@@ -43,8 +46,9 @@ Useful CLI flags (see `app.py:main`):
 - `--arcface-batch-crops M` — max face crops per batched ArcFace pass (default `8`). All faces found
   across the N sampled frames are flattened into one embedding batch, chunked at M crops.
 
-The app listens on `http://127.0.0.1:8000`. There is no test suite, linter, or formatter wired
-into a CI step, though `ruff` and `ty` are available as dev dependencies.
+The app listens on `http://127.0.0.1:8000`. The input source can also be switched at runtime:
+the player page has a URL form that POSTs to `/api/source`, which rebuilds the whole pipeline
+against the new URL. There is no CI; run `pytest`/`ruff`/`ty` manually.
 
 ### System dependencies
 
@@ -62,7 +66,11 @@ ONNX model weights live in `app/models/` (`scrfd_10g_kps_dynamic.onnx`,
 The process is **fully asyncio** end to end. Two `ffmpeg` subprocesses (decode, encode) bracket
 an in-process CV `Engine`; the only place work leaves the event loop is ONNX inference, offloaded
 to a single-worker `ThreadPoolExecutor`. Everything is composed as async context managers
-(`.start()` classmethods) in `app.py`'s `lifespan`, so one shared pipeline serves all clients.
+(`.start()` classmethods) held in a `PipelineManager` (`pipeline.py`) `AsyncExitStack`, so one
+shared pipeline serves all clients and the whole stack can be torn down and rebuilt at runtime
+when a new source URL arrives via `POST /api/source`. Rebuilds are **teardown-first** (old stack
+fully closed before the new one starts — one ffmpeg pair + ONNX engine at a time); clients bridge
+the gap by polling, driven by the `410 Gone` contract on `/stream.mp4` (see below).
 
 ```
 ffmpeg decoder (loop/readrate source -> optional scale filter -> raw BGR24 on stdout) reader.py
@@ -129,18 +137,36 @@ Key files (`app/src/video_streamer/`):
   drop-oldest retention; `wait_for_next()` raises `LaggedError` when a client falls off the back.
   New clients get `snapshot_for_new_client()`: init segment + only the single latest fragment.
 - **`orchestrator.py`** — wires loader → engine → writer → box-parse → broadcaster via two
-  long-lived asyncio tasks (`frame-forward`, `box-parse`).
+  long-lived asyncio tasks (`frame-forward`, `box-parse`), created with plain `create_task` (a
+  `TaskGroup` held open across the context-manager yield would cancel whichever unrelated task
+  entered the context when a child crashes). A crashed task logs and closes the broadcaster so
+  failure is immediately client-visible. **End of stream**: source exhaustion closes the encoder's
+  stdin (flushing trailing fragments); encoder EOF closes the broadcaster.
+- **`pipeline.py`** — `PipelineManager`: owns the pipeline's `AsyncExitStack` lifecycle — initial
+  build in `lifespan`, teardown-first rebuild in `switch_to_url()` (serialized by a lock). Updates
+  `app.state.broadcaster`/`app.state.engine` after each successful build.
 - **`pipe_io.py`** — shared async subprocess-pipe helpers (`read_exact`, `drain_stderr`,
   `drain_and_discard`, `terminate_and_wait`); note the drain-during-shutdown requirement.
 - **`sample_asset.py`** — generates the synthetic `testsrc` sample on first run.
-- **`app.py`** — Starlette wiring + `click` CLI. `lifespan` builds the whole pipeline once.
+- **`app.py`** — Starlette wiring + `click` CLI. `lifespan` delegates to `PipelineManager`.
+  Routes: `/` (player page), `/stream.mp4` (live tail; returns `410 Gone` when the current
+  broadcaster is closed so the player can distinguish "ended/rebuilding" from a network error),
+  `/metrics`, and `POST /api/source` (http/https-validated, 60 s timeout → `504`, other build
+  failures → `400`).
 - **`static/player.js`** — browser: `MediaSource` + `SourceBuffer`, streamed `fetch`, seek to the
-  live edge (encoder PTS runs from server start, not client connect), trim old buffered ranges.
+  live edge (encoder PTS runs from server start, not client connect), trim old buffered ranges,
+  `QuotaExceededError` recovery (requeue + evict older half). Reconnects after 1 s on errors;
+  on `410` it ends playback and polls every 3 s for a new stream.
+- **`static/source.js`** — the source-switch form: POSTs the URL to `/api/source` and reports the
+  result in the status line; on failure the full server error (yt-dlp/ffprobe stderr) is shown in
+  a dismissible `#source-error` panel, since player.js's reconnect polling overwrites the shared
+  status line. The actual stream handoff rides on player.js's reconnect logic.
 
 ## Working in this codebase
 
-- The whole pipeline is a **singleton per process** (built in `lifespan`), not one per client —
-  all clients share one decode/CV/encode chain and differ only in which fragments they've consumed.
+- The whole pipeline is a **singleton per process** (owned by `PipelineManager`, built in
+  `lifespan`, rebuilt on `/api/source`), not one per client — all clients share one
+  decode/CV/encode chain and differ only in which fragments they've consumed.
 - **Detection is decoupled from video frame rate.** It runs off-thread at whatever rate the
   `TokenBucket` allows; `interpolation.py` fills every intermediate frame. If you touch detection
   cost, tracking cadence, or `lookahead`, keep the delay buffer (`pending_frames` in `engine.py`)

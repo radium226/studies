@@ -7,9 +7,9 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import cv2
@@ -69,6 +69,9 @@ class Engine:
         # intervals; overlays are drawn on the frame they were computed for,
         # so frames are held back here until the cursor reaches them.
         self._pending_frames: dict[int, tuple[np.ndarray, str]] = {}
+        # True while emitting box-less fallback frames after a cap eviction;
+        # gates the warning so a stall logs once, not once per frame.
+        self._fallback_active = False
 
     @classmethod
     @asynccontextmanager
@@ -100,7 +103,7 @@ class Engine:
         """
         self._frame_index += 1
         self._metrics.record_processed_frame()
-        captured_at = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        captured_at = datetime.now(UTC).strftime("%H:%M:%S")
         self._pending_frames[self._frame_index] = (frame, captured_at)
         if len(self._pending_frames) > _MAX_PENDING_FRAMES:
             evicted = next(iter(self._pending_frames))
@@ -171,14 +174,31 @@ class Engine:
             del self._pending_frames[oldest]
         entry = self._pending_frames.get(t_q)
         if entry is None:
+            # t_q was evicted by the _MAX_PENDING_FRAMES cap (detection is
+            # stalling badly). Emit the oldest surviving frame without face
+            # boxes rather than drawing t_q's coordinates on the wrong frame.
             if not self._pending_frames:
                 return None
+            if not self._fallback_active:
+                self._fallback_active = True
+                logger.warning(
+                    "frame %d already evicted; emitting frames without boxes "
+                    "until the render cursor catches up",
+                    t_q,
+                )
             entry = self._pending_frames[next(iter(self._pending_frames))]
-        out_frame, frame_captured_at = entry
+            faces = []
+        else:
+            self._fallback_active = False
+        pristine, frame_captured_at = entry
 
-        if faces:
-            out_frame = draw_overlay(out_frame, f"{frame_captured_at}  frame {t_q}")
-        return self._draw_detections(out_frame, faces, is_interpolated)
+        # Single copy per emitted frame; the pristine original stays in
+        # _pending_frames (t_q is re-emitted while the cursor is clamped, and
+        # the detector must never see burned-in overlays).
+        out_frame = pristine.copy()
+        draw_overlay(out_frame, f"{frame_captured_at}  frame {t_q}")
+        self._draw_detections(out_frame, faces, is_interpolated)
+        return out_frame
 
     def _sample_batch_frames(self) -> list[tuple[int, np.ndarray]]:
         """Pick up to N evenly spaced frames buffered since the last batch.
@@ -196,7 +216,7 @@ class Engine:
             return []
         n = min(self._scrfd_batch_frames, len(window))
         positions = np.linspace(0, len(window) - 1, n)
-        chosen = sorted({window[int(round(p))] for p in positions})
+        chosen = sorted({window[round(float(p))] for p in positions})
         return [(idx, self._pending_frames[idx][0]) for idx in chosen]
 
     def _detect_batch(
@@ -211,7 +231,7 @@ class Engine:
         # split the embeddings back per source frame by detection count.
         items: list[tuple[np.ndarray, Detection]] = [
             (frame, det)
-            for frame, dets in zip(frames, dets_per_frame)
+            for frame, dets in zip(frames, dets_per_frame, strict=True)
             for det in dets
         ]
         embed_started = time.monotonic()
@@ -222,7 +242,7 @@ class Engine:
 
         results: list[tuple[int, list[Detection], list[np.ndarray]]] = []
         cursor = 0
-        for (idx, _), dets in zip(frames_with_idx, dets_per_frame):
+        for (idx, _), dets in zip(frames_with_idx, dets_per_frame, strict=True):
             results.append((idx, dets, embeddings[cursor : cursor + len(dets)]))
             cursor += len(dets)
         return _BatchResult(per_frame=results, detect_s=detect_s, embed_s=embed_s)
@@ -232,11 +252,11 @@ class Engine:
 
     def _draw_detections(
         self,
-        frame: np.ndarray,
+        out: np.ndarray,
         tracked: list[TrackedFace],
         is_interpolated: bool,
-    ) -> np.ndarray:
-        out = frame.copy()
+    ) -> None:
+        """Draw boxes/landmarks/ids in-place on `out` (already a copy)."""
         for face in tracked:
             det = face.detection
             emb = face.embedding
@@ -266,13 +286,10 @@ class Engine:
                 1,
                 cv2.LINE_AA,
             )
-        return out
 
     async def aclose(self) -> None:
         if self._detection_task is not None and not self._detection_task.done():
             self._detection_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError, Exception):
                 await self._detection_task
-            except (asyncio.CancelledError, Exception):
-                pass
         self._executor.shutdown(wait=False, cancel_futures=True)

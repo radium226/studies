@@ -120,3 +120,101 @@ video {
   color: #777;
   padding-left: 0.35rem;
 }
+
+.source-form {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+}
+
+.source-form input {
+  width: 16rem;
+  max-width: 40vw;
+  padding: 0.3rem 0.5rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
+}
+
+.source-form input::placeholder {
+  color: #888;
+}
+
+.source-form button {
+  padding: 0.3rem 0.75rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.source-form button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.source-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.source-error {
+  position: absolute;
+  top: 4rem;
+  right: 0.75rem;
+  max-width: min(44rem, 80vw);
+  background: rgba(40, 0, 0, 0.8);
+  border: 1px solid rgba(255, 80, 80, 0.45);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+  color: #fbb;
+}
+
+.source-error-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid rgba(255, 80, 80, 0.25);
+}
+
+.source-error-title {
+  color: #f88;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+}
+
+.source-error-header button {
+  background: none;
+  border: none;
+  color: #f88;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.source-error pre {
+  margin: 0;
+  padding: 0.6rem;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
