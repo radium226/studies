@@ -46,6 +46,13 @@ Useful CLI flags (see `app.py:main`):
   through SCRFD as one `(N,3,640,640)` batch, giving gapless real-detection coverage.
 - `--arcface-batch-crops M` — max face crops per batched ArcFace pass (default `8`). All faces found
   across the N sampled frames are flattened into one embedding batch, chunked at M crops.
+- `--max-batch-lag-ms T` — max milliseconds to wait for a full SCRFD batch before firing with fewer
+  frames (default `0`, fires immediately). Set alongside `--scrfd-batch-frames` to trade extra lag
+  for fuller GPU batches: the engine waits until N frames accumulate or T ms elapse, whichever
+  comes first.
+- `--lookahead K` — interpolation lookahead in detection snapshots (default `3`). The render cursor
+  stays K snapshots behind the newest detection so every rendered frame lies between two real
+  detections (pure interpolation, no extrapolation). Higher = smoother splines, more lag.
 
 The app listens on `http://127.0.0.1:8000`. The player page has a source form that POSTs to
 `/api/source` (a URL with an optional `loop` checkbox, or `synthetic: true` for the test pattern),
@@ -113,11 +120,13 @@ Key files (`app/src/video_streamer/`):
   how they resolve their source (sample-asset generation vs. yt-dlp).
 - **`engine.py`** — the CV heart. `process()` is a four-phase outline (`_buffer_frame` →
   `_collect_finished_batch` → `_maybe_schedule_batch` → `_emit_delayed_frame`). Runs detection
-  **asynchronously and sparsely** (throttled by a `TokenBucket`) in **batches** of up to
-  `scrfd_batch_frames` pristine frames sampled evenly across the interval since the last pass
-  (`_sample_batch_frames` → `_detect_batch`), tracks each sampled frame in order and interpolates
-  the results, and draws overlays onto a *delayed* frame (`pending_frames`) so the interpolation
-  lookahead can never extrapolate. Returns `None` while its lookahead buffer is still filling.
+  **asynchronously and sparsely** (gated by a `TokenBucket` and a **wait-or-cap** accumulation
+  policy: hold until `scrfd_batch_frames` frames have accumulated or `max_batch_lag_ms` has elapsed,
+  then fire with whatever is available) in **batches** of up to `scrfd_batch_frames` pristine frames
+  sampled evenly across the interval since the last pass (`_sample_batch_frames` → `_detect_batch`),
+  tracks each sampled frame in order and interpolates the results, and draws overlays onto a *delayed*
+  frame (`pending_frames`) so the interpolation lookahead can never extrapolate. Returns `None` while
+  its lookahead buffer is still filling.
 - **`detection.py`** — `FaceDetector` (SCRFD) and `FaceEmbedder` (ArcFace), both ONNX. Owns all
   the geometry: SCRFD letterbox to 640×640 and rescale detections back to frame pixels; ArcFace
   5-point landmark affine-alignment to a 112×112 canonical crop; L2-normalized embeddings. Both
@@ -128,7 +137,8 @@ Key files (`app/src/video_streamer/`):
   ids; draws the matched *input* detection box, not the Kalman estimate.
 - **`interpolation.py`** — `LookaheadTrackBuffer`: per-video-frame PCHIP/cubic/linear interpolation
   of tracked faces, matched across snapshots **by track id**. A render cursor trails the live frame
-  by a fixed lookahead so every rendered frame lies strictly between two real detections.
+  by `--lookahead` detection snapshots (default `3`) so every rendered frame lies strictly between
+  two real detections.
 - **`token_bucket.py`** — gate-then-spend throttle (`try_acquire` then `record_spend`) that adapts
   detection frequency to however long inference actually takes on this machine.
 - **`metrics.py`** — `MetricsCollector`: trailing time-window (default 5s) moving averages of live

@@ -45,6 +45,8 @@ in the web UI, so there are no source/`--input-video` flags:
 | `--frag-duration-ms N` | Target fMP4 fragment duration (default 200 ms). |
 | `--scrfd-batch-frames N` | Frames per batched SCRFD detection pass (default `4`). |
 | `--arcface-batch-crops M` | Max face crops per batched ArcFace pass (default `8`). |
+| `--max-batch-lag-ms T` | Max ms to wait for a full SCRFD batch before firing with fewer frames (default `0` = fire immediately). Pairs with `--scrfd-batch-frames` to trade lag for fuller GPU batches. |
+| `--lookahead K` | Interpolation lookahead in detection snapshots (default `3`). Higher = smoother splines, more end-to-end lag. |
 
 ---
 
@@ -177,16 +179,19 @@ on the exact frame their coordinates were computed for). Here is one `process()`
    Stamping with the finish frame would shift the whole interpolation timeline forward and make
    boxes trail moving faces.
 
-3. **Schedule a new detection batch — throttled** (`_maybe_schedule_batch`). If no detection is in flight *and*
-   `token_bucket.try_acquire(1.0)` succeeds, pick up to `--scrfd-batch-frames` (N) frames evenly
-   spaced across the frames buffered since the last pass (`_sample_batch_frames`, always including
-   the newest so consecutive batches stay contiguous) and schedule `_detect_batch` on the
-   `ThreadPoolExecutor`. It runs all N frames through SCRFD as **one** `(N,3,640,640)` batch, then
-   flattens every face across them into ArcFace chunks of ≤ `--arcface-batch-crops` (M) crops, and
-   splits the embeddings back per source frame. Crucially the frames passed in are **pristine**
-   (overlays are only ever drawn on delayed copies in step 7), so the detector never sees burned-in
-   text. Sampling several frames per pass — rather than one — gives gapless real-detection coverage
-   between interpolation control points.
+3. **Schedule a new detection batch — throttled** (`_maybe_schedule_batch`). If no detection is in
+   flight *and* `token_bucket.try_acquire(1.0)` succeeds, the engine applies a **wait-or-cap** policy:
+   it defers firing until either the window holds ≥ `--scrfd-batch-frames` (N) frames (batch full) or
+   `--max-batch-lag-ms` (T) milliseconds have elapsed since the batch first became eligible (cap hit,
+   fire with whatever is available). With the default T=0 the batch fires immediately as before.
+   `_sample_batch_frames` picks up to N frames evenly spaced across the frames buffered since the
+   last pass (always including the newest so consecutive batches stay contiguous); `_detect_batch`
+   runs all of them through SCRFD as **one** `(N,3,640,640)` batch, then flattens every face across
+   them into ArcFace chunks of ≤ `--arcface-batch-crops` (M) crops, and splits the embeddings back
+   per source frame. Crucially the frames passed in are **pristine** (overlays are only ever drawn on
+   delayed copies in step 7), so the detector never sees burned-in text. Sampling several frames per
+   pass — rather than one — gives gapless real-detection coverage between interpolation control
+   points.
 
    > **Buffering point C — the token bucket** (`token_bucket.py`). Capacity `1.0`, refill rate
    > `fps`. This is a *gate-then-spend* throttle: `try_acquire` only checks that a token is available;
@@ -300,7 +305,7 @@ called once per *detection* result (a few Hz), not per video frame.
 
 ### 5. Interpolation with lookahead — `interpolation.py`
 
-`LookaheadTrackBuffer(lookahead=3, method="pchip")` turns the sparse stream of tracked snapshots
+`LookaheadTrackBuffer` (configured by `--lookahead`, default 3) turns the sparse stream of tracked snapshots
 into a smooth per-video-frame stream of coordinates. This is the component that lets ~5 Hz detection
 drive 25 fps overlays.
 
