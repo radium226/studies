@@ -8,12 +8,11 @@
 # ///
 """Generic, single-file condensation of the video-streamer pipeline core.
 
-This is the app's architecture (see app/src/video_streamer/ and README.md)
-distilled to its load-bearing algorithms, made generic over the frame,
-detection, rendered-output and broadcast-payload types. Every concrete
-concern — ffmpeg, ONNX inference, ISO BMFF parsing, HTTP — becomes a small
-Protocol seam; everything between the seams is a faithful port of the real
-code, comments included.
+Derived from the app's architecture (see app/src/video_streamer/ and
+README.md), distilled to its load-bearing algorithms and made generic over
+the frame, detection, rendered-output and broadcast-payload types. Every
+concrete concern — ffmpeg, ONNX inference, ISO BMFF parsing, HTTP — becomes
+a small Protocol seam.
 
     FrameSource ──> Engine ──────────────────────> Encoder ──> Broadcaster
        (frames)      │  buffer pristine frames        (frames    (fan-out to
@@ -21,15 +20,19 @@ code, comments included.
                      │  (off-thread) -> tracking       fragments  clients with
                      │  lookahead spline interpolation out)       drop-oldest
                      │  overlay onto a DELAYED frame              retention)
-                     └── all wired by an Orchestrator, whose lifecycle is
-                         owned by a PipelineManager (idle <-> playing).
+                     └── all wired by an Orchestrator (which pluggable
+                         StopConditions can end early, gracefully), whose
+                         lifecycle is owned by a PipelineManager
+                         (idle <-> playing).
 
-Read top-down: vocabulary -> protocols -> the ported core (token bucket,
-metrics, interpolation, broadcast, engine, orchestration, lifecycle) -> a
-default tracker -> a synthetic demo world -> `main()`, which runs the whole
-stack end to end on fake data and asserts the pipeline's key invariants.
+Read top-down: vocabulary -> protocols -> small utilities (lifecycle,
+token bucket, stopwatch, metrics) -> the core (interpolation, broadcast,
+engine + batch gate, stop conditions, orchestration, lifecycle manager)
+-> a default tracker -> a synthetic demo world -> `main()`, which runs the
+whole stack end to end on fake data and asserts the pipeline's key
+invariants.
 
-Run it:  uv run ./pipeline.py   (takes ~7 s, exits 0 iff every check passes)
+Run it:  uv run ./pipeline.py   (takes ~9 s, exits 0 iff every check passes)
 """
 
 from __future__ import annotations
@@ -41,17 +44,26 @@ import time
 import uuid
 from bisect import bisect_left
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Callable,
+    Generator,
+    Iterable,
+    Sequence,
+)
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
     asynccontextmanager,
+    contextmanager,
+    nullcontext,
     suppress,
 )
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Protocol, Self, TypedDict
+from typing import Any, Literal, Protocol, Self, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -73,9 +85,7 @@ class Interpolatable(Protocol):
     The lookahead buffer splines *vectors*; it neither knows nor cares what
     the coordinates mean. `with_vector` rebuilds a detection from the
     interpolated vector using `self` as the template, so non-numeric fields
-    (confidence, labels, ...) carry over from the segment-start detection —
-    exactly what the real code does when it rebuilds an interpolated
-    Detection around the original confidence.
+    (confidence, labels, ...) carry over from the segment-start detection.
     """
 
     def to_vector(self) -> NDArray[np.float64]: ...
@@ -94,7 +104,7 @@ class HasBBox(Protocol):
 
 
 @dataclass(frozen=True)
-class Tracked[DetT]:
+class Tracked[DetectionT]:
     """One tracked object: a stable id + the matched *input* detection.
 
     `detection` is always the raw detection the tracker associated, never an
@@ -104,7 +114,7 @@ class Tracked[DetT]:
     """
 
     track_id: int
-    detection: DetT
+    detection: DetectionT
     embedding: NDArray[np.float32] | None
 
 
@@ -122,7 +132,7 @@ class FrameSource[FrameT](Protocol):
     def frames(self) -> AsyncIterator[FrameT]: ...
 
 
-class Detector[FrameT, DetT](Protocol):
+class Detector[FrameT, DetectionT](Protocol):
     """~ FaceDetector.detect_batch: one batched pass over N frames.
 
     Synchronous ON PURPOSE: the Engine calls it via run_in_executor, exactly
@@ -130,10 +140,10 @@ class Detector[FrameT, DetT](Protocol):
     event loop. Returns one detection list per input frame, same order.
     """
 
-    def detect_batch(self, frames: Sequence[FrameT]) -> list[list[DetT]]: ...
+    def detect_batch(self, frames: Sequence[FrameT]) -> list[list[DetectionT]]: ...
 
 
-class Embedder[FrameT, DetT](Protocol):
+class Embedder[FrameT, DetectionT](Protocol):
     """~ FaceEmbedder.embed_many: one appearance vector per (frame, detection) pair.
 
     Must chunk internally at <= max_batch items per underlying pass, and
@@ -142,11 +152,11 @@ class Embedder[FrameT, DetT](Protocol):
     """
 
     def embed_many(
-        self, items: Sequence[tuple[FrameT, DetT]], max_batch: int
+        self, items: Sequence[tuple[FrameT, DetectionT]], max_batch: int
     ) -> list[NDArray[np.float32]]: ...
 
 
-class Tracker[DetT](Protocol):
+class Tracker[DetectionT](Protocol):
     """~ ByteTracker wrapper: detections in, stable-id Tracked objects out.
 
     Called once per *sampled* frame in ascending frame order (detection
@@ -155,11 +165,11 @@ class Tracker[DetT](Protocol):
     """
 
     def update(
-        self, detections: list[DetT], embeddings: list[NDArray[np.float32]]
-    ) -> list[Tracked[DetT]]: ...
+        self, detections: list[DetectionT], embeddings: list[NDArray[np.float32]]
+    ) -> list[Tracked[DetectionT]]: ...
 
 
-class Overlay[FrameT, DetT, OutT](Protocol):
+class Overlay[FrameT, DetectionT, OutT](Protocol):
     """~ draw_overlay + Engine._draw_detections, collapsed into one seam.
 
     CONTRACT: must return a NEW object and never mutate `frame`. The Engine
@@ -173,7 +183,7 @@ class Overlay[FrameT, DetT, OutT](Protocol):
         self,
         frame: FrameT,
         caption: str,
-        tracked: Sequence[Tracked[DetT]],
+        tracked: Sequence[Tracked[DetectionT]],
         is_interpolated: bool,
     ) -> OutT: ...
 
@@ -208,7 +218,41 @@ class Encoder[OutT, PayloadT](Protocol):
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# TokenBucket — port of token_bucket.py
+# Small utilities: lifecycle ownership and timing
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class SupportsAclose(Protocol):
+    async def aclose(self) -> None: ...
+
+
+@asynccontextmanager
+async def running[T: SupportsAclose](component: T) -> AsyncGenerator[T]:
+    """Own `component` for the duration of the context; aclose it on exit."""
+    try:
+        yield component
+    finally:
+        await component.aclose()
+
+
+@dataclass
+class Timer:
+    seconds: float = 0.0
+
+
+@contextmanager
+def stopwatch(clock: Callable[[], float]) -> Generator[Timer]:
+    """Measure the wall-clock duration of the enclosed block."""
+    timer = Timer()
+    started = clock()
+    try:
+        yield timer
+    finally:
+        timer.seconds = clock() - started
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# TokenBucket and BatchGate — the detection throttle
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -247,8 +291,63 @@ class TokenBucket:
         self.budget = max(0.0, self.budget - amount)
 
 
+class BatchGate:
+    """Decides when a detection batch may fire.
+
+    Two gates compose. A TokenBucket (measured in frame-budget units:
+    detection seconds x fps) adapts detection frequency to however long
+    inference actually takes on this machine. On top of it, a wait-or-cap
+    accumulation policy holds an eligible batch until it is full
+    (`batch_frames` frames available) or `max_batch_lag_ms` has elapsed
+    since it first became eligible — whichever comes first;
+    `max_batch_lag_ms=0` fires immediately.
+
+    `should_fire` is called once per video frame; `reset` clears the
+    accumulation timer whenever eligibility is lost (a batch already in
+    flight, no budget, nothing to sample).
+    """
+
+    def __init__(
+        self,
+        *,
+        fps: float,
+        batch_frames: int,
+        max_batch_lag_ms: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.fps = fps
+        self.batch_frames = max(1, batch_frames)
+        self.max_batch_lag_ms = max(0.0, max_batch_lag_ms)
+        self.clock = clock
+        self.budget = TokenBucket(capacity=1.0, refill_rate=fps, clock=clock)
+        self.eligible_since: float | None = None
+
+    def reset(self) -> None:
+        self.eligible_since = None
+
+    def should_fire(self, available_frames: int) -> bool:
+        if not self.budget.try_acquire(1.0):
+            self.reset()
+            return False
+        if available_frames <= 0:
+            self.reset()
+            return False
+        now = self.clock()
+        if self.eligible_since is None:
+            self.eligible_since = now
+        batch_full = available_frames >= self.batch_frames
+        lag_exceeded = (now - self.eligible_since) * 1000.0 >= self.max_batch_lag_ms
+        if not batch_full and not lag_exceeded:
+            return False  # keep accumulating frames
+        self.reset()
+        return True
+
+    def record_spend(self, elapsed_seconds: float) -> None:
+        self.budget.record_spend(elapsed_seconds * self.fps)
+
+
 # ──────────────────────────────────────────────────────────────────────────
-# MetricsCollector — port of metrics.py
+# MetricsCollector
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -316,20 +415,19 @@ class MetricsCollector:
 
     def record_detection_batch(
         self,
+        batch: BatchResult[Any],
         *,
-        detection_seconds: float,
-        embedding_seconds: float,
         detection_counts: Iterable[int],
         active_tracks: int,
-        detected_frame_count: int,
-        embedded_crop_count: int,
     ) -> None:
-        self.detection_duration_ms.add(detection_seconds * 1000.0)
-        self.embedding_duration_ms.add(embedding_seconds * 1000.0)
-        self.batch_duration_ms.add((detection_seconds + embedding_seconds) * 1000.0)
+        self.detection_duration_ms.add(batch.detection_seconds * 1000.0)
+        self.embedding_duration_ms.add(batch.embedding_seconds * 1000.0)
+        self.batch_duration_ms.add(
+            (batch.detection_seconds + batch.embedding_seconds) * 1000.0
+        )
         self.completed_batches.add(1.0)
-        self.detection_batch_size.add(float(detected_frame_count))
-        self.embedding_batch_size.add(float(embedded_crop_count))
+        self.detection_batch_size.add(float(batch.detected_frame_count))
+        self.embedding_batch_size.add(float(batch.embedded_crop_count))
         for count in detection_counts:
             self.detections_per_frame.add(float(count))
             # One sample per frame actually run through detection, so its
@@ -359,7 +457,7 @@ class MetricsCollector:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# LookaheadTrackBuffer — port of interpolation.py
+# LookaheadTrackBuffer — cf. app's interpolation.py
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -386,13 +484,13 @@ def interpolate_vectors(
 
 
 @dataclass
-class TrackSnapshot[DetT]:
+class TrackSnapshot[DetectionT]:
     frame_index: int
-    tracks: dict[int, Tracked[DetT]]  # keyed by track_id
+    tracks: dict[int, Tracked[DetectionT]]  # keyed by track_id
 
 
 @dataclass(frozen=True)
-class InterpolatedFrame[DetT]:
+class InterpolatedFrame[DetectionT]:
     """One render-cursor step: the (past) frame the coordinates belong to.
 
     is_interpolated is True when the frame lies strictly between two
@@ -400,11 +498,11 @@ class InterpolatedFrame[DetT]:
     """
 
     frame_index: int
-    tracks: list[Tracked[DetT]]
+    tracks: list[Tracked[DetectionT]]
     is_interpolated: bool
 
 
-class LookaheadTrackBuffer[DetT: Interpolatable]:
+class LookaheadTrackBuffer[DetectionT: Interpolatable]:
     """Per-video-frame spline interpolation of tracked detections with a
     fixed lookahead lag.
 
@@ -430,12 +528,12 @@ class LookaheadTrackBuffer[DetT: Interpolatable]:
     ) -> None:
         self.lookahead = lookahead
         self.method = method
-        self.snapshots: list[TrackSnapshot[DetT]] = []
+        self.snapshots: list[TrackSnapshot[DetectionT]] = []
         # Index of the current segment's start snapshot.
         self.segment_start_index: int = 0
         self.render_cursor: float | None = None
 
-    def push(self, frame_index: int, tracks: list[Tracked[DetT]]) -> None:
+    def push(self, frame_index: int, tracks: list[Tracked[DetectionT]]) -> None:
         self.snapshots.append(
             TrackSnapshot(frame_index, {t.track_id: t for t in tracks})
         )
@@ -446,7 +544,7 @@ class LookaheadTrackBuffer[DetT: Interpolatable]:
         # more snapshots ahead of it.
         return len(self.snapshots) > self.segment_start_index + self.lookahead + 1
 
-    def get(self) -> InterpolatedFrame[DetT] | None:
+    def get(self) -> InterpolatedFrame[DetectionT] | None:
         """Return the interpolated tracks for the current render cursor.
 
         Each call advances the internal render cursor by one frame. Returns
@@ -520,7 +618,7 @@ class LookaheadTrackBuffer[DetT: Interpolatable]:
 
         return render_frame_index, is_interpolated
 
-    def interpolate_tracks(self, render_frame_index: int) -> list[Tracked[DetT]]:
+    def interpolate_tracks(self, render_frame_index: int) -> list[Tracked[DetectionT]]:
         """Spline-interpolate every track of the current segment start at
         render_frame_index, matching control points across snapshots by track id."""
         segment_start_snapshot = self.snapshots[self.segment_start_index]
@@ -533,7 +631,7 @@ class LookaheadTrackBuffer[DetT: Interpolatable]:
         )
         window_snapshots = self.snapshots[window_start:window_end]
 
-        tracks: list[Tracked[DetT]] = []
+        tracks: list[Tracked[DetectionT]] = []
         for track_id, tracked in segment_start_snapshot.tracks.items():
             control_points = [
                 (snapshot.frame_index, snapshot.tracks[track_id])
@@ -573,7 +671,7 @@ class LookaheadTrackBuffer[DetT: Interpolatable]:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Broadcaster — port of broadcaster.py
+# Broadcaster — cf. app's broadcaster.py
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -617,15 +715,6 @@ class Broadcaster[PayloadT]:
         self.fragments: deque[Fragment[PayloadT]] = deque(maxlen=max_fragments)
         self.next_sequence_number = 0
         self.closed = False
-
-    @classmethod
-    @asynccontextmanager
-    async def start(cls, max_fragments: int = 15) -> AsyncIterator[Self]:
-        self = cls(max_fragments)
-        try:
-            yield self
-        finally:
-            await self.close()
 
     async def set_init_segment(self, payload: PayloadT) -> None:
         async with self.condition:
@@ -680,10 +769,11 @@ class Broadcaster[PayloadT]:
             oldest_retained_sequence = self.fragments[0].sequence_number
             if last_seen_sequence < oldest_retained_sequence - 1:
                 raise LaggedError(oldest_retained_sequence)
-            for fragment in self.fragments:
-                if fragment.sequence_number > last_seen_sequence:
-                    return fragment
-            return None
+            # Sequence numbers are contiguous, so the next unseen fragment's
+            # position in the deque follows from its sequence number.
+            return self.fragments[
+                max(0, last_seen_sequence + 1 - oldest_retained_sequence)
+            ]
 
     def has_next(self, last_seen_sequence: int) -> bool:
         return (
@@ -696,15 +786,16 @@ class Broadcaster[PayloadT]:
             self.closed = True
             self.condition.notify_all()
 
+    # Closing is also this component's teardown, so `running()` can own it.
+    aclose = close
+
     async def wait_closed(self) -> None:
-        """Block until this broadcaster is closed (returns immediately if
-        already closed)."""
         async with self.condition:
             await self.condition.wait_for(lambda: self.closed)
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Engine — port of engine.py
+# Engine — cf. app's engine.py
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -714,8 +805,7 @@ class EngineConfig:
 
     batch_frames    — max frames per batched detection pass (--scrfd-batch-frames)
     embed_max_batch — max crops per batched embedding pass (--arcface-batch-crops)
-    max_batch_lag_ms — wait-or-cap: hold a non-full batch this long before
-                       firing with fewer frames; 0 fires immediately
+    max_batch_lag_ms — wait-or-cap batch accumulation, see BatchGate
     lookahead       — render-cursor lag in detection snapshots (--lookahead)
     max_pending_frames — cap on frames held back for the render cursor; the
                        normal steady-state backlog is (lookahead + 2)
@@ -748,26 +838,26 @@ class SampledFrame[FrameT]:
 
 
 @dataclass(frozen=True)
-class FrameDetections[DetT]:
+class FrameDetections[DetectionT]:
     """Detections + matching embeddings for one sampled frame."""
 
     frame_index: int
-    detections: list[DetT]
+    detections: list[DetectionT]
     embeddings: list[NDArray[np.float32]]
 
 
 @dataclass(frozen=True)
-class BatchResult[DetT]:
+class BatchResult[DetectionT]:
     """One detection pass: per-frame results plus how long each stage took."""
 
-    per_frame_detections: list[FrameDetections[DetT]]
+    per_frame_detections: list[FrameDetections[DetectionT]]
     detection_seconds: float
     embedding_seconds: float
     detected_frame_count: int  # frames submitted to the detector
     embedded_crop_count: int  # detections submitted to the embedder
 
 
-class Engine[FrameT, DetT: Interpolatable, OutT]:
+class Engine[FrameT, DetectionT: Interpolatable, OutT]:
     """The CV heart: sparse batched detection, tracking, interpolation, and
     delayed emission — decoupled from the video frame rate.
 
@@ -779,37 +869,44 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
     def __init__(
         self,
         *,
-        detector: Detector[FrameT, DetT],
-        embedder: Embedder[FrameT, DetT],
-        tracker: Tracker[DetT],
-        overlay: Overlay[FrameT, DetT, OutT],
+        detector: Detector[FrameT, DetectionT],
+        embedder: Embedder[FrameT, DetectionT],
+        tracker: Tracker[DetectionT],
+        overlay: Overlay[FrameT, DetectionT, OutT],
         fps: float,
         config: EngineConfig = EngineConfig(),
         clock: Callable[[], float] = time.monotonic,
+        on_tracks: Callable[[int, Sequence[Tracked[DetectionT]]], None]
+        | None = None,
     ) -> None:
         self.detector = detector
         self.embedder = embedder
         self.tracker = tracker
         self.overlay = overlay
-        self.fps = fps
         self.clock = clock
-        self.batch_frames = max(1, config.batch_frames)
+        # Neutral tracker-output hook (sampled frame index + tracked
+        # objects), fired once per sampled frame as batches complete. The
+        # Engine stays ignorant of what listens — the manager adapts it
+        # into stop-condition events.
+        self.on_tracks = on_tracks
         self.embed_max_batch = max(1, config.embed_max_batch)
-        self.max_batch_lag_ms = max(0.0, config.max_batch_lag_ms)
         self.max_pending_frames = config.max_pending_frames
         self.frame_index = 0
         self.executor = ThreadPoolExecutor(max_workers=1)
-        self.detection_buffer: LookaheadTrackBuffer[DetT] = LookaheadTrackBuffer(
+        self.detection_buffer: LookaheadTrackBuffer[DetectionT] = LookaheadTrackBuffer(
             lookahead=config.lookahead, method=config.method
         )
-        self.detection_task: asyncio.Future[BatchResult[DetT]] | None = None
+        self.batch_gate = BatchGate(
+            fps=fps,
+            batch_frames=config.batch_frames,
+            max_batch_lag_ms=config.max_batch_lag_ms,
+            clock=clock,
+        )
+        self.detection_task: asyncio.Future[BatchResult[DetectionT]] | None = None
         self.detection_started_at: float = 0.0
         # Newest frame index covered by the most recently scheduled batch;
         # the next batch samples the frames after it, giving gapless coverage.
         self.newest_batched_frame_index: int = 0
-        self.detection_budget = TokenBucket(
-            capacity=1.0, refill_rate=fps, clock=clock
-        )
         self.metrics = MetricsCollector(clock=clock)
         # Frames awaiting emission, keyed by frame index. The interpolation
         # buffer's render cursor trails the live frame by several detection
@@ -819,37 +916,6 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
         # True while emitting box-less fallback frames after a cap eviction;
         # gates the warning so a stall logs once, not once per frame.
         self.fallback_active = False
-        # Monotonic timestamp of when the batch first became eligible (token
-        # bucket passed, frames available) but wasn't full yet. Reset on fire
-        # or when eligibility is lost.
-        self.batch_eligible_since: float | None = None
-
-    @classmethod
-    @asynccontextmanager
-    async def start(
-        cls,
-        *,
-        detector: Detector[FrameT, DetT],
-        embedder: Embedder[FrameT, DetT],
-        tracker: Tracker[DetT],
-        overlay: Overlay[FrameT, DetT, OutT],
-        fps: float,
-        config: EngineConfig = EngineConfig(),
-        clock: Callable[[], float] = time.monotonic,
-    ) -> AsyncIterator[Engine[FrameT, DetT, OutT]]:
-        self = cls(
-            detector=detector,
-            embedder=embedder,
-            tracker=tracker,
-            overlay=overlay,
-            fps=fps,
-            config=config,
-            clock=clock,
-        )
-        try:
-            yield self
-        finally:
-            await self.aclose()
 
     async def process(self, frame: FrameT) -> OutT | None:
         """Feed one live frame in; get the (delayed) overlaid frame out.
@@ -886,8 +952,7 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
         """
         if self.detection_task is None or not self.detection_task.done():
             return
-        elapsed = self.clock() - self.detection_started_at
-        self.detection_budget.record_spend(elapsed * self.fps)
+        self.batch_gate.record_spend(self.clock() - self.detection_started_at)
         if not self.detection_task.cancelled():
             try:
                 # One result per sampled frame, in ascending frame order.
@@ -905,60 +970,34 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
                     self.detection_buffer.push(
                         frame_detections.frame_index, tracked
                     )
+                    if self.on_tracks is not None:
+                        self.on_tracks(frame_detections.frame_index, tracked)
                     detection_counts.append(len(frame_detections.detections))
                     active_tracks = len(tracked)
                 self.metrics.record_detection_batch(
-                    detection_seconds=batch_result.detection_seconds,
-                    embedding_seconds=batch_result.embedding_seconds,
+                    batch_result,
                     detection_counts=detection_counts,
                     active_tracks=active_tracks,
-                    detected_frame_count=batch_result.detected_frame_count,
-                    embedded_crop_count=batch_result.embedded_crop_count,
                 )
             except Exception:
                 logger.warning("detection failed", exc_info=True)
         self.detection_task = None
 
     def maybe_schedule_batch(self) -> None:
-        """Kick off a new detection batch if the budget allows and none is
-        already running.
-
-        Waits until either the window has >= batch_frames frames (batch
-        full) or max_batch_lag_ms has elapsed since the batch first became
-        eligible, then fires with whatever is available. max_batch_lag_ms=0
-        fires immediately.
-        """
+        """Kick off a new detection batch if none is already running and
+        the BatchGate (budget + wait-or-cap accumulation) allows it."""
         if self.detection_task is not None:
-            self.batch_eligible_since = None
+            self.batch_gate.reset()
             return
-        if not self.detection_budget.try_acquire(1.0):
-            self.batch_eligible_since = None
-            return
-
         # Approximate window size (precise intersection with pending_frames
         # is done inside sample_batch_frames).
-        window_size = self.frame_index - self.newest_batched_frame_index
-        if window_size <= 0:
-            self.batch_eligible_since = None
+        available_frames = self.frame_index - self.newest_batched_frame_index
+        if not self.batch_gate.should_fire(available_frames):
             return
-
-        now = self.clock()
-        if self.batch_eligible_since is None:
-            self.batch_eligible_since = now
-
-        batch_full = window_size >= self.batch_frames
-        lag_exceeded = (
-            now - self.batch_eligible_since
-        ) * 1000.0 >= self.max_batch_lag_ms
-
-        if not batch_full and not lag_exceeded:
-            return  # keep accumulating frames
-
-        self.batch_eligible_since = None
         sampled_frames = self.sample_batch_frames()
         if not sampled_frames:
             return
-        self.detection_started_at = now
+        self.detection_started_at = self.clock()
         self.newest_batched_frame_index = sampled_frames[-1].frame_index
         loop = asyncio.get_running_loop()
         self.detection_task = loop.run_in_executor(
@@ -1031,7 +1070,9 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
         ]
         if not candidate_frame_indices:
             return []
-        sample_count = min(self.batch_frames, len(candidate_frame_indices))
+        sample_count = min(
+            self.batch_gate.batch_frames, len(candidate_frame_indices)
+        )
         sample_positions = np.linspace(
             0, len(candidate_frame_indices) - 1, sample_count
         )
@@ -1048,27 +1089,25 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
 
     def detect_batch(
         self, sampled_frames: list[SampledFrame[FrameT]]
-    ) -> BatchResult[DetT]:
+    ) -> BatchResult[DetectionT]:
         """Runs on the single-worker executor thread, never the event loop."""
         frames = [sample.frame for sample in sampled_frames]
-        detection_start = self.clock()
-        detections_per_frame = self.detector.detect_batch(frames)
-        detection_seconds = self.clock() - detection_start
+        with stopwatch(self.clock) as detection_timer:
+            detections_per_frame = self.detector.detect_batch(frames)
 
         # Flatten every (frame, detection) pair into one embedding batch,
         # then split the embeddings back per source frame by count.
-        embedding_items: list[tuple[FrameT, DetT]] = [
+        embedding_items: list[tuple[FrameT, DetectionT]] = [
             (frame, detection)
             for frame, detections in zip(frames, detections_per_frame, strict=True)
             for detection in detections
         ]
-        embedding_start = self.clock()
-        embeddings = self.embedder.embed_many(
-            embedding_items, max_batch=self.embed_max_batch
-        )
-        embedding_seconds = self.clock() - embedding_start
+        with stopwatch(self.clock) as embedding_timer:
+            embeddings = self.embedder.embed_many(
+                embedding_items, max_batch=self.embed_max_batch
+            )
 
-        per_frame_detections: list[FrameDetections[DetT]] = []
+        per_frame_detections: list[FrameDetections[DetectionT]] = []
         embedding_offset = 0
         for sample, detections in zip(
             sampled_frames, detections_per_frame, strict=True
@@ -1085,8 +1124,8 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
             embedding_offset += len(detections)
         return BatchResult(
             per_frame_detections=per_frame_detections,
-            detection_seconds=detection_seconds,
-            embedding_seconds=embedding_seconds,
+            detection_seconds=detection_timer.seconds,
+            embedding_seconds=embedding_timer.seconds,
             detected_frame_count=len(frames),
             embedded_crop_count=len(embedding_items),
         )
@@ -1105,11 +1144,139 @@ class Engine[FrameT, DetT: Interpolatable, OutT]:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Orchestrator — port of orchestrator.py
+# Stop conditions — pluggable early-stop strategies
 # ──────────────────────────────────────────────────────────────────────────
 
 
-class Orchestrator[FrameT, DetT: Interpolatable, OutT, PayloadT]:
+@dataclass(frozen=True)
+class FrameRead:
+    """One live frame was read from the source (the live edge, before any
+    Engine processing — 'frames read', not 'frames emitted')."""
+
+    frame_index: int
+
+
+@dataclass(frozen=True)
+class TracksUpdated[DetectionT]:
+    """The tracker ran on one sampled frame (detection cadence, not video
+    fps)."""
+
+    frame_index: int
+    tracks: Sequence[Tracked[DetectionT]]
+
+
+type PipelineEvent[DetectionT] = FrameRead | TracksUpdated[DetectionT]
+
+
+class StopCondition[DetectionT](Protocol):
+    """An external reason to stop a running pipeline.
+
+    Push-based: the pipeline feeds every condition the typed events it
+    emits (a frame read from the source, a tracker update); a condition
+    answers with a human-readable stop reason to end the stream, or None
+    to keep going. Conditions ignore event types they don't care about,
+    and may be stateful (a frame counter, a deadline) — each build gets
+    fresh instances via PipelineComponents.stop_condition_factories.
+
+    A triggered stop is graceful, exactly like end-of-source: the frame
+    loop stops feeding, the encoder flushes its trailing fragments, the
+    broadcaster closes, and the manager goes idle — recording the reason
+    as a StopRecord (distinct from an error) in its status.
+    """
+
+    def observe(self, event: PipelineEvent[DetectionT]) -> str | None: ...
+
+
+class StopController[DetectionT]:
+    """Any-of composition of stop conditions, owned per pipeline build.
+
+    Feeds every event to every condition until one returns a reason; the
+    first reason is latched (later events become no-ops) and read by the
+    Orchestrator's frame loop and the manager watchdog.
+    """
+
+    def __init__(self, conditions: Sequence[StopCondition[DetectionT]]) -> None:
+        self.conditions = conditions
+        self.stop_reason: str | None = None
+
+    @property
+    def triggered(self) -> bool:
+        return self.stop_reason is not None
+
+    def observe(self, event: PipelineEvent[DetectionT]) -> None:
+        if self.triggered:
+            return
+        for condition in self.conditions:
+            reason = condition.observe(event)
+            if reason is not None:
+                self.stop_reason = reason
+                return
+
+
+class MaxFramesRead:
+    """Stop once `max_frames` frames have been read from the source."""
+
+    def __init__(self, max_frames: int) -> None:
+        self.max_frames = max_frames
+        self.frames_read = 0
+
+    def observe(self, event: PipelineEvent[Any]) -> str | None:
+        if not isinstance(event, FrameRead):
+            return None
+        self.frames_read += 1
+        if self.frames_read >= self.max_frames:
+            return f"read {self.frames_read} frames (limit {self.max_frames})"
+        return None
+
+
+class TracksMatch[DetectionT]:
+    """Stop when a tracker update satisfies `predicate` — 'any track
+    exists', 'track id 3 present', '>= 2 concurrent tracks' are all
+    one-line predicates."""
+
+    def __init__(
+        self,
+        predicate: Callable[[Sequence[Tracked[DetectionT]]], bool],
+        description: str,
+    ) -> None:
+        self.predicate = predicate
+        self.description = description
+
+    def observe(self, event: PipelineEvent[DetectionT]) -> str | None:
+        if isinstance(event, TracksUpdated) and self.predicate(event.tracks):
+            return f"tracks matched: {self.description}"
+        return None
+
+
+class MaxDuration:
+    """Stop after `seconds` of pipeline runtime, measured from the first
+    event observed (not construction, so build latency doesn't count)."""
+
+    def __init__(
+        self, seconds: float, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self.seconds = seconds
+        self.clock = clock
+        self.started_at: float | None = None
+
+    def observe(self, event: PipelineEvent[Any]) -> str | None:
+        del event  # any event counts; only its timing matters
+        now = self.clock()
+        if self.started_at is None:
+            self.started_at = now
+            return None
+        elapsed = now - self.started_at
+        if elapsed >= self.seconds:
+            return f"ran for {elapsed:.1f}s (limit {self.seconds:.1f}s)"
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Orchestrator — cf. app's orchestrator.py
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class Orchestrator[FrameT, DetectionT: Interpolatable, OutT, PayloadT]:
     """Wires FrameSource -> Engine -> Encoder -> Broadcaster together.
 
     Owns the two long-lived asyncio tasks that bridge those components: one
@@ -1120,45 +1287,44 @@ class Orchestrator[FrameT, DetT: Interpolatable, OutT, PayloadT]:
     def __init__(
         self,
         source: FrameSource[FrameT],
-        engine: Engine[FrameT, DetT, OutT],
+        engine: Engine[FrameT, DetectionT, OutT],
         encoder: Encoder[OutT, PayloadT],
         broadcaster: Broadcaster[PayloadT],
+        stop_controller: StopController[DetectionT] | None = None,
     ) -> None:
         self.source = source
         self.engine = engine
         self.encoder = encoder
         self.broadcaster = broadcaster
+        self.stop_controller: StopController[DetectionT] = (
+            stop_controller if stop_controller is not None else StopController(())
+        )
+        self.tasks: list[asyncio.Task[None]] = []
         self.failure_close_task: asyncio.Task[None] | None = None
         self.failure_exception: BaseException | None = None
 
-    @classmethod
-    @asynccontextmanager
-    async def start(
-        cls,
-        source: FrameSource[FrameT],
-        engine: Engine[FrameT, DetT, OutT],
-        encoder: Encoder[OutT, PayloadT],
-        broadcaster: Broadcaster[PayloadT],
-    ) -> AsyncIterator[Orchestrator[FrameT, DetT, OutT, PayloadT]]:
-        # Plain create_task, not a TaskGroup: a TaskGroup held open across
-        # the yield would, on a child crash, cancel whichever unrelated task
-        # happened to enter this context and park the exception until
-        # teardown. Crashes are surfaced immediately via on_task_done.
-        self = cls(source, engine, encoder, broadcaster)
-        tasks = [
+    def start(self) -> Self:
+        """Spawn the two bridge tasks.
+
+        Plain create_task, not a TaskGroup: a TaskGroup held open for the
+        pipeline's lifetime would, on a child crash, cancel whichever
+        unrelated task happened to be inside it and park the exception
+        until teardown. Crashes are surfaced immediately via on_task_done.
+        """
+        self.tasks = [
             asyncio.create_task(self.forward_frames(), name="frame-forward"),
             asyncio.create_task(self.read_encoder_output(), name="encode-read"),
         ]
-        for task in tasks:
+        for task in self.tasks:
             task.add_done_callback(self.on_task_done)
-        try:
-            yield self
-        finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            if self.failure_close_task is not None:
-                await self.failure_close_task
+        return self
+
+    async def aclose(self) -> None:
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        if self.failure_close_task is not None:
+            await self.failure_close_task
 
     @property
     def failure_reason(self) -> str | None:
@@ -1168,6 +1334,13 @@ class Orchestrator[FrameT, DetT: Interpolatable, OutT, PayloadT]:
         if self.failure_exception is None:
             return None
         return str(self.failure_exception)
+
+    @property
+    def stop_reason(self) -> str | None:
+        """Reason a StopCondition ended the stream, or None. Read by the
+        PipelineManager watchdog (after ruling out a crash) to record the
+        stop in its status instead of treating it as a silent EOF."""
+        return self.stop_controller.stop_reason
 
     def on_task_done(self, task: asyncio.Task[None]) -> None:
         if task.cancelled() or task.exception() is None:
@@ -1187,15 +1360,26 @@ class Orchestrator[FrameT, DetT: Interpolatable, OutT, PayloadT]:
             )
 
     async def forward_frames(self) -> None:
+        frame_count = 0
         async for frame in self.source.frames():
+            frame_count += 1
+            self.stop_controller.observe(FrameRead(frame_count))
+            if self.stop_controller.triggered:
+                break  # this frame counts as read, not processed
             rendered_frame = await self.engine.process(frame)
+            # process() fires TracksUpdated events via the Engine's
+            # on_tracks hook, so a track-based condition may have
+            # triggered just now.
+            if self.stop_controller.triggered:
+                break
             if rendered_frame is None:
                 # Engine is still filling its lookahead delay buffer.
                 continue
             await self.encoder.write_frame(rendered_frame)
-        # Source exhausted: EOF the encoder's input so it flushes its
-        # trailing fragment(s) and EOFs its output, which lets
-        # read_encoder_output finish and close the broadcaster.
+        # Source exhausted (or a stop condition triggered): EOF the
+        # encoder's input so it flushes its trailing fragment(s) and EOFs
+        # its output, which lets read_encoder_output finish and close the
+        # broadcaster — a condition stop drains exactly like natural EOF.
         await self.encoder.close_input()
 
     async def read_encoder_output(self) -> None:
@@ -1213,7 +1397,7 @@ class Orchestrator[FrameT, DetT: Interpolatable, OutT, PayloadT]:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# PipelineManager — port of pipeline.py (minus the web app)
+# PipelineManager — cf. app's pipeline.py (minus the web app)
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -1226,32 +1410,47 @@ class SourceError(TypedDict):
     message: str
 
 
+class StopRecord(TypedDict):
+    """Condition-triggered-stop record surfaced to clients: why a stop
+    condition ended the stream. Deliberate, so distinct from SourceError;
+    the monotonic id lets a consumer show each stop exactly once."""
+
+    id: int
+    source: str | None
+    reason: str
+
+
 class PipelineStatus(TypedDict):
     state: Literal["idle", "playing"]
     stream_id: str | None
     source: str | None
     error: SourceError | None
+    stopped: StopRecord | None
 
 
 @dataclass(frozen=True)
-class PipelineComponents[FrameT, DetT: Interpolatable, OutT, PayloadT]:
+class PipelineComponents[FrameT, DetectionT: Interpolatable, OutT, PayloadT]:
     """Per-build factories for every pluggable seam. Factories (rather than
     instances) because each build must get a fresh source/encoder — a
-    genuinely new session, like the real app's fresh ffmpeg pair per build."""
+    genuinely new session, like the real app's fresh ffmpeg pair per build.
+    Stop conditions are factories for the same reason: they may be stateful
+    (frame counters, deadlines) and each build needs fresh instances."""
 
     source_factory: Callable[[], AbstractAsyncContextManager[FrameSource[FrameT]]]
-    detector_factory: Callable[[], Detector[FrameT, DetT]]
-    embedder_factory: Callable[[], Embedder[FrameT, DetT]]
-    tracker_factory: Callable[[float], Tracker[DetT]]  # takes the source fps
-    overlay: Overlay[FrameT, DetT, OutT]
+    detector_factory: Callable[[], Detector[FrameT, DetectionT]]
+    embedder_factory: Callable[[], Embedder[FrameT, DetectionT]]
+    tracker_factory: Callable[[float], Tracker[DetectionT]]  # takes the source fps
+    overlay: Overlay[FrameT, DetectionT, OutT]
     encoder_factory: Callable[
         [float], AbstractAsyncContextManager[Encoder[OutT, PayloadT]]
     ]
     config: EngineConfig = EngineConfig()
     max_fragments: int = 15
+    # Any-of: the first condition to fire ends the stream gracefully.
+    stop_condition_factories: Sequence[Callable[[], StopCondition[DetectionT]]] = ()
 
 
-class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
+class PipelineManager[FrameT, DetectionT: Interpolatable, OutT, PayloadT]:
     """Owns the shared pipeline's lifecycle: it starts idle (no source),
     builds a pipeline on demand, and tears back down to idle when the source
     ends, fails, or is explicitly stopped.
@@ -1271,25 +1470,24 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
 
         # The currently-running pipeline's orchestrator (for its crash
         # reason) and a human label for the active source; None while idle.
-        self.orchestrator: Orchestrator[FrameT, DetT, OutT, PayloadT] | None = None
+        self.orchestrator: (
+            Orchestrator[FrameT, DetectionT, OutT, PayloadT] | None
+        ) = None
         self.current_source_label: str | None = None
         self.last_error: SourceError | None = None
         self.error_sequence_number = 0
+        self.last_stop: StopRecord | None = None
+        self.stop_sequence_number = 0
 
         # What app.state held in the real app; None while idle, so anything
         # routing on the manager must tolerate that.
         self.broadcaster: Broadcaster[PayloadT] | None = None
-        self.engine: Engine[FrameT, DetT, OutT] | None = None
+        self.engine: Engine[FrameT, DetectionT, OutT] | None = None
         self.stream_id: str | None = None
-
-    def set_idle_state(self) -> None:
-        self.broadcaster = None
-        self.engine = None
-        self.stream_id = None
 
     async def start(
         self,
-        components: PipelineComponents[FrameT, DetT, OutT, PayloadT],
+        components: PipelineComponents[FrameT, DetectionT, OutT, PayloadT],
         source_label: str,
     ) -> None:
         async with self.lock:
@@ -1303,7 +1501,7 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
 
     async def build(
         self,
-        components: PipelineComponents[FrameT, DetT, OutT, PayloadT],
+        components: PipelineComponents[FrameT, DetectionT, OutT, PayloadT],
         source_label: str,
     ) -> None:
         # Teardown-first: only one pipeline ever runs at a time, at the cost
@@ -1326,21 +1524,37 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
             encoder = await new_stack.enter_async_context(
                 components.encoder_factory(fps)
             )
+            # Fresh stop-condition instances per build (they're stateful);
+            # the controller latches the first reason any of them returns.
+            stop_controller: StopController[DetectionT] = StopController(
+                [factory() for factory in components.stop_condition_factories]
+            )
             engine = await new_stack.enter_async_context(
-                Engine.start(
-                    detector=components.detector_factory(),
-                    embedder=components.embedder_factory(),
-                    tracker=components.tracker_factory(fps),
-                    overlay=components.overlay,
-                    fps=fps,
-                    config=components.config,
+                running(
+                    Engine(
+                        detector=components.detector_factory(),
+                        embedder=components.embedder_factory(),
+                        tracker=components.tracker_factory(fps),
+                        overlay=components.overlay,
+                        fps=fps,
+                        config=components.config,
+                        on_tracks=lambda frame_index, tracks: (
+                            stop_controller.observe(
+                                TracksUpdated(frame_index, tracks)
+                            )
+                        ),
+                    )
                 )
             )
             broadcaster = await new_stack.enter_async_context(
-                Broadcaster.start(max_fragments=components.max_fragments)
+                running(Broadcaster(max_fragments=components.max_fragments))
             )
             orchestrator = await new_stack.enter_async_context(
-                Orchestrator.start(source, engine, encoder, broadcaster)
+                running(
+                    Orchestrator(
+                        source, engine, encoder, broadcaster, stop_controller
+                    ).start()
+                )
             )
         except BaseException:
             await new_stack.aclose()
@@ -1350,6 +1564,7 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
         self.orchestrator = orchestrator
         self.current_source_label = source_label
         self.last_error = None
+        self.last_stop = None
         self.broadcaster = broadcaster
         self.engine = engine
         self.stream_id = str(uuid.uuid4())
@@ -1373,13 +1588,18 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
             if self.closing or generation != self.generation:
                 return
             # The pipeline closed on its own. A crash carries a failure
-            # reason (-> error record); a natural end-of-source does not
-            # (-> silent idle).
+            # reason (-> error record, crashes win); a triggered stop
+            # condition carries a stop reason (-> stop record); a natural
+            # end-of-source carries neither (-> silent idle).
             reason = (
                 self.orchestrator.failure_reason if self.orchestrator else None
             )
+            stop_reason = (
+                self.orchestrator.stop_reason if self.orchestrator else None
+            )
             source = self.current_source_label
             error: SourceError | None = None
+            stop: StopRecord | None = None
             if reason is not None:
                 self.error_sequence_number += 1
                 error = SourceError(
@@ -1391,6 +1611,20 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
                     source,
                     reason,
                 )
+            elif stop_reason is not None:
+                self.stop_sequence_number += 1
+                stop = StopRecord(
+                    id=self.stop_sequence_number,
+                    source=source,
+                    reason=stop_reason,
+                )
+                logger.info(
+                    "pipeline (generation %s) stopped by condition on "
+                    "source %r: %s",
+                    generation,
+                    source,
+                    stop_reason,
+                )
             else:
                 logger.info(
                     "pipeline (generation %s) reached end of source %r; "
@@ -1398,25 +1632,32 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
                     generation,
                     source,
                 )
-            await self.go_idle_locked(error=error)
+            await self.go_idle_locked(error=error, stop=stop)
 
-    async def go_idle_locked(self, error: SourceError | None) -> None:
+    async def go_idle_locked(
+        self, error: SourceError | None, stop: StopRecord | None = None
+    ) -> None:
         # Bump the generation first so any other watchdog waiting on the
         # lock sees a mismatch and returns instead of double-handling.
         self.generation += 1
         await self.teardown_locked()
         if error is not None:
             self.last_error = error
+        if stop is not None:
+            self.last_stop = stop
 
     async def teardown_locked(self) -> None:
         """Close the current stack (if any) and reset all per-pipeline
-        state. Callers must hold self.lock. Leaves self.last_error alone:
-        an explicit stop or a fresh build decides what happens to it."""
+        state. Callers must hold self.lock. Leaves self.last_error and
+        self.last_stop alone: an explicit stop or a fresh build decides
+        what happens to them."""
         await self.stack.aclose()
         self.stack = AsyncExitStack()
         self.orchestrator = None
         self.current_source_label = None
-        self.set_idle_state()
+        self.broadcaster = None
+        self.engine = None
+        self.stream_id = None
 
     def status(self) -> PipelineStatus:
         return PipelineStatus(
@@ -1424,6 +1665,7 @@ class PipelineManager[FrameT, DetT: Interpolatable, OutT, PayloadT]:
             stream_id=self.stream_id,
             source=self.current_source_label,
             error=self.last_error,
+            stopped=self.last_stop,
         )
 
     async def aclose(self) -> None:
@@ -1624,7 +1866,7 @@ class SimFrame:
 
 @dataclass(frozen=True)
 class BoxDetection:
-    """The demo's DetT: satisfies both Interpolatable (for the lookahead
+    """The demo's DetectionT: satisfies both Interpolatable (for the lookahead
     buffer) and HasBBox (for the default tracker)."""
 
     bbox: tuple[float, float, float, float]
@@ -1816,13 +2058,6 @@ class ChunkingEncoder:
             asyncio.Queue()
         )
 
-    @classmethod
-    @asynccontextmanager
-    async def start(
-        cls, fps: float, gop: int = 10
-    ) -> AsyncIterator[ChunkingEncoder]:
-        yield cls(fps, gop)
-
     async def write_frame(self, frame: RenderedFrame) -> None:
         if not self.sent_init:
             self.sent_init = True
@@ -1849,8 +2084,28 @@ class ChunkingEncoder:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Demo clients (ports of the player's stream-handler loop)
+# Demo clients (cf. the player's stream-handler loop)
 # ──────────────────────────────────────────────────────────────────────────
+
+
+async def follow(
+    broadcaster: Broadcaster[DemoPayload], last_seen_sequence: int
+) -> AsyncIterator[Fragment[DemoPayload]]:
+    """Live-tail: yield each new fragment until the broadcaster closes.
+
+    LaggedError from wait_for_next propagates to the caller — falling off
+    the retention window ends the connection, it isn't recoverable here.
+    """
+    while True:
+        fragment = await broadcaster.wait_for_next(
+            last_seen_sequence, timeout=0.5
+        )
+        if fragment is None:
+            if broadcaster.is_closed:
+                return
+            continue
+        yield fragment
+        last_seen_sequence = fragment.sequence_number
 
 
 async def run_fast_client(
@@ -1864,20 +2119,13 @@ async def run_fast_client(
         if isinstance(payload, DemoFragment):
             frames_out.extend(payload.frames)
         last_seen_sequence = snapshot.fragment.sequence_number
-    while True:
-        try:
-            fragment = await broadcaster.wait_for_next(
-                last_seen_sequence, timeout=0.5
-            )
-        except LaggedError:
-            return "lagged"
-        if fragment is None:
-            if broadcaster.is_closed:
-                return "closed"
-            continue
-        if isinstance(fragment.payload, DemoFragment):
-            frames_out.extend(fragment.payload.frames)
-        last_seen_sequence = fragment.sequence_number
+    try:
+        async for fragment in follow(broadcaster, last_seen_sequence):
+            if isinstance(fragment.payload, DemoFragment):
+                frames_out.extend(fragment.payload.frames)
+    except LaggedError:
+        return "lagged"
+    return "closed"
 
 
 async def run_slow_client(broadcaster: Broadcaster[DemoPayload]) -> str:
@@ -1892,20 +2140,15 @@ async def run_slow_client(broadcaster: Broadcaster[DemoPayload]) -> str:
     snapshot = broadcaster.snapshot_for_new_client()
     if snapshot.fragment is None:
         return "no-data"
-    last_seen_sequence = snapshot.fragment.sequence_number
     await asyncio.sleep(1.2)
     try:
-        while True:
-            fragment = await broadcaster.wait_for_next(
-                last_seen_sequence, timeout=0.5
-            )
-            if fragment is None:
-                if broadcaster.is_closed:
-                    return "closed"
-                continue
-            last_seen_sequence = fragment.sequence_number
+        async for _fragment in follow(
+            broadcaster, snapshot.fragment.sequence_number
+        ):
+            pass
     except LaggedError:
         return "lagged"
+    return "closed"
 
 
 async def print_metrics(
@@ -2059,12 +2302,50 @@ def run_checks(
     # (f) Clean EOF took the manager to idle, silently.
     check(status["state"] == "idle", "(f) manager is idle after end of source")
     check(status["error"] is None, "(f) clean EOF recorded no error")
+    check(status["stopped"] is None, "(f) clean EOF recorded no stop")
     check(manager.broadcaster is None, "(f) idle state cleared the broadcaster")
 
     # Bonus: the embedder never saw a chunk larger than its max_batch.
     check(
         0 < embedder.max_chunk_seen <= 3,
         f"embedder chunking honoured (max chunk {embedder.max_chunk_seen} <= 3)",
+    )
+
+
+def run_stop_checks(
+    received: list[RenderedFrame],
+    source: SimSource,
+    client_result: str,
+    status: PipelineStatus,
+) -> None:
+    # (g) Stop conditions: the second run stops early via MaxFramesRead
+    # while its never-firing siblings (any-of composition) stay quiet, the
+    # stream drains gracefully, and the stop is recorded — not as an error.
+    check(
+        source.frames_produced == 150,
+        "(g) stop condition halted the source at exactly 150 frames read "
+        f"({source.frames_produced})",
+    )
+    check(status["state"] == "idle", "(g) manager is idle after condition stop")
+    check(status["error"] is None, "(g) condition stop recorded no error")
+    stopped = status["stopped"]
+    check(
+        stopped is not None and "limit 150" in stopped["reason"],
+        f"(g) stop record names the frame limit ({stopped})",
+    )
+    check(
+        stopped is not None and stopped["id"] == 1,
+        "(g) stop record carries the first monotonic id",
+    )
+    check(
+        client_result == "closed",
+        f"(g) client ended cleanly after condition stop ({client_result!r})",
+    )
+    check(
+        len(received) > 0
+        and all(frame.render_frame_index < 150 for frame in received),
+        f"(g) graceful drain delivered {len(received)} frames, all from "
+        "before the stop point",
     )
 
 
@@ -2077,19 +2358,15 @@ async def main() -> None:
     detector = NoisyDetector()
     embedder = ToyEmbedder()
 
-    @asynccontextmanager
-    async def source_ctx() -> AsyncIterator[SimSource]:
-        yield source
-
     components = PipelineComponents[
         SimFrame, BoxDetection, RenderedFrame, DemoPayload
     ](
-        source_factory=source_ctx,
+        source_factory=lambda: nullcontext(source),
         detector_factory=lambda: detector,
         embedder_factory=lambda: embedder,
         tracker_factory=lambda fps: GreedyIoUTracker(fps),
         overlay=SimOverlay(source),
-        encoder_factory=lambda fps: ChunkingEncoder.start(fps, gop=10),
+        encoder_factory=lambda fps: nullcontext(ChunkingEncoder(fps, gop=10)),
         # embed_max_batch=3: 2 objects x 4 sampled frames = 8 crops per pass
         # -> 3 chunks, so the chunking path is exercised on every batch.
         config=EngineConfig(
@@ -2125,12 +2402,58 @@ async def main() -> None:
     while manager.status()["state"] != "idle" and time.monotonic() < deadline:
         await asyncio.sleep(0.02)
     status = manager.status()
+
+    # Second run, on the same manager (exercising rebuild-after-idle): a
+    # list of stop conditions where only MaxFramesRead can fire — the demo
+    # world always has exactly 2 tracks and finishes far under 30 s — so
+    # the any-of composition must stop the stream at frame 150, long
+    # before the source's natural end at frame 600.
+    stop_source = SimSource(fps=100.0, n_frames=600)
+    stop_components = PipelineComponents[
+        SimFrame, BoxDetection, RenderedFrame, DemoPayload
+    ](
+        source_factory=lambda: nullcontext(stop_source),
+        detector_factory=lambda: NoisyDetector(),
+        embedder_factory=lambda: ToyEmbedder(),
+        tracker_factory=lambda fps: GreedyIoUTracker(fps),
+        overlay=SimOverlay(stop_source),
+        encoder_factory=lambda fps: nullcontext(ChunkingEncoder(fps, gop=10)),
+        config=EngineConfig(
+            batch_frames=4, embed_max_batch=3, max_batch_lag_ms=25.0, lookahead=2
+        ),
+        max_fragments=4,
+        stop_condition_factories=(
+            lambda: TracksMatch(
+                lambda tracks: len(tracks) >= 3, ">= 3 concurrent tracks"
+            ),
+            lambda: MaxFramesRead(150),
+            lambda: MaxDuration(30.0),
+        ),
+    )
+    await manager.start(stop_components, "stop-condition demo")
+    logger.info("pipeline playing: %s", manager.status())
+
+    stop_broadcaster = manager.broadcaster
+    if stop_broadcaster is None:  # pragma: no cover - just started
+        raise RuntimeError("pipeline failed to expose broadcaster")
+    stop_received: list[RenderedFrame] = []
+    stop_client_task = asyncio.create_task(
+        run_fast_client(stop_broadcaster, stop_received)
+    )
+    await stop_broadcaster.wait_closed()
+    stop_client_result = await stop_client_task
+
+    deadline = time.monotonic() + 2.0
+    while manager.status()["state"] != "idle" and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+    stop_status = manager.status()
     await manager.aclose()
 
     print()
     run_checks(
         received, detector, embedder, fast_result, slow_result, status, manager
     )
+    run_stop_checks(stop_received, stop_source, stop_client_result, stop_status)
     if _failures:
         raise SystemExit(1)
     print("\nall checks passed")
