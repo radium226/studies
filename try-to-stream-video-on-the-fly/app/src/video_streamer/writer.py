@@ -13,7 +13,7 @@ import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from video_streamer.pipe_io import drain_and_discard, drain_stderr, terminate_and_wait
+from video_streamer.pipe_io import drain_stderr, shutdown_process
 
 KEYFRAME_INTERVAL_SECONDS = 2
 DEFAULT_FRAG_DURATION_MS = 200
@@ -83,17 +83,8 @@ class Writer:
         return await self._proc.stdout.read(size)
 
     async def _stop(self, timeout: float) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        # See Reader._stop() for why stdout must keep being drained.
-        drain_task = asyncio.ensure_future(drain_and_discard(self._proc.stdout))
-        await terminate_and_wait(self._proc, timeout)
-        drain_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await drain_task
-        assert self._stderr_task is not None
-        self._stderr_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._stderr_task
+        assert self._proc is not None and self._stderr_task is not None
+        await shutdown_process(self._proc, self._stderr_task, timeout)
 
     def _encoder_cmd(self) -> list[str]:
         gop = max(1, round(self._fps * KEYFRAME_INTERVAL_SECONDS))

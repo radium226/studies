@@ -15,12 +15,13 @@ from starlette.applications import Starlette
 
 from video_streamer import pipeline as pipeline_module
 from video_streamer.pipeline import PipelineManager
+from video_streamer.reader import VideoInfo
 
 
 class _FakeLoader:
     @property
-    def video_info(self) -> tuple[int, int, float]:
-        return 4, 4, 25.0
+    def video_info(self) -> VideoInfo:
+        return VideoInfo(4, 4, 25.0)
 
     async def frames(self) -> AsyncIterator[None]:
         return
@@ -34,8 +35,8 @@ async def _fake_loader_cm() -> AsyncIterator[_FakeLoader]:
 
 class _CrashingLoader:
     @property
-    def video_info(self) -> tuple[int, int, float]:
-        return 4, 4, 25.0
+    def video_info(self) -> VideoInfo:
+        return VideoInfo(4, 4, 25.0)
 
     async def frames(self) -> AsyncIterator[None]:
         raise RuntimeError("boom")

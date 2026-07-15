@@ -100,20 +100,24 @@ ffmpeg encoder (BGR24 -> yuv420p H.264 baseline -> fragmented MP4 on stdout)    
 Key files (`app/src/video_streamer/`):
 
 - **`reader.py`** — async wrapper over the **decoder** ffmpeg process only. `probe_video_info()`
-  uses `ffprobe` for width/height/fps. Applies the optional `scale=` resize filter. Hands out raw
-  BGR24 frame bytes one at a time; knows nothing about the rest of the pipeline.
+  uses `ffprobe` and returns a `VideoInfo(width, height, fps)` NamedTuple (used pipeline-wide).
+  Applies the optional `scale=` resize filter. Hands out raw BGR24 frame bytes one at a time; knows
+  nothing about the rest of the pipeline.
 - **`writer.py`** — async wrapper over the **encoder** ffmpeg process (symmetric to `reader.py`).
   Accepts raw BGR24 on stdin, exposes the fMP4 byte stream on stdout. `_encoder_cmd` is tuned for
   MSE: baseline H.264, `yuv420p`, `zerolatency`, GOP = `fps * KEYFRAME_INTERVAL_SECONDS`, forced
   keyframes, `frag_keyframe+empty_moov+default_base_moof`, `-frag_duration`.
-- **`input_video.py`** — `InputVideoLoader` ABC with `Synthetic` and `Url` strategies; owns a
-  `Reader`, resolves post-resize dimensions (`_resolve_resize`), yields `(H,W,3)` BGR24 frames.
-- **`engine.py`** — the CV heart. Runs detection **asynchronously and sparsely** (throttled by a
-  `TokenBucket`) in **batches** of up to `scrfd_batch_frames` pristine frames sampled evenly across
-  the interval since the last pass (`_sample_batch_frames` → `_detect_batch`), tracks each sampled
-  frame in order and interpolates the results, and draws overlays onto a *delayed* frame
-  (`pending_frames`) so the interpolation lookahead can never extrapolate. Returns `None` while its
-  lookahead buffer is still filling.
+- **`input_video.py`** — `InputVideoLoader` ABC with `Synthetic` and `Url` strategies, both thin
+  subclasses of a shared `ReaderInputVideoLoader` base that owns the `Reader`, resolves post-resize
+  dimensions (`_resolve_resize`), and yields `(H,W,3)` BGR24 frames; the subclasses differ only in
+  how they resolve their source (sample-asset generation vs. yt-dlp).
+- **`engine.py`** — the CV heart. `process()` is a four-phase outline (`_buffer_frame` →
+  `_collect_finished_batch` → `_maybe_schedule_batch` → `_emit_delayed_frame`). Runs detection
+  **asynchronously and sparsely** (throttled by a `TokenBucket`) in **batches** of up to
+  `scrfd_batch_frames` pristine frames sampled evenly across the interval since the last pass
+  (`_sample_batch_frames` → `_detect_batch`), tracks each sampled frame in order and interpolates
+  the results, and draws overlays onto a *delayed* frame (`pending_frames`) so the interpolation
+  lookahead can never extrapolate. Returns `None` while its lookahead buffer is still filling.
 - **`detection.py`** — `FaceDetector` (SCRFD) and `FaceEmbedder` (ArcFace), both ONNX. Owns all
   the geometry: SCRFD letterbox to 640×640 and rescale detections back to frame pixels; ArcFace
   5-point landmark affine-alignment to a 112×112 canonical crop; L2-normalized embeddings. Both
@@ -160,7 +164,8 @@ Key files (`app/src/video_streamer/`):
   recording an id-tagged `last_error` (from the orchestrator's `failure_reason`) that the player
   surfaces as a popup. `status()` reports `idle`/`playing`, the stream URL, and the last error.
 - **`pipe_io.py`** — shared async subprocess-pipe helpers (`read_exact`, `drain_stderr`,
-  `drain_and_discard`, `terminate_and_wait`); note the drain-during-shutdown requirement.
+  `drain_and_discard`, `terminate_and_wait`, and `shutdown_process` — the common Reader/Writer
+  stop path); note the drain-during-shutdown requirement.
   `drain_stderr` logs decoder/encoder stderr at `INFO` (matching `app.py`'s log level) so ffmpeg
   failures are actually visible instead of silently swallowed at `DEBUG`.
 - **`sample_asset.py`** — generates the synthetic `testsrc` sample on first run.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, Self, cast
 
 import cv2
 import numpy as np
@@ -14,7 +14,10 @@ from numpy.typing import NDArray
 if TYPE_CHECKING:
     import onnxruntime as ort
 
-_SCRFD_INPUT_SIZE: tuple[int, int] = (640, 640)
+# SCRFD input is square today, but width and height are kept as separate
+# constants so every use site is explicit about which axis it means.
+_SCRFD_INPUT_W: int = 640
+_SCRFD_INPUT_H: int = 640
 _SCRFD_STRIDES: list[int] = [8, 16, 32]
 _SCRFD_NUM_ANCHORS: int = 2
 _SCRFD_MEAN: float = 127.5
@@ -32,19 +35,16 @@ class Detection:
     confidence: float
 
 
-class FaceDetector:
-    def __init__(
-        self,
-        model_path: Path,
-        score_threshold: float = 0.5,
-        iou_threshold: float = 0.4,
-    ) -> None:
+class _OnnxModel:
+    """Shared ONNX session lifecycle: the session only exists between
+    __enter__ and __exit__, so model weights are loaded lazily and released
+    deterministically."""
+
+    def __init__(self, model_path: Path) -> None:
         self.model_path = model_path
-        self.score_threshold = score_threshold
-        self.iou_threshold = iou_threshold
         self._session: ort.InferenceSession | None = None
 
-    def __enter__(self) -> FaceDetector:
+    def __enter__(self) -> Self:
         import onnxruntime as ort
 
         self._session = ort.InferenceSession(
@@ -60,35 +60,49 @@ class FaceDetector:
     ) -> None:
         self._session = None
 
-    def detect(self, frame: NDArray[np.uint8]) -> list[Detection]:
-        return self.detect_batch([frame])[0]
+    def _require_session(self) -> ort.InferenceSession:
+        if self._session is None:
+            raise RuntimeError(
+                f"{type(self).__name__} not open — use as a context manager"
+            )
+        return self._session
+
+
+class FaceDetector(_OnnxModel):
+    def __init__(
+        self,
+        model_path: Path,
+        score_threshold: float = 0.5,
+        iou_threshold: float = 0.4,
+    ) -> None:
+        super().__init__(model_path)
+        self.score_threshold = score_threshold
+        self.iou_threshold = iou_threshold
+        self._anchor_cache: dict[int, NDArray[np.float32]] = {}
 
     def detect_batch(
         self, frames: list[NDArray[np.uint8]]
     ) -> list[list[Detection]]:
-        if self._session is None:
-            raise RuntimeError("FaceDetector not open — use as a context manager")
+        session = self._require_session()
         if not frames:
             return []
 
-        input_h, input_w = _SCRFD_INPUT_SIZE
-        # Each frame is letterboxed to 640x640, so preprocessed tensors share a
-        # shape and stack cleanly even if the source frames differ in size. The
-        # per-frame scale (used to rescale detections back to source pixels) is
-        # kept alongside so it can be applied when decoding that batch element.
-        scales = [
-            min(input_h / f.shape[0], input_w / f.shape[1]) for f in frames
-        ]
-        batch = np.stack([self._preprocess(f) for f in frames]).astype(np.float32)
-        input_name: str = self._session.get_inputs()[0].name
+        # Each frame is letterboxed to the fixed input size, so preprocessed
+        # tensors share a shape and stack cleanly even if the source frames
+        # differ in size. The per-frame scale (used to rescale detections back
+        # to source pixels) is kept alongside so it can be applied when
+        # decoding that batch element.
+        prepared = [self._preprocess(f) for f in frames]
+        batch = np.stack([tensor for tensor, _ in prepared]).astype(np.float32)
+        input_name: str = session.get_inputs()[0].name
         outputs = cast(
-            "list[NDArray[np.float32]]", self._session.run(None, {input_name: batch})
+            "list[NDArray[np.float32]]", session.run(None, {input_name: batch})
         )
 
         results: list[list[Detection]] = []
-        for b, scale in enumerate(scales):
+        for b, (_, scale) in enumerate(prepared):
             image_outputs = [o[b] for o in outputs]
-            scores, bboxes, landmarks = self._decode(image_outputs, input_h, input_w)
+            scores, bboxes, landmarks = self._decode(image_outputs)
 
             if len(bboxes) == 0:
                 results.append([])
@@ -116,26 +130,36 @@ class FaceDetector:
             results.append(detections)
         return results
 
-    def _preprocess(self, img_bgr: NDArray[np.uint8]) -> NDArray[np.float32]:
-        input_w, input_h = _SCRFD_INPUT_SIZE
+    def _preprocess(
+        self, img_bgr: NDArray[np.uint8]
+    ) -> tuple[NDArray[np.float32], float]:
+        """Letterbox to the SCRFD input size.
+
+        Returns (CHW tensor, scale) where `scale` maps source pixels to input
+        pixels — divide decoded coordinates by it to get back to source pixels.
+        """
         img_h, img_w = img_bgr.shape[:2]
-        scale = min(input_h / img_h, input_w / img_w)
+        scale = min(_SCRFD_INPUT_H / img_h, _SCRFD_INPUT_W / img_w)
         rw, rh = int(img_w * scale), int(img_h * scale)
         resized = cv2.resize(img_bgr, (rw, rh))
-        padded = np.zeros((input_h, input_w, 3), dtype=np.uint8)
+        padded = np.zeros((_SCRFD_INPUT_H, _SCRFD_INPUT_W, 3), dtype=np.uint8)
         padded[:rh, :rw] = resized
         img_rgb = padded[:, :, ::-1].astype(np.float32)
         normalized = (img_rgb - _SCRFD_MEAN) / _SCRFD_STD
-        return normalized.transpose(2, 0, 1)
+        return normalized.transpose(2, 0, 1), scale
 
-    def _generate_anchors(
-        self, input_h: int, input_w: int, stride: int
-    ) -> NDArray[np.float32]:
-        fh, fw = input_h // stride, input_w // stride
-        grid_y, grid_x = np.mgrid[:fh, :fw]
-        centers = np.stack([grid_x, grid_y], axis=-1).astype(np.float32)
-        centers = (centers * stride).reshape(-1, 2)
-        return np.stack([centers] * _SCRFD_NUM_ANCHORS, axis=1).reshape(-1, 2)
+    def _anchors(self, stride: int) -> NDArray[np.float32]:
+        """Anchor centers for one stride, cached — they depend only on the
+        fixed input size, so each grid is built exactly once."""
+        cached = self._anchor_cache.get(stride)
+        if cached is None:
+            fh, fw = _SCRFD_INPUT_H // stride, _SCRFD_INPUT_W // stride
+            grid_y, grid_x = np.mgrid[:fh, :fw]
+            centers = np.stack([grid_x, grid_y], axis=-1).astype(np.float32)
+            centers = (centers * stride).reshape(-1, 2)
+            cached = np.stack([centers] * _SCRFD_NUM_ANCHORS, axis=1).reshape(-1, 2)
+            self._anchor_cache[stride] = cached
+        return cached
 
     def _dist_to_bbox(
         self,
@@ -184,8 +208,6 @@ class FaceDetector:
     def _decode(
         self,
         outputs: list[NDArray[np.float32]],
-        input_h: int,
-        input_w: int,
     ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:
         all_scores: list[NDArray[np.float32]] = []
         all_bboxes: list[NDArray[np.float32]] = []
@@ -196,7 +218,7 @@ class FaceDetector:
             bbox_dists: NDArray[np.float32] = outputs[3 + i] * stride
             lm_dists: NDArray[np.float32] = outputs[6 + i] * stride
 
-            centers = self._generate_anchors(input_h, input_w, stride)
+            centers = self._anchors(stride)
             bboxes = self._dist_to_bbox(centers, bbox_dists)
             landmarks = self._dist_to_landmarks(centers, lm_dists)
 
@@ -212,7 +234,7 @@ class FaceDetector:
         )
 
 
-class FaceEmbedder:
+class FaceEmbedder(_OnnxModel):
     _REFERENCE_LANDMARKS: ClassVar[NDArray[np.float32]] = np.array(
         [
             [38.2946, 51.6963],
@@ -223,31 +245,6 @@ class FaceEmbedder:
         ],
         dtype=np.float32,
     )
-
-    def __init__(self, model_path: Path) -> None:
-        self.model_path = model_path
-        self._session: ort.InferenceSession | None = None
-
-    def __enter__(self) -> FaceEmbedder:
-        import onnxruntime as ort
-
-        self._session = ort.InferenceSession(
-            str(self.model_path), providers=["CPUExecutionProvider"]
-        )
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        self._session = None
-
-    def embed(
-        self, frame: NDArray[np.uint8], detections: list[Detection]
-    ) -> list[NDArray[np.float32]]:
-        return self.embed_many([(frame, det) for det in detections], max_batch=len(detections) or 1)
 
     def embed_many(
         self,
@@ -260,22 +257,21 @@ class FaceEmbedder:
         own frame. ArcFace is run in chunks of at most `max_batch` crops so the
         inference batch stays bounded regardless of how many faces were found.
         """
-        if self._session is None:
-            raise RuntimeError("FaceEmbedder not open — use as a context manager")
+        session = self._require_session()
         if not items:
             return []
 
         prepared = [
             self._preprocess(self._align(frame, det.landmarks)) for frame, det in items
         ]
-        input_name: str = self._session.get_inputs()[0].name
+        input_name: str = session.get_inputs()[0].name
         chunk = max(1, max_batch)
 
         results: list[NDArray[np.float32]] = []
         for start in range(0, len(prepared), chunk):
             batch = np.stack(prepared[start : start + chunk]).astype(np.float32)
             raw = cast(
-                "NDArray[np.float32]", self._session.run(None, {input_name: batch})[0]
+                "NDArray[np.float32]", session.run(None, {input_name: batch})[0]
             )
             for row in raw:
                 norm = float(np.linalg.norm(row))

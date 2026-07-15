@@ -19,7 +19,7 @@ trail moving faces.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -29,6 +29,18 @@ from video_streamer.detection import Detection
 from video_streamer.tracking import TrackedFace
 
 InterpolationMethod = Literal["cubic", "pchip", "linear"]
+
+
+class InterpolatedFrame(NamedTuple):
+    """One render-cursor step: the (past) frame the coordinates belong to.
+
+    is_interpolated is True when the frame lies strictly between two detection
+    snapshots, False when it lands exactly on one.
+    """
+
+    frame_idx: int
+    faces: list[TrackedFace]
+    is_interpolated: bool
 
 
 def _interp(vts: NDArray, ys: NDArray, t_q: float, method: InterpolationMethod) -> NDArray:
@@ -69,19 +81,27 @@ class LookaheadTrackBuffer:
         # Need the segment end (seg_idx+1) plus `lookahead` more snapshots ahead of it.
         return len(self._snapshots) > self._seg_idx + self._lookahead + 1
 
-    def get(self) -> tuple[int, list[TrackedFace], bool] | None:
-        """Return (frame_idx, interpolated faces, is_interpolated) for the current cursor.
+    def get(self) -> InterpolatedFrame | None:
+        """Return the interpolated faces for the current render cursor.
 
         Each call advances the internal render cursor by one frame. Returns
         None while the buffer is still accumulating its initial lookahead.
         The frame_idx names the (past) video frame the coordinates belong to;
         the caller should render onto that frame, not the live one.
-        is_interpolated is True when the frame lies strictly between two
-        detection snapshots, False when it lands exactly on one.
         """
         if not self.ready:
             return None
+        t_q, is_interpolated = self._advance_cursor()
+        faces = self._interpolate_faces(t_q)
+        return InterpolatedFrame(t_q, faces, is_interpolated)
 
+    def _advance_cursor(self) -> tuple[int, bool]:
+        """Step the render cursor one frame; returns (t_q, is_interpolated).
+
+        Also advances the current segment, drops snapshots the spline window
+        can never reach again, and caps the cursor so it can't outrun the
+        available lookahead.
+        """
         seg_start = self._snapshots[self._seg_idx]
         seg_end = self._snapshots[self._seg_idx + 1]
 
@@ -120,6 +140,13 @@ class LookaheadTrackBuffer:
             if self._render_cursor > cap:
                 self._render_cursor = cap
 
+        return t_q, is_interpolated
+
+    def _interpolate_faces(self, t_q: int) -> list[TrackedFace]:
+        """Spline-interpolate every face of the current segment start at t_q,
+        matching control points across snapshots by track id."""
+        seg_start = self._snapshots[self._seg_idx]
+
         # Build the spline window: up to `lookahead` snapshots on each side of
         # the segment being rendered.
         w_start = max(0, self._seg_idx - self._lookahead)
@@ -156,4 +183,4 @@ class LookaheadTrackBuffer:
                 )
             )
 
-        return t_q, faces, is_interpolated
+        return faces

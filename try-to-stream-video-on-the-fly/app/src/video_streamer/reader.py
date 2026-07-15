@@ -9,21 +9,26 @@ bytes. The Orchestrator wires it together with the rest of the pipeline.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 from video_streamer.pipe_io import (
-    drain_and_discard,
     drain_stderr,
     read_exact,
-    terminate_and_wait,
+    shutdown_process,
 )
 
 
-async def probe_video_info(source: str | Path) -> tuple[int, int, float]:
+class VideoInfo(NamedTuple):
+    width: int
+    height: int
+    fps: float
+
+
+async def probe_video_info(source: str | Path) -> VideoInfo:
     proc = await asyncio.create_subprocess_exec(
         "ffprobe",
         "-v",
@@ -46,7 +51,7 @@ async def probe_video_info(source: str | Path) -> tuple[int, int, float]:
     stream = json.loads(stdout)["streams"][0]
     num, den = stream["r_frame_rate"].split("/")
     fps = float(num) / float(den)
-    return int(stream["width"]), int(stream["height"]), fps
+    return VideoInfo(int(stream["width"]), int(stream["height"]), fps)
 
 
 class Reader:
@@ -96,19 +101,8 @@ class Reader:
         return await read_exact(self._proc.stdout, frame_size)
 
     async def _stop(self, timeout: float) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        # Keep draining stdout while shutting down - see
-        # drain_and_discard's docstring for why this is required for
-        # wait() to ever resolve once nobody's reading frames anymore.
-        drain_task = asyncio.ensure_future(drain_and_discard(self._proc.stdout))
-        await terminate_and_wait(self._proc, timeout)
-        drain_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await drain_task
-        assert self._stderr_task is not None
-        self._stderr_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._stderr_task
+        assert self._proc is not None and self._stderr_task is not None
+        await shutdown_process(self._proc, self._stderr_task, timeout)
 
     def _decoder_cmd(self) -> list[str]:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning"]

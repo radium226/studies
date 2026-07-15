@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -23,13 +24,36 @@ from video_streamer.token_bucket import TokenBucket
 from video_streamer.tracking import ByteTracker, TrackedFace
 
 
+class PendingFrame(NamedTuple):
+    """A pristine frame held back until the render cursor reaches it."""
+
+    frame: np.ndarray
+    captured_at: str
+
+
+class SampledFrame(NamedTuple):
+    """One pristine frame picked for a detection batch, with its index."""
+
+    frame_index: int
+    frame: np.ndarray
+
+
+class FrameDetections(NamedTuple):
+    """Detections + matching embeddings for one sampled frame."""
+
+    frame_index: int
+    detections: list[Detection]
+    embeddings: list[np.ndarray]
+
+
 @dataclass
 class _BatchResult:
     """One detection pass: per-frame results plus how long each stage took."""
 
-    per_frame: list[tuple[int, list[Detection], list[np.ndarray]]]
+    per_frame: list[FrameDetections]
     detect_s: float
     embed_s: float
+
 
 # Upper bound on frames held back waiting for the interpolation cursor. The
 # normal steady-state backlog is (lookahead + 2) detection intervals' worth of
@@ -66,7 +90,7 @@ class Engine:
         # buffer's render cursor trails the live frame by several detection
         # intervals; overlays are drawn on the frame they were computed for,
         # so frames are held back here until the cursor reaches them.
-        self._pending_frames: dict[int, tuple[np.ndarray, str]] = {}
+        self._pending_frames: dict[int, PendingFrame] = {}
         # True while emitting box-less fallback frames after a cap eviction;
         # gates the warning so a stall logs once, not once per frame.
         self._fallback_active = False
@@ -101,8 +125,15 @@ class Engine:
         """
         self._frame_index += 1
         self._metrics.record_processed_frame()
+        self._buffer_frame(frame)
+        self._collect_finished_batch()
+        self._maybe_schedule_batch()
+        return self._emit_delayed_frame()
+
+    def _buffer_frame(self, frame: np.ndarray) -> None:
+        """Hold the pristine frame back until the render cursor reaches it."""
         captured_at = datetime.now(UTC).strftime("%H:%M:%S")
-        self._pending_frames[self._frame_index] = (frame, captured_at)
+        self._pending_frames[self._frame_index] = PendingFrame(frame, captured_at)
         if len(self._pending_frames) > _MAX_PENDING_FRAMES:
             evicted = next(iter(self._pending_frames))
             del self._pending_frames[evicted]
@@ -111,52 +142,69 @@ class Engine:
                 evicted,
             )
 
-        # Collect completed detection result if ready. Tracking runs here, on
-        # the raw detections, so track ids are assigned before interpolation
-        # and the spline control points for a face all belong to that face.
-        if self._detection_task is not None and self._detection_task.done():
-            elapsed = time.monotonic() - self._detection_started_at
-            self._detection_budget.record_spend(elapsed * self._fps)
-            if not self._detection_task.cancelled():
-                try:
-                    # One result per sampled frame, in ascending frame order.
-                    # Feed the tracker frame by frame so ByteTrack ids stay
-                    # stable, and stamp each snapshot with the frame it ran on
-                    # (not the later frame it finished on) or the interpolation
-                    # timeline shifts forward and boxes trail moving faces.
-                    batch = self._detection_task.result()
-                    face_counts: list[int] = []
-                    active_tracks = 0
-                    for frame_idx, dets, embs in batch.per_frame:
-                        tracked = self._tracker.update(dets, embs)
-                        self._detection_buffer.push(frame_idx, tracked)
-                        face_counts.append(len(dets))
-                        active_tracks = len(tracked)
-                    self._metrics.record_detection_batch(
-                        detect_s=batch.detect_s,
-                        embed_s=batch.embed_s,
-                        face_counts=face_counts,
-                        active_tracks=active_tracks,
+    def _collect_finished_batch(self) -> None:
+        """Harvest a completed detection pass, if any.
+
+        Tracking runs here, on the raw detections, so track ids are assigned
+        before interpolation and the spline control points for a face all
+        belong to that face.
+        """
+        if self._detection_task is None or not self._detection_task.done():
+            return
+        elapsed = time.monotonic() - self._detection_started_at
+        self._detection_budget.record_spend(elapsed * self._fps)
+        if not self._detection_task.cancelled():
+            try:
+                # One result per sampled frame, in ascending frame order.
+                # Feed the tracker frame by frame so ByteTrack ids stay
+                # stable, and stamp each snapshot with the frame it ran on
+                # (not the later frame it finished on) or the interpolation
+                # timeline shifts forward and boxes trail moving faces.
+                batch = self._detection_task.result()
+                face_counts: list[int] = []
+                active_tracks = 0
+                for frame_dets in batch.per_frame:
+                    tracked = self._tracker.update(
+                        frame_dets.detections, frame_dets.embeddings
                     )
-                except Exception:
-                    logger.opt(exception=True).warning("detection failed")
-            self._detection_task = None
-
-        # Schedule a new detection batch if the budget allows and none is
-        # already running. Sample up to N frames evenly spaced across the frames
-        # buffered since the last batch, giving gapless real-detection coverage.
-        # These frames are still pristine here (overlays are drawn on delayed
-        # frames), so the detector never sees burned-in text.
-        if self._detection_task is None and self._detection_budget.try_acquire(1.0):
-            sampled = self._sample_batch_frames()
-            if sampled:
-                self._detection_started_at = time.monotonic()
-                self._last_batch_max_idx = sampled[-1][0]
-                loop = asyncio.get_running_loop()
-                self._detection_task = loop.run_in_executor(
-                    self._executor, self._detect_batch, sampled
+                    self._detection_buffer.push(frame_dets.frame_index, tracked)
+                    face_counts.append(len(frame_dets.detections))
+                    active_tracks = len(tracked)
+                self._metrics.record_detection_batch(
+                    detect_s=batch.detect_s,
+                    embed_s=batch.embed_s,
+                    face_counts=face_counts,
+                    active_tracks=active_tracks,
                 )
+            except Exception:
+                logger.opt(exception=True).warning("detection failed")
+        self._detection_task = None
 
+    def _maybe_schedule_batch(self) -> None:
+        """Kick off a new detection batch if the budget allows and none is
+        already running.
+
+        Sample up to N frames evenly spaced across the frames buffered since
+        the last batch, giving gapless real-detection coverage. These frames
+        are still pristine here (overlays are drawn on delayed frames), so the
+        detector never sees burned-in text.
+        """
+        if self._detection_task is not None or not self._detection_budget.try_acquire(1.0):
+            return
+        sampled = self._sample_batch_frames()
+        if not sampled:
+            return
+        self._detection_started_at = time.monotonic()
+        self._last_batch_max_idx = sampled[-1].frame_index
+        loop = asyncio.get_running_loop()
+        self._detection_task = loop.run_in_executor(
+            self._executor, self._detect_batch, sampled
+        )
+
+    def _emit_delayed_frame(self) -> np.ndarray | None:
+        """Advance the render cursor and emit the frame it points at, overlaid
+        with that frame's (interpolated) detections. None while the lookahead
+        buffer is still filling."""
         result = self._detection_buffer.get()
         if result is None:
             return None
@@ -170,8 +218,8 @@ class Engine:
             if oldest >= t_q:
                 break
             del self._pending_frames[oldest]
-        entry = self._pending_frames.get(t_q)
-        if entry is None:
+        pending = self._pending_frames.get(t_q)
+        if pending is None:
             # t_q was evicted by the _MAX_PENDING_FRAMES cap (detection is
             # stalling badly). Emit the oldest surviving frame without face
             # boxes rather than drawing t_q's coordinates on the wrong frame.
@@ -184,21 +232,20 @@ class Engine:
                     "until the render cursor catches up",
                     t_q,
                 )
-            entry = self._pending_frames[next(iter(self._pending_frames))]
+            pending = self._pending_frames[next(iter(self._pending_frames))]
             faces = []
         else:
             self._fallback_active = False
-        pristine, frame_captured_at = entry
 
         # Single copy per emitted frame; the pristine original stays in
         # _pending_frames (t_q is re-emitted while the cursor is clamped, and
         # the detector must never see burned-in overlays).
-        out_frame = pristine.copy()
-        draw_overlay(out_frame, f"{frame_captured_at}  frame {t_q}")
+        out_frame = pending.frame.copy()
+        draw_overlay(out_frame, f"{pending.captured_at}  frame {t_q}")
         self._draw_detections(out_frame, faces, is_interpolated)
         return out_frame
 
-    def _sample_batch_frames(self) -> list[tuple[int, np.ndarray]]:
+    def _sample_batch_frames(self) -> list[SampledFrame]:
         """Pick up to N evenly spaced frames buffered since the last batch.
 
         Only frames still present in `_pending_frames` are eligible (older ones
@@ -215,12 +262,10 @@ class Engine:
         n = min(self._scrfd_batch_frames, len(window))
         positions = np.linspace(0, len(window) - 1, n)
         chosen = sorted({window[round(float(p))] for p in positions})
-        return [(idx, self._pending_frames[idx][0]) for idx in chosen]
+        return [SampledFrame(idx, self._pending_frames[idx].frame) for idx in chosen]
 
-    def _detect_batch(
-        self, frames_with_idx: list[tuple[int, np.ndarray]]
-    ) -> _BatchResult:
-        frames = [frame for _, frame in frames_with_idx]
+    def _detect_batch(self, sampled: list[SampledFrame]) -> _BatchResult:
+        frames = [s.frame for s in sampled]
         detect_started = time.monotonic()
         dets_per_frame = self._face_detector.detect_batch(frames)
         detect_s = time.monotonic() - detect_started
@@ -238,10 +283,14 @@ class Engine:
         )
         embed_s = time.monotonic() - embed_started
 
-        results: list[tuple[int, list[Detection], list[np.ndarray]]] = []
+        results: list[FrameDetections] = []
         cursor = 0
-        for (idx, _), dets in zip(frames_with_idx, dets_per_frame, strict=True):
-            results.append((idx, dets, embeddings[cursor : cursor + len(dets)]))
+        for sample, dets in zip(sampled, dets_per_frame, strict=True):
+            results.append(
+                FrameDetections(
+                    sample.frame_index, dets, embeddings[cursor : cursor + len(dets)]
+                )
+            )
             cursor += len(dets)
         return _BatchResult(per_frame=results, detect_s=detect_s, embed_s=embed_s)
 

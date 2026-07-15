@@ -52,3 +52,25 @@ async def drain_and_discard(stream: asyncio.StreamReader) -> None:
         chunk = await stream.read(65536)
         if not chunk:
             break
+
+
+async def shutdown_process(
+    proc: asyncio.subprocess.Process,
+    stderr_task: asyncio.Task,
+    timeout: float,
+) -> None:
+    """Terminate an ffmpeg subprocess and stop its stderr drain task.
+
+    Keeps draining stdout while shutting down - see drain_and_discard's
+    docstring for why this is required for wait() to ever resolve once
+    nobody's reading the output anymore.
+    """
+    assert proc.stdout is not None
+    drain_task = asyncio.ensure_future(drain_and_discard(proc.stdout))
+    await terminate_and_wait(proc, timeout)
+    drain_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await drain_task
+    stderr_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await stderr_task

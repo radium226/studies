@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
+from typing import Literal, TypedDict
 
 from loguru import logger
 from starlette.applications import Starlette
@@ -26,11 +27,30 @@ from video_streamer.input_video import (
     UrlInputVideoLoader,
 )
 from video_streamer.orchestrator import Orchestrator
+from video_streamer.reader import VideoInfo
 from video_streamer.writer import Writer
 
 LoaderFactory = Callable[[], AbstractAsyncContextManager[InputVideoLoader]]
 
 SYNTHETIC_SOURCE_LABEL = "test pattern"
+
+
+class SourceError(TypedDict):
+    """Unexpected-failure record surfaced to the browser as a popup. The
+    monotonic id lets the player show each failure exactly once."""
+
+    id: int
+    source: str | None
+    message: str
+
+
+class PipelineStatus(TypedDict):
+    """JSON payload of /api/status, polled by the player."""
+
+    state: Literal["idle", "playing"]
+    stream_url: str | None
+    source: str | None
+    error: SourceError | None
 
 
 class PipelineManager:
@@ -48,9 +68,7 @@ class PipelineManager:
         # and a human label for the active source; both None while idle.
         self._orchestrator: Orchestrator | None = None
         self._current_source_label: str | None = None
-        # Last unexpected-failure record, surfaced to the browser as a popup.
-        # Monotonic id lets the player show each failure exactly once.
-        self._last_error: dict[str, object] | None = None
+        self._last_error: SourceError | None = None
         self._error_seq = 0
 
         # Snapshot the CLI-configured global tuning knobs once; the input
@@ -85,11 +103,11 @@ class PipelineManager:
             speed_factor=self._speed_factor,
         )
 
-    async def start_url(self, url: str, loop: bool) -> tuple[int, int, float]:
+    async def start_url(self, url: str, loop: bool) -> VideoInfo:
         async with self._lock:
             return await self._build(self._url_loader_factory(url, loop), url)
 
-    async def start_synthetic(self, loop: bool) -> tuple[int, int, float]:
+    async def start_synthetic(self, loop: bool) -> VideoInfo:
         async with self._lock:
             return await self._build(
                 self._synthetic_loader_factory(loop), SYNTHETIC_SOURCE_LABEL
@@ -103,7 +121,7 @@ class PipelineManager:
 
     async def _build(
         self, loader_factory: LoaderFactory, source_label: str
-    ) -> tuple[int, int, float]:
+    ) -> VideoInfo:
         # Teardown-first: only one ffmpeg pair + ONNX engine ever runs at a
         # time, at the cost of a client-visible gap during the rebuild. The
         # closed broadcaster makes the live stream endpoint return 410, and
@@ -111,29 +129,27 @@ class PipelineManager:
         # below takes the pipeline back to idle if it later closes on its own
         # (source exhaustion, a crash, ...). If this build itself raises,
         # self._generation is never bumped, so the watchdog watching the *old*
-        # (just-closed-by-aclose-above) broadcaster still matches the current
+        # (just-closed-by-teardown-above) broadcaster still matches the current
         # generation once it wakes - it takes the pipeline to idle instead of
         # leaving a half-dead stack.
-        await self._stack.aclose()
-        self._stack = AsyncExitStack()
-        self._set_idle_state()
+        await self._teardown_locked()
 
         new_stack = AsyncExitStack()
         try:
             loader = await new_stack.enter_async_context(loader_factory())
-            w, h, fps = loader.video_info
+            video_info = loader.video_info
             writer = await new_stack.enter_async_context(
                 Writer.start(
-                    w,
-                    h,
-                    fps * self._speed_factor,
+                    video_info.width,
+                    video_info.height,
+                    video_info.fps * self._speed_factor,
                     frag_duration_ms=self._frag_duration_ms,
                 )
             )
             engine = await new_stack.enter_async_context(
                 Engine.start(
                     model_dir=self._models_dir,
-                    fps=fps,
+                    fps=video_info.fps,
                     scrfd_batch_frames=self._scrfd_batch_frames,
                     arcface_batch_crops=self._arcface_batch_crops,
                 )
@@ -161,7 +177,7 @@ class PipelineManager:
         )
         self._watchdog_tasks.add(task)
         task.add_done_callback(self._watchdog_tasks.discard)
-        return w, h, fps
+        return video_info
 
     async def _watch_and_idle(self, broadcaster: Broadcaster, generation: int) -> None:
         await broadcaster.wait_closed()
@@ -175,10 +191,10 @@ class PipelineManager:
             # (-> popup); a natural end-of-source does not (-> silent idle).
             reason = self._orchestrator.failure_reason if self._orchestrator else None
             source = self._current_source_label
-            error: dict[str, object] | None = (
-                {"source": source, "message": reason} if reason is not None else None
-            )
-            if error is not None:
+            error: SourceError | None = None
+            if reason is not None:
+                self._error_seq += 1
+                error = SourceError(id=self._error_seq, source=source, message=reason)
                 logger.warning(
                     "pipeline (generation {}) failed on source {!r}: {}",
                     generation,
@@ -193,27 +209,34 @@ class PipelineManager:
                 )
             await self._go_idle_locked(error=error)
 
-    async def _go_idle_locked(self, error: dict[str, object] | None) -> None:
+    async def _go_idle_locked(self, error: SourceError | None) -> None:
         # Bump the generation first so any other watchdog waiting on the lock
         # sees a mismatch and returns instead of double-handling this close.
         self._generation += 1
+        await self._teardown_locked()
+        if error is not None:
+            self._last_error = error
+
+    async def _teardown_locked(self) -> None:
+        """Close the current stack (if any) and reset all per-pipeline state.
+
+        Callers must hold self._lock. Leaves self._last_error alone: an
+        explicit stop or a fresh build decides what happens to it.
+        """
         await self._stack.aclose()
         self._stack = AsyncExitStack()
         self._orchestrator = None
         self._current_source_label = None
         self._set_idle_state()
-        if error is not None:
-            self._error_seq += 1
-            self._last_error = {"id": self._error_seq, **error}
 
-    def status(self) -> dict[str, object]:
+    def status(self) -> PipelineStatus:
         stream_id = self._app.state.stream_id
-        return {
-            "state": "playing" if stream_id is not None else "idle",
-            "stream_url": f"/{stream_id}.mp4" if stream_id is not None else None,
-            "source": self._current_source_label,
-            "error": self._last_error,
-        }
+        return PipelineStatus(
+            state="playing" if stream_id is not None else "idle",
+            stream_url=f"/{stream_id}.mp4" if stream_id is not None else None,
+            source=self._current_source_label,
+            error=self._last_error,
+        )
 
     async def aclose(self) -> None:
         self._closing = True

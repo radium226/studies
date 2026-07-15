@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -19,7 +20,7 @@ from starlette.templating import Jinja2Templates
 
 from video_streamer.broadcaster import Broadcaster, LaggedError
 from video_streamer.engine import Engine
-from video_streamer.pipeline import PipelineManager
+from video_streamer.pipeline import SYNTHETIC_SOURCE_LABEL, PipelineManager
 from video_streamer.writer import DEFAULT_FRAG_DURATION_MS
 
 
@@ -154,8 +155,8 @@ async def set_source(request: Request):
     synthetic = bool(body.get("synthetic"))
 
     if synthetic:
-        label = "test pattern"
-        start = lambda: manager.start_synthetic(loop)  # noqa: E731
+        label = SYNTHETIC_SOURCE_LABEL
+        start = functools.partial(manager.start_synthetic, loop)
     else:
         url = (body.get("url") or "").strip()
         if not url:
@@ -163,13 +164,13 @@ async def set_source(request: Request):
         if not url.startswith(("http://", "https://")):
             return JSONResponse({"error": "url must be http(s)"}, status_code=400)
         label = url
-        start = lambda: manager.start_url(url, loop)  # noqa: E731
+        start = functools.partial(manager.start_url, url, loop)
 
     try:
         # The timeout bounds how long a hung yt-dlp/ffprobe can hold the
         # rebuild lock (and this request) hostage.
         async with asyncio.timeout(SOURCE_SWITCH_TIMEOUT_S):
-            w, h, fps = await start()
+            info = await start()
     except TimeoutError:
         logger.error("source start ({!r}) timed out after {}s", label, SOURCE_SWITCH_TIMEOUT_S)
         return JSONResponse(
@@ -179,7 +180,7 @@ async def set_source(request: Request):
     except Exception as exc:
         logger.exception("source start ({!r}) failed", label)
         return JSONResponse({"error": str(exc)}, status_code=400)
-    return JSONResponse({"width": w, "height": h, "fps": fps})
+    return JSONResponse({"width": info.width, "height": info.height, "fps": info.fps})
 
 
 async def stop_source(request: Request):

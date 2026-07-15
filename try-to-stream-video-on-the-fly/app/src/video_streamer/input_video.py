@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from video_streamer.reader import Reader, probe_video_info
+from video_streamer.reader import Reader, VideoInfo, probe_video_info
 from video_streamer.sample_asset import ensure_sample_asset
 
 
@@ -39,10 +39,29 @@ def _resolve_resize(
     return rw, rh
 
 
+@asynccontextmanager
+async def _open_reader(
+    source: str | Path,
+    *,
+    loop: bool,
+    resize: tuple[int, int] | None,
+    speed_factor: float,
+) -> AsyncIterator[tuple[Reader, VideoInfo]]:
+    """Common tail of every loader start(): probe the source, resolve the
+    post-resize output size, and spawn the decoding Reader."""
+    w, h, fps = await probe_video_info(source)
+    out_w, out_h = _resolve_resize(w, h, resize or (-1, -1))
+    decoder_resize = (out_w, out_h) if (out_w, out_h) != (w, h) else None
+    async with Reader.start(
+        str(source), loop=loop, resize=decoder_resize, read_rate=speed_factor
+    ) as reader:
+        yield reader, VideoInfo(out_w, out_h, fps)
+
+
 class InputVideoLoader(ABC):
     @property
     @abstractmethod
-    def video_info(self) -> tuple[int, int, float]:
+    def video_info(self) -> VideoInfo:
         """(width, height, fps) — valid inside the start() context."""
 
     @abstractmethod
@@ -50,13 +69,33 @@ class InputVideoLoader(ABC):
         """Async generator of BGR24 (H, W, 3) uint8 frames."""
 
 
-class SyntheticInputVideoLoader(InputVideoLoader):
-    def __init__(self, *, reader: Reader, width: int, height: int, fps: float) -> None:
-        self._reader = reader
-        self._width = width
-        self._height = height
-        self._fps = fps
+class ReaderInputVideoLoader(InputVideoLoader):
+    """Concrete base for loaders that decode through a Reader subprocess.
 
+    Subclasses differ only in how they resolve their source (generating the
+    sample asset, resolving a page URL, ...) before handing it to
+    `_open_reader`; frame delivery is identical for all of them.
+    """
+
+    def __init__(self, *, reader: Reader, video_info: VideoInfo) -> None:
+        self._reader = reader
+        self._video_info = video_info
+
+    @property
+    def video_info(self) -> VideoInfo:
+        return self._video_info
+
+    async def frames(self) -> AsyncIterator[NDArray[np.uint8]]:  # type: ignore[override]
+        width, height, _ = self._video_info
+        frame_size = width * height * 3
+        while True:
+            raw = await self._reader.read_frame(frame_size)
+            if raw is None:
+                break
+            yield np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3))
+
+
+class SyntheticInputVideoLoader(ReaderInputVideoLoader):
     @classmethod
     @asynccontextmanager
     async def start(
@@ -68,36 +107,13 @@ class SyntheticInputVideoLoader(InputVideoLoader):
         speed_factor: float = 1.0,
     ) -> AsyncIterator[SyntheticInputVideoLoader]:
         await ensure_sample_asset(path)
-        w, h, fps = await probe_video_info(path)
-        out_w, out_h = _resolve_resize(w, h, resize or (-1, -1))
-        decoder_resize = (out_w, out_h) if (out_w, out_h) != (w, h) else None
-        async with Reader.start(
-            str(path), loop=loop, resize=decoder_resize, read_rate=speed_factor
-        ) as reader:
-            yield cls(reader=reader, width=out_w, height=out_h, fps=fps)
-
-    @property
-    def video_info(self) -> tuple[int, int, float]:
-        return self._width, self._height, self._fps
-
-    async def frames(self) -> AsyncIterator[NDArray[np.uint8]]:  # type: ignore[override]
-        frame_size = self._width * self._height * 3
-        while True:
-            raw = await self._reader.read_frame(frame_size)
-            if raw is None:
-                break
-            yield np.frombuffer(raw, dtype=np.uint8).reshape(
-                (self._height, self._width, 3)
-            )
+        async with _open_reader(
+            path, loop=loop, resize=resize, speed_factor=speed_factor
+        ) as (reader, video_info):
+            yield cls(reader=reader, video_info=video_info)
 
 
-class UrlInputVideoLoader(InputVideoLoader):
-    def __init__(self, *, reader: Reader, width: int, height: int, fps: float) -> None:
-        self._reader = reader
-        self._width = width
-        self._height = height
-        self._fps = fps
-
+class UrlInputVideoLoader(ReaderInputVideoLoader):
     @classmethod
     @asynccontextmanager
     async def start(
@@ -108,39 +124,27 @@ class UrlInputVideoLoader(InputVideoLoader):
         resize: tuple[int, int] | None = None,
         speed_factor: float = 1.0,
     ) -> AsyncIterator[UrlInputVideoLoader]:
-        proc = await asyncio.create_subprocess_exec(
-            "yt-dlp",
-            "--format",
-            "bestvideo[ext=mp4]/bestvideo/best",
-            "--get-url",
-            url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        direct = await _resolve_direct_media_url(url)
+        async with _open_reader(
+            direct, loop=loop, resize=resize, speed_factor=speed_factor
+        ) as (reader, video_info):
+            yield cls(reader=reader, video_info=video_info)
+
+
+async def _resolve_direct_media_url(url: str) -> str:
+    """Resolve a page URL to a direct media URL via yt-dlp."""
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp",
+        "--format",
+        "bestvideo[ext=mp4]/bestvideo/best",
+        "--get-url",
+        url,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"yt-dlp failed ({proc.returncode}): {stderr.decode(errors='replace')}"
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"yt-dlp failed ({proc.returncode}): {stderr.decode(errors='replace')}"
-            )
-        direct = stdout.decode().strip()
-        w, h, fps = await probe_video_info(direct)
-        out_w, out_h = _resolve_resize(w, h, resize or (-1, -1))
-        decoder_resize = (out_w, out_h) if (out_w, out_h) != (w, h) else None
-        async with Reader.start(
-            direct, loop=loop, resize=decoder_resize, read_rate=speed_factor
-        ) as reader:
-            yield cls(reader=reader, width=out_w, height=out_h, fps=fps)
-
-    @property
-    def video_info(self) -> tuple[int, int, float]:
-        return self._width, self._height, self._fps
-
-    async def frames(self) -> AsyncIterator[NDArray[np.uint8]]:  # type: ignore[override]
-        frame_size = self._width * self._height * 3
-        while True:
-            raw = await self._reader.read_frame(frame_size)
-            if raw is None:
-                break
-            yield np.frombuffer(raw, dtype=np.uint8).reshape(
-                (self._height, self._width, 3)
-            )
+    return stdout.decode().strip()

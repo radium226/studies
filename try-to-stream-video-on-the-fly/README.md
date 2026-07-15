@@ -113,8 +113,8 @@ Detection and embedding each drop into their own model-input space and come back
   first run (`app/assets/sample.mp4`), so the repo needs no checked-in media.
 - `url`: `yt-dlp --get-url` resolves the page URL to a direct media URL.
 
-**Probing.** `probe_video_info()` runs `ffprobe` and returns `(width, height, fps)` in **source**
-space. `fps` is parsed from `r_frame_rate` (`num/den`).
+**Probing.** `probe_video_info()` runs `ffprobe` and returns a `VideoInfo(width, height, fps)` in
+**source** space. `fps` is parsed from `r_frame_rate` (`num/den`).
 
 **Rescale #1 — the decoder `scale=` filter.** If `--resize-video` is given, `_resolve_resize()`
 first expands any ffmpeg-style `-1` placeholder (keep aspect ratio, rounded to an even number of
@@ -159,24 +159,25 @@ It bridges them with a **token bucket** (throttling), a **tracker** (stable ids)
 **interpolation buffer** (smooth per-frame coordinates), and a **delay buffer** (so overlays land
 on the exact frame their coordinates were computed for). Here is one `process()` call in order:
 
-1. **Ingest & delay-buffer the frame.** `frame_index += 1`; store `(frame, captured_at)` in
-   `pending_frames[frame_index]`.
+1. **Ingest & delay-buffer the frame** (`_buffer_frame`). `frame_index += 1`; store a
+   `PendingFrame(frame, captured_at)` in `pending_frames[frame_index]`.
 
    > **Buffering point B — `pending_frames` (the delay buffer).** Because interpolation runs with a
    > lookahead (step 6), the coordinates we can draw *now* belong to a frame several detection
    > intervals in the **past**. We must keep those past frames around to draw on them. `pending_frames`
-   > is an insertion-ordered `dict[int, (frame, timestamp)]`, capped at `_MAX_PENDING_FRAMES = 600`
+   > is an insertion-ordered `dict[int, PendingFrame]`, capped at `_MAX_PENDING_FRAMES = 600`
    > (drops oldest with a warning if detection stalls badly).
 
-2. **Harvest a finished detection.** If the off-thread detection task is done: record how long it
-   took into the token bucket (`record_spend(elapsed * fps)`), then take its result — a list of
-   `(frame_idx, detections, embeddings)`, **one entry per sampled frame in ascending order**. Feed
-   each entry to the **tracker** frame by frame (step 3) so ByteTrack ids stay stable across the
-   batch, and `push` each tracked result into the interpolation buffer — stamped with **the frame
-   detection ran on**, not the (later) frame it finished on. Stamping with the finish frame would
-   shift the whole interpolation timeline forward and make boxes trail moving faces.
+2. **Harvest a finished detection** (`_collect_finished_batch`). If the off-thread detection task
+   is done: record how long it took into the token bucket (`record_spend(elapsed * fps)`), then take
+   its result — a list of `FrameDetections(frame_index, detections, embeddings)`, **one entry per
+   sampled frame in ascending order**. Feed each entry to the **tracker** frame by frame (step 3) so
+   ByteTrack ids stay stable across the batch, and `push` each tracked result into the interpolation
+   buffer — stamped with **the frame detection ran on**, not the (later) frame it finished on.
+   Stamping with the finish frame would shift the whole interpolation timeline forward and make
+   boxes trail moving faces.
 
-3. **Schedule a new detection batch — throttled.** If no detection is in flight *and*
+3. **Schedule a new detection batch — throttled** (`_maybe_schedule_batch`). If no detection is in flight *and*
    `token_bucket.try_acquire(1.0)` succeeds, pick up to `--scrfd-batch-frames` (N) frames evenly
    spaced across the frames buffered since the last pass (`_sample_batch_frames`, always including
    the newest so consecutive batches stay contiguous) and schedule `_detect_batch` on the
@@ -193,11 +194,12 @@ on the exact frame their coordinates were computed for). Here is one `process()`
    > consume at most one "real-time frame budget" worth of CPU per frame interval, so a slow machine
    > automatically detects less often instead of falling behind unboundedly.
 
-4. **Advance the interpolation cursor.** `detection_buffer.get()` returns
-   `(t_q, faces, is_interpolated)` or `None` while the buffer is still accumulating its initial
-   lookahead. `t_q` is a **past working-space frame index**; `faces` are the interpolated
-   `TrackedFace`s for that frame; `is_interpolated` says whether `t_q` fell strictly between two real
-   detections (dashed box) or landed exactly on one (solid box).
+4. **Advance the interpolation cursor** (start of `_emit_delayed_frame`). `detection_buffer.get()`
+   returns an `InterpolatedFrame(frame_idx, faces, is_interpolated)` — called `t_q` below — or
+   `None` while the buffer is still accumulating its initial lookahead. `t_q` is a **past
+   working-space frame index**; `faces` are the interpolated `TrackedFace`s for that frame;
+   `is_interpolated` says whether `t_q` fell strictly between two real detections (dashed box) or
+   landed exactly on one (solid box).
 
 5. **Pair coordinates with their frame.** Drop every `pending_frames` entry older than `t_q`, then
    fetch `pending_frames[t_q]`. That frame — the one the coordinates were actually computed for — is
@@ -215,12 +217,12 @@ detector only fired a handful of times per second.
 
 ### 3. Detection & embedding — `detection.py`
 
-Both models run under `onnxruntime` with the **CPU** execution provider. This is where the two
+Both models run under `onnxruntime` with the **CPU** execution provider (session open/close and the
+"must be used as a context manager" guard live in a shared `_OnnxModel` base). This is where the two
 model-input coordinate spaces (and their rescales) live. Both models are **batched**: the Engine
 hands `detect_batch` a list of N frames and `embed_many` a flat list of `(frame, detection)` pairs,
 so one SCRFD run covers all N sampled frames and one ArcFace run (chunked at M crops) covers every
-face found across them. `detect(frame)` / `embed(frame, dets)` remain as single-item convenience
-wrappers over the batched paths.
+face found across them.
 
 #### FaceDetector — SCRFD (`scrfd_10g_kps_dynamic.onnx`)
 
@@ -228,7 +230,8 @@ Each of the N frames is letterboxed and preprocessed independently, then the ten
 into one `(N, 3, 640, 640)` batch for a single `session.run`; the per-frame `scale` is kept so each
 batch element's detections can be rescaled back to its own working-space pixels.
 
-**Rescale #2 — letterbox to 640×640** (`_preprocess`, per frame):
+**Rescale #2 — letterbox to 640×640** (`_preprocess`, per frame; returns `(tensor, scale)` so the
+same `scale` is reused to undo the rescale after decoding):
 
 1. `scale = min(640/H, 640/W)` — the single factor that fits the working frame inside 640×640
    without distortion.
@@ -237,11 +240,13 @@ batch element's detections can be rescaled back to its own working-space pixels.
    it, because there's no offset to subtract, only a scale to divide by).
 3. **BGR → RGB** (`[:, :, ::-1]`), cast to float32.
 4. **Normalize:** `(pixel - 127.5) / 128.0`.
-5. **HWC → CHW** (`transpose(2,0,1)`), then add a batch dimension → `(1, 3, 640, 640)`.
+5. **HWC → CHW** (`transpose(2,0,1)`); the N per-frame tensors are then stacked into the
+   `(N, 3, 640, 640)` batch.
 
 **Decode** (`_decode`): SCRFD emits three feature levels at strides 8/16/32, each with
-`_SCRFD_NUM_ANCHORS = 2` anchors per cell. For each level: anchor centers are generated on the
-640×640 grid, the raw regression outputs are multiplied by the stride to become pixel distances,
+`_SCRFD_NUM_ANCHORS = 2` anchors per cell. For each level: anchor centers are laid out on the
+640×640 grid (computed once per stride and cached — they depend only on the fixed input size),
+the raw regression outputs are multiplied by the stride to become pixel distances,
 `distance → bbox` and `distance → 5 landmarks` convert center-relative distances into absolute
 640-space corners/points, and a score threshold (`0.5`) masks out low-confidence cells.
 
@@ -317,9 +322,9 @@ target frame `t_q` is evaluated with the chosen scheme:
 - `cubic` — natural cubic spline.
 - `linear` — straight-line `np.interp`.
 
-Faces with fewer than two control points pass through un-interpolated. `get()` returns
-`(t_q, interpolated_faces, is_interpolated)`. Snapshots that fall behind the spline window are
-dropped so memory stays bounded.
+Faces with fewer than two control points pass through un-interpolated. `get()` returns an
+`InterpolatedFrame(frame_idx, faces, is_interpolated)`. Snapshots that fall behind the spline
+window are dropped so memory stays bounded.
 
 > **Buffering point D — the snapshot list & render cursor.** The buffer holds roughly
 > `2*lookahead + a few` snapshots; the cursor's distance behind the newest snapshot *is* the
