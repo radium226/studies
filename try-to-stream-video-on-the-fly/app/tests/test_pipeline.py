@@ -100,6 +100,8 @@ def _make_manager(monkeypatch) -> PipelineManager:
     app.state.frag_duration_ms = 500
     app.state.scrfd_batch_frames = 4
     app.state.arcface_batch_crops = 8
+    app.state.max_batch_lag_ms = 0.0
+    app.state.lookahead = 3
     return PipelineManager(app, sample_video=Path("unused.mp4"), models_dir=Path("unused"))
 
 

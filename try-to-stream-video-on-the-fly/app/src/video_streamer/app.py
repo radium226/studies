@@ -242,12 +242,29 @@ app = Starlette(
     show_default=True,
     help="Max face crops per batched ArcFace embedding pass; larger batches are chunked (M).",
 )
+@click.option(
+    "--max-batch-lag-ms",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Max ms to wait for a full SCRFD batch before firing with fewer frames "
+    "(0 = fire immediately).",
+)
+@click.option(
+    "--lookahead",
+    type=int,
+    default=3,
+    show_default=True,
+    help="Interpolation lookahead in detection snapshots. Higher = smoother splines but more lag.",
+)
 def main(
     resize_video: str | None,
     speed_factor: float,
     frag_duration_ms: int,
     scrfd_batch_frames: int,
     arcface_batch_crops: int,
+    max_batch_lag_ms: float,
+    lookahead: int,
 ) -> None:
     resize: tuple[int, int] | None = None
     if resize_video:
@@ -264,6 +281,8 @@ def main(
     app.state.frag_duration_ms = frag_duration_ms
     app.state.scrfd_batch_frames = scrfd_batch_frames
     app.state.arcface_batch_crops = arcface_batch_crops
+    app.state.max_batch_lag_ms = max_batch_lag_ms
+    app.state.lookahead = lookahead
 
     # Bounds how long uvicorn waits for in-flight live stream connections on
     # SIGINT/SIGTERM before force-cancelling them; matches wait_for_next's own

@@ -78,6 +78,8 @@ class PipelineManager:
         self._frag_duration_ms: int = app.state.frag_duration_ms
         self._scrfd_batch_frames: int = app.state.scrfd_batch_frames
         self._arcface_batch_crops: int = app.state.arcface_batch_crops
+        self._max_batch_lag_ms: float = app.state.max_batch_lag_ms
+        self._lookahead: int = app.state.lookahead
 
         # Start idle: no broadcaster/engine/stream yet.
         self._set_idle_state()
@@ -152,6 +154,8 @@ class PipelineManager:
                     fps=video_info.fps,
                     scrfd_batch_frames=self._scrfd_batch_frames,
                     arcface_batch_crops=self._arcface_batch_crops,
+                    max_batch_lag_ms=self._max_batch_lag_ms,
+                    lookahead=self._lookahead,
                 )
             )
             broadcaster = await new_stack.enter_async_context(Broadcaster.start())

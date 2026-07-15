@@ -53,6 +53,8 @@ class _BatchResult:
     per_frame: list[FrameDetections]
     detect_s: float
     embed_s: float
+    detect_n_frames: int  # frames submitted to SCRFD
+    embed_n_crops: int    # face crops submitted to ArcFace
 
 
 # Upper bound on frames held back waiting for the interpolation cursor. The
@@ -69,15 +71,18 @@ class Engine:
         fps: float,
         scrfd_batch_frames: int = 4,
         arcface_batch_crops: int = 8,
+        max_batch_lag_ms: float = 0.0,
+        lookahead: int = 3,
     ) -> None:
         self._face_detector = FaceDetector(model_dir / "scrfd_10g_kps_dynamic.onnx")
         self._face_embedder = FaceEmbedder(model_dir / "arcface_w600k_r50_batch.onnx")
         self._scrfd_batch_frames = max(1, scrfd_batch_frames)
         self._arcface_batch_crops = max(1, arcface_batch_crops)
+        self._max_batch_lag_ms = max(0.0, max_batch_lag_ms)
         self._frame_index = 0
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._fps = fps
-        self._detection_buffer = LookaheadTrackBuffer(lookahead=3, method="pchip")
+        self._detection_buffer = LookaheadTrackBuffer(lookahead=lookahead, method="pchip")
         self._tracker = ByteTracker(fps)
         self._detection_task: asyncio.Future | None = None
         self._detection_started_at: float = 0.0
@@ -94,6 +99,10 @@ class Engine:
         # True while emitting box-less fallback frames after a cap eviction;
         # gates the warning so a stall logs once, not once per frame.
         self._fallback_active = False
+        # Monotonic timestamp of when the batch first became eligible (token
+        # bucket passed, frames available) but wasn't full yet. Reset on fire
+        # or when eligibility is lost.
+        self._batch_eligible_since: float | None = None
 
     @classmethod
     @asynccontextmanager
@@ -104,12 +113,16 @@ class Engine:
         fps: float,
         scrfd_batch_frames: int = 4,
         arcface_batch_crops: int = 8,
+        max_batch_lag_ms: float = 0.0,
+        lookahead: int = 3,
     ) -> AsyncIterator[Engine]:
         self = cls(
             model_dir=model_dir,
             fps=fps,
             scrfd_batch_frames=scrfd_batch_frames,
             arcface_batch_crops=arcface_batch_crops,
+            max_batch_lag_ms=max_batch_lag_ms,
+            lookahead=lookahead,
         )
         with self._face_detector, self._face_embedder:
             try:
@@ -175,6 +188,8 @@ class Engine:
                     embed_s=batch.embed_s,
                     face_counts=face_counts,
                     active_tracks=active_tracks,
+                    detect_n_frames=batch.detect_n_frames,
+                    embed_n_crops=batch.embed_n_crops,
                 )
             except Exception:
                 logger.opt(exception=True).warning("detection failed")
@@ -184,17 +199,40 @@ class Engine:
         """Kick off a new detection batch if the budget allows and none is
         already running.
 
-        Sample up to N frames evenly spaced across the frames buffered since
-        the last batch, giving gapless real-detection coverage. These frames
-        are still pristine here (overlays are drawn on delayed frames), so the
-        detector never sees burned-in text.
+        Waits until either the window has >= scrfd_batch_frames frames (batch
+        full) or max_batch_lag_ms has elapsed since the batch first became
+        eligible, then fires with whatever is available. max_batch_lag_ms=0
+        fires immediately (current behaviour preserved).
         """
-        if self._detection_task is not None or not self._detection_budget.try_acquire(1.0):
+        if self._detection_task is not None:
+            self._batch_eligible_since = None
             return
+        if not self._detection_budget.try_acquire(1.0):
+            self._batch_eligible_since = None
+            return
+
+        # Approximate window size (precise intersection with _pending_frames
+        # is done inside _sample_batch_frames).
+        window_size = self._frame_index - self._last_batch_max_idx
+        if window_size <= 0:
+            self._batch_eligible_since = None
+            return
+
+        now = time.monotonic()
+        if self._batch_eligible_since is None:
+            self._batch_eligible_since = now
+
+        batch_full = window_size >= self._scrfd_batch_frames
+        lag_exceeded = (now - self._batch_eligible_since) * 1000.0 >= self._max_batch_lag_ms
+
+        if not batch_full and not lag_exceeded:
+            return  # keep accumulating frames
+
+        self._batch_eligible_since = None
         sampled = self._sample_batch_frames()
         if not sampled:
             return
-        self._detection_started_at = time.monotonic()
+        self._detection_started_at = now
         self._last_batch_max_idx = sampled[-1].frame_index
         loop = asyncio.get_running_loop()
         self._detection_task = loop.run_in_executor(
@@ -292,7 +330,13 @@ class Engine:
                 )
             )
             cursor += len(dets)
-        return _BatchResult(per_frame=results, detect_s=detect_s, embed_s=embed_s)
+        return _BatchResult(
+            per_frame=results,
+            detect_s=detect_s,
+            embed_s=embed_s,
+            detect_n_frames=len(frames),
+            embed_n_crops=len(items),
+        )
 
     def metrics_snapshot(self) -> dict[str, float]:
         return self._metrics.snapshot()

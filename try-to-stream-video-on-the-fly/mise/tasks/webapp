@@ -4,5 +4,6 @@ set -euxo pipefail
 
 # The app starts idle; enter a source URL (and tick "loop") in the web UI.
 uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer \
-    --speed-factor=3 \
-    --resize-video=600x-1
+    --speed-factor=1 \
+    --scrfd-batch-frames=16 \
+    --max-batch-lag-ms=5000

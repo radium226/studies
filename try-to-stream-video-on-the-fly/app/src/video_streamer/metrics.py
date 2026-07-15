@@ -62,6 +62,8 @@ class MetricsCollector:
         self._batches = _Window(window_s, clock)
         self._frames = _Window(window_s, clock)
         self._detected_frames = _Window(window_s, clock)
+        self._detect_batch_size = _Window(window_s, clock)
+        self._embed_batch_size = _Window(window_s, clock)
         self._active_tracks = 0
 
     def record_processed_frame(self) -> None:
@@ -74,11 +76,15 @@ class MetricsCollector:
         embed_s: float,
         face_counts: Iterable[int],
         active_tracks: int,
+        detect_n_frames: int,
+        embed_n_crops: int,
     ) -> None:
         self._detect_ms.add(detect_s * 1000.0)
         self._embed_ms.add(embed_s * 1000.0)
         self._batch_ms.add((detect_s + embed_s) * 1000.0)
         self._batches.add(1.0)
+        self._detect_batch_size.add(float(detect_n_frames))
+        self._embed_batch_size.add(float(embed_n_crops))
         for count in face_counts:
             self._faces_per_frame.add(float(count))
             # One sample per frame actually run through detection, so its rate
@@ -101,5 +107,7 @@ class MetricsCollector:
             "detection_stride": round(stride, 1),
             "processed_fps": round(processed_fps, 1),
             "active_tracks": self._active_tracks,
+            "detect_batch_size": round(self._detect_batch_size.mean(), 1),
+            "embed_batch_size": round(self._embed_batch_size.mean(), 1),
             "window_s": self._window_s,
         }
