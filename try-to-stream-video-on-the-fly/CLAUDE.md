@@ -172,12 +172,14 @@ Key files (`app/src/video_streamer/`):
   stream URL, and the last failure), `/metrics` (`{}` while idle), `POST /api/source` (body is a
   `{url, loop}` or `{synthetic: true, loop}`; http/https-validated, 60 s timeout → `504`, other
   build failures → `400`), and `POST /api/stop` (go idle).
-- **`static/player.js`** — browser: polls `/api/status` and gates on state. **Idle** → shows "No
-  source, waiting for URL", surfaces a new failure via `window.showSourceError`, and re-polls every
-  2 s. **Playing** → `MediaSource` + `SourceBuffer`, streamed `fetch` of the status' stream URL,
-  seek to the live edge (encoder PTS runs from server start, not client connect), trim old buffered
-  ranges, `QuotaExceededError` recovery (requeue + evict older half). On error/`410`/stream end it
-  falls back to the idle poll loop.
+- **`static/player.js`** — browser: polls `/api/status` and gates on state. **Idle** → `showIdle()`
+  blanks the `<video>` (`clearVideo()` detaches the media so it stops showing the last decoded frame
+  and falls back to its black background) and hides the progress bar (no loading spinner while just
+  waiting), shows "No source, waiting for URL", surfaces a new failure via `window.showSourceError`,
+  and re-polls every 2 s. **Playing** → shows the loading bar, then `MediaSource` + `SourceBuffer`,
+  streamed `fetch` of the status' stream URL, seek to the live edge (encoder PTS runs from server
+  start, not client connect), trim old buffered ranges, `QuotaExceededError` recovery (requeue +
+  evict older half). On error/`410`/stream end it blanks the frame and falls back to the idle poll.
 - **`static/source.js`** — the source form: POSTs `{url, loop}` (or `{synthetic, loop}` for the Test
   pattern button) to `/api/source`, and Stop → `POST /api/stop`. Reports the result in the status
   line; on failure the full server error (yt-dlp/ffprobe stderr) is shown in a dismissible

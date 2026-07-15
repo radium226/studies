@@ -24,29 +24,46 @@ point** along the way. For a shorter orientation aimed at editing the code, see 
 ```bash
 # from app/  (a uv-managed Python project)
 uv sync
-uv run video-streamer                     # synthetic testsrc source, http://127.0.0.1:8000
+uv run video-streamer                     # starts idle on http://127.0.0.1:8000
 
-# or, from the repo root, stream a real URL through yt-dlp:
+# or, from the repo root, with some tuning flags preset (still starts idle):
 mise run webapp
 ```
 
-Then open <http://127.0.0.1:8000>.
+Then open <http://127.0.0.1:8000> and choose a source in the page (see below).
 
 **System dependencies** (invoked as subprocesses, must be on `PATH`): `ffmpeg`, `ffprobe`, and —
-for `--input-video=url` — `yt-dlp`. ONNX weights live in `app/models/`.
+for URL sources — `yt-dlp`. ONNX weights live in `app/models/`.
 
-CLI flags of note (`app.py:main`):
+CLI flags of note (`app.py:main`) are **global tuning knobs only** — the source is chosen at runtime
+in the web UI, so there are no source/`--input-video` flags:
 
 | Flag | Meaning |
 | --- | --- |
-| `--input-video {synthetic,url}` | Synthetic `testsrc` (default) or a URL via `yt-dlp`. |
-| `--input-video-url URL` | Page URL resolved to a direct media URL (required for `url`). |
-| `--repeat-input-video` | Loop the source forever. |
 | `--resize-video WxH` | Scale in the decoder before any processing (`-1` on an axis keeps aspect). |
 | `--speed-factor N` | Playback speed multiplier (default `1.0`). Scales both the decoder read-rate (`-readrate N`) and the encoder output fps, for a smooth `N×` fast-forward (`0.5` = slow motion). All frames are still decoded/encoded. |
 | `--frag-duration-ms N` | Target fMP4 fragment duration (default 200 ms). |
 | `--scrfd-batch-frames N` | Frames per batched SCRFD detection pass (default `4`). |
 | `--arcface-batch-crops M` | Max face crops per batched ArcFace pass (default `8`). |
+
+---
+
+## Idle by default
+
+The app **starts idle** — no source, no pipeline, no ffmpeg processes, no models loaded. You pick a
+source at runtime from the player page:
+
+- **Paste a video URL** and hit *Load* (resolved to a direct media URL via `yt-dlp`). Tick **loop**
+  to repeat it forever; leave it unchecked to play once.
+- **Test pattern** starts the built-in synthetic `testsrc` asset (generated on first use).
+- **Stop** tears the pipeline back down to idle on demand.
+
+When a source **ends** (a finite, non-looping video reaches its end) the app returns to idle
+silently ("No source, waiting for URL"). When a source **fails** mid-stream (a decode/ffmpeg/yt-dlp
+crash) it also returns to idle, but a **failure popup** with the error is shown in the browser.
+While idle the player blanks the video (no frozen last frame) and hides the loading bar.
+
+There is exactly **one pipeline per process**, shared by all clients — never per-connection.
 
 ---
 
@@ -111,7 +128,8 @@ the loader is the **working** size — this is what every downstream stage keys 
 ffmpeg [-stream_loop -1] -readrate SPEED -i SOURCE -an [-vf scale=W:H] -f rawvideo -pix_fmt bgr24 pipe:1
 ```
 
-- `-stream_loop -1` (only with `--repeat-input-video`): loop the source forever.
+- `-stream_loop -1` (only when the source was started with the **loop** checkbox ticked): loop the
+  source forever.
 - `-readrate SPEED` (`SPEED` = `--speed-factor`, default `1.0`): pace how fast ffmpeg *emits*
   decoded frames — `-readrate 1` is exactly `-re` (real time), `2` feeds the pipeline twice as
   fast, `0.5` half as fast. Every frame is still decoded; this only throttles emission. The encoder
@@ -371,10 +389,11 @@ What matters here:
   EOF it **closes the Broadcaster**, ending every client stream cleanly instead of leaving them
   polling a stream with no producer behind it.
 
-If either task crashes (e.g. an ffmpeg process dies), a done-callback logs the exception and closes
-the Broadcaster immediately — failures surface as ended client streams, not as a silent stall.
-`PipelineManager` (see below) watches for exactly this and auto-rebuilds the same source, so an
-unexpected close is a brief, self-healed hiccup rather than a permanently dead stream.
+If either task crashes (e.g. an ffmpeg process dies), a done-callback logs the exception, **records
+it as the pipeline's `failure_reason`**, and closes the Broadcaster immediately — failures surface
+as ended client streams, not as a silent stall. `PipelineManager` (see below) watches for exactly
+this and takes the pipeline **to idle**, surfacing the recorded reason to the browser as a failure
+popup. A clean end-of-source sets no `failure_reason`, so it just goes idle silently.
 
 > **Buffering point E — ISO BMFF box reassembly** (`iso_bmff.BoxReader`). Encoder stdout arrives in
 > arbitrary 64 KiB chunks that never align to MP4 box boundaries. `BoxReader.feed()` appends to an
@@ -410,51 +429,59 @@ is needed):
 
 `GET /{stream_id}.mp4` returns a Starlette `StreamingResponse` (`media_type="video/mp4"`,
 `Cache-Control: no-cache`). Each successful pipeline build mints a fresh random UUID
-(`PipelineManager` sets `app.state.stream_id`), so every build — the initial one, an explicit
-`/api/source` switch, or a watchdog auto-heal — gets served at its own never-reused URL. Its async
-generator:
+(`PipelineManager` sets `app.state.stream_id`), so every build — a URL source, the test pattern, or
+a later switch — gets served at its own never-reused URL. Its async generator:
 
 1. Emits the init segment (retrying once after 0.5 s if the pipeline hasn't produced it yet).
 2. Emits the single latest fragment, then loops on `wait_for_next`, yielding each new fragment and
    checking `request.is_disconnected()`. `LaggedError` ends the response, as does the Broadcaster
-   closing (end of stream, or a pipeline rebuild).
+   closing (end of stream, a switch, or a stop).
 
-If the requested `stream_id` doesn't match the current build's id, or the current Broadcaster is
-already closed, the route returns **`410 Gone`** instead of a stream — the player uses this to
-tell "the stream ended / is being rebuilt" apart from a network error. `GET /api/stream-url`
-returns `{"url": "/<stream_id>.mp4"}` for the current build; the player calls it before every
-connect attempt (initial load and every reconnect) since the path itself changes on each rebuild.
+If the app is **idle** (no broadcaster), the requested `stream_id` doesn't match the current build's
+id, or the current Broadcaster is already closed, the route returns **`410 Gone`** instead of a
+stream — the player uses this to tell "the stream ended / went idle" apart from a network error.
 
-`POST /api/source` takes `{"url": ...}` (http/https only) and rebuilds the whole pipeline against
-that URL via `PipelineManager.switch_to_url`, returning the new `{width, height, fps}`. The switch
-is guarded by a lock (concurrent switches queue) and a 60 s timeout (a hung `yt-dlp`/`ffprobe`
+The player drives everything off **`GET /api/status`**, which returns
+`{state: "idle"|"playing", stream_url, source, error}`. `stream_url` is the current
+`/<stream_id>.mp4` path (or `null` when idle); `error` is an id-tagged record of the last mid-stream
+failure, which the player shows once as a popup.
+
+Sources are started with **`POST /api/source`**, whose body is either `{"url": ..., "loop": bool}`
+(http/https only) or `{"synthetic": true, "loop": bool}` for the test pattern. It builds the whole
+pipeline via `PipelineManager.start_url` / `start_synthetic`, returning `{width, height, fps}`. The
+build is guarded by a lock (concurrent requests queue) and a 60 s timeout (a hung `yt-dlp`/`ffprobe`
 returns `504` instead of holding the lock forever); any build failure returns `400` with the error.
+**`POST /api/stop`** calls `go_idle()` to tear the pipeline down to idle on demand.
 
 `GET /` serves the player page; `/static` serves `player.js`, `source.js`, and CSS. The `lifespan`
-hands the whole pipeline lifecycle to **`PipelineManager`** (`pipeline.py`): it builds the initial
-loader → writer → engine → broadcaster → orchestrator stack at startup inside an `AsyncExitStack`,
-and rebuilds it on demand for `/api/source`. Rebuilds are **teardown-first**: the old stack is
-fully closed (closing its Broadcaster, which ends every client stream) before the new one starts,
-so only one ffmpeg pair + ONNX engine ever runs at a time, at the cost of a short client-visible
-gap that the player bridges by polling. `SuppressShutdownCancellation` silences the harmless
-`CancelledError` noise from cutting open connections on Ctrl-C.
+hands the whole pipeline lifecycle to **`PipelineManager`** (`pipeline.py`): it **starts idle**
+(building nothing; `app.state.broadcaster`/`engine`/`stream_id` are all `None`) and builds the
+loader → writer → engine → broadcaster → orchestrator stack on demand inside an `AsyncExitStack`.
+Builds are **teardown-first**: any old stack is fully closed (closing its Broadcaster, which ends
+every client stream) before the new one starts, so only one ffmpeg pair + ONNX engine ever runs at
+a time, at the cost of a short client-visible gap that the player bridges by polling.
+`SuppressShutdownCancellation` silences the harmless `CancelledError` noise from cutting open
+connections on Ctrl-C.
 
 Every successful build also starts a **watchdog** task tagged with a monotonic generation number.
 It waits for its broadcaster to close and, if that generation is still the current one (i.e. an
-explicit `/api/source` switch didn't already replace it), rebuilds the *same* source after a short
-backoff — 2 s, doubling to a 30 s cap on repeated failures. This is what makes source exhaustion,
-an ffmpeg crash, or a dropped network connection a self-healed hiccup instead of a stream that's
-stuck returning `410` forever.
+explicit stop or source switch didn't already replace it), takes the pipeline **to idle** —
+silently for a clean end-of-source, or recording an id-tagged `last_error` (from the orchestrator's
+`failure_reason`) that the player surfaces as a popup. So source exhaustion, an ffmpeg crash, or a
+dropped connection all resolve to a clean idle state rather than a stream stuck returning `410`.
 
 ---
 
 ### 10. Browser playback — `static/player.js`
 
 - Advertises MIME `video/mp4; codecs="avc1.42001e"` (must match the encoder's baseline/level 3.0).
-- Creates a `MediaSource`, adds a `SourceBuffer`, resolves the current stream path from
-  `GET /api/stream-url` and `fetch`es it, then pumps the streamed `response.body` into the buffer
-  through a small **append queue** (MSE forbids overlapping `appendBuffer` calls, so a
-  `pump()`/`updateend` loop serializes them).
+- Polls `GET /api/status` and **gates on state**. While **idle** it blanks the `<video>` (detaches
+  the media so no frozen last frame shows — the element falls back to its black background), hides
+  the loading bar, shows "No source, waiting for URL", surfaces any new failure through the popup,
+  and re-polls every 2 s. When **playing** it creates a `MediaSource`, adds a `SourceBuffer`,
+  `fetch`es the status' `stream_url`, and pumps the streamed `response.body` into the buffer through
+  a small **append queue** (MSE forbids overlapping `appendBuffer` calls, so a `pump()`/`updateend`
+  loop serializes them).
 
 > **Buffering point G — the MSE `SourceBuffer`.** This is the client-side playback buffer. Two
 > behaviors keep it healthy:
@@ -471,16 +498,18 @@ stuck returning `410` forever.
 >   buffer is full; the player puts the chunk back on its queue, evicts the older half of the
 >   buffered range, and resumes on the follow-up `updateend` instead of stalling permanently.
 
-A progress bar reflects the OR of two independent "loading" reasons: the connect/reconnect phase and
-the `<video>` element starving for data mid-stream (`waiting`/`playing` events). On a fetch error or
-stream end it shows "reconnecting…" and retries after 1 s; on a `410 Gone` (the stream ended
-server-side, or a source switch is rebuilding the pipeline) it ends playback of what's buffered and
-polls every 3 s until a new stream is up. Each (re)connect builds a fresh `MediaSource` and revokes
-the previous object URL.
+A progress bar reflects the OR of two independent "loading" reasons: the connect phase and the
+`<video>` element starving for data mid-stream (`waiting`/`playing` events); it stays hidden while
+idle. On a `410 Gone` (the stream ended, failed, or was stopped, so we're now idle) it blanks the
+frame and drops back to the idle status poll; on a mid-stream fetch drop it shows "reconnecting…"
+and re-polls after 1 s. Each play builds a fresh `MediaSource` and revokes the previous object URL.
 
-`static/source.js` wires the source form: it POSTs the entered URL to `/api/source` and reports the
-switch result (or error) in the status line; the stream handoff itself rides on the reconnect logic
-above — the old stream ends when the old Broadcaster closes, and polling picks up the new one.
+`static/source.js` wires the source form: *Load* POSTs `{url, loop}`, *Test pattern* POSTs
+`{synthetic: true, loop}` to `/api/source`, and *Stop* POSTs `/api/stop`. It reports the result (or
+error) in the status line, and shows build failures in a dismissible `#source-error` panel; it also
+exposes `window.showSourceError` so player.js can raise the same popup for async mid-stream failures.
+The stream handoff itself rides on player.js's status-poll loop — the old stream ends when the old
+Broadcaster closes, and polling picks up the new one (or the idle state).
 
 ---
 
