@@ -105,6 +105,11 @@ class Broadcaster:
             self._closed = True
             self._condition.notify_all()
 
+    async def wait_closed(self) -> None:
+        """Block until this broadcaster is closed (returns immediately if already closed)."""
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._closed)
+
 
 class LaggedError(Exception):
     def __init__(self, oldest_seq: int) -> None:

@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 class SuppressShutdownCancellation(logging.Filter):
     """Silence the harmless CancelledError/KeyboardInterrupt uvicorn logs as
-    "Exception in ASGI application" when Ctrl-C interrupts an open
-    /stream.mp4 connection."""
+    "Exception in ASGI application" when Ctrl-C interrupts an open live
+    stream connection."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.exc_info is None:
@@ -67,11 +67,18 @@ async def metrics(request: Request):
     return JSONResponse(engine.metrics_snapshot())
 
 
+async def current_stream_url(request: Request):
+    return JSONResponse({"url": f"/{request.app.state.stream_id}.mp4"})
+
+
 async def stream(request: Request):
+    stream_id = request.path_params["stream_id"]
     broadcaster: Broadcaster = request.app.state.broadcaster
-    if broadcaster.is_closed:
-        # Distinguishable from a network error so the player can show "ended"
-        # and retry slowly (a source switch may bring up a new broadcaster).
+    if stream_id != request.app.state.stream_id or broadcaster.is_closed:
+        # Either this id belongs to a superseded build, or the current one's
+        # broadcaster already closed. Distinguishable from a network error so
+        # the player can show "ended" and retry slowly (a source switch may
+        # bring up a new broadcaster at a new URL).
         return JSONResponse({"error": "stream ended"}, status_code=410)
 
     async def generate():
@@ -141,8 +148,9 @@ app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/", index),
-        Route("/stream.mp4", stream),
+        Route("/{stream_id}.mp4", stream),
         Route("/metrics", metrics),
+        Route("/api/stream-url", current_stream_url),
         Route("/api/source", set_source, methods=["POST"]),
         Mount(
             "/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"
@@ -238,7 +246,7 @@ def main(
     app.state.scrfd_batch_frames = scrfd_batch_frames
     app.state.arcface_batch_crops = arcface_batch_crops
 
-    # Bounds how long uvicorn waits for in-flight /stream.mp4 connections on
+    # Bounds how long uvicorn waits for in-flight live stream connections on
     # SIGINT/SIGTERM before force-cancelling them; matches wait_for_next's own
     # 5s per-iteration timeout so shutdown isn't needlessly slow.
     config = uvicorn.Config(

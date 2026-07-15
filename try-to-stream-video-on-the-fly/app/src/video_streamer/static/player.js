@@ -122,9 +122,18 @@ async function start() {
 
     sourceBuffer.addEventListener("error", (e) => console.error("SourceBuffer error", e));
 
+    // Don't rely solely on the server ending the response promptly when its
+    // broadcaster closes (e.g. on a source switch) - if that signal is ever
+    // slow or lost in transit, abort and reconnect ourselves rather than
+    // leaving the tab stuck until a manual page reload.
+    const abortController = new AbortController();
+    const IDLE_TIMEOUT_MS = 8000;
+
     try {
       setStatus("connecting...");
-      const response = await fetch("/stream.mp4");
+      const urlResponse = await fetch("/api/stream-url");
+      const { url: streamUrl } = await urlResponse.json();
+      const response = await fetch(streamUrl, { signal: abortController.signal });
       if (!response.ok) {
         // 410: the stream ended server-side - the source finished, or a
         // source switch is rebuilding the pipeline. Poll slowly for a new one.
@@ -142,7 +151,13 @@ async function start() {
       loadingPhase = false;
       updateProgressBar();
       while (true) {
-        const { done, value } = await reader.read();
+        const idleTimer = setTimeout(() => abortController.abort(), IDLE_TIMEOUT_MS);
+        let done, value;
+        try {
+          ({ done, value } = await reader.read());
+        } finally {
+          clearTimeout(idleTimer);
+        }
         if (done) break;
         queue.push(value);
         pump();

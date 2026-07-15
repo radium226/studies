@@ -369,10 +369,12 @@ What matters here:
   trailing fragments and EOFs its stdout.
 - `box-parse`: reads encoder stdout and turns the byte stream into publishable units. On encoder
   EOF it **closes the Broadcaster**, ending every client stream cleanly instead of leaving them
-  polling a stream that will never produce again.
+  polling a stream with no producer behind it.
 
 If either task crashes (e.g. an ffmpeg process dies), a done-callback logs the exception and closes
 the Broadcaster immediately — failures surface as ended client streams, not as a silent stall.
+`PipelineManager` (see below) watches for exactly this and auto-rebuilds the same source, so an
+unexpected close is a brief, self-healed hiccup rather than a permanently dead stream.
 
 > **Buffering point E — ISO BMFF box reassembly** (`iso_bmff.BoxReader`). Encoder stdout arrives in
 > arbitrary 64 KiB chunks that never align to MP4 box boundaries. `BoxReader.feed()` appends to an
@@ -406,17 +408,22 @@ is needed):
 
 ### 9. HTTP delivery — `app.py`
 
-`GET /stream.mp4` returns a Starlette `StreamingResponse` (`media_type="video/mp4"`,
-`Cache-Control: no-cache`). Its async generator:
+`GET /{stream_id}.mp4` returns a Starlette `StreamingResponse` (`media_type="video/mp4"`,
+`Cache-Control: no-cache`). Each successful pipeline build mints a fresh random UUID
+(`PipelineManager` sets `app.state.stream_id`), so every build — the initial one, an explicit
+`/api/source` switch, or a watchdog auto-heal — gets served at its own never-reused URL. Its async
+generator:
 
 1. Emits the init segment (retrying once after 0.5 s if the pipeline hasn't produced it yet).
 2. Emits the single latest fragment, then loops on `wait_for_next`, yielding each new fragment and
    checking `request.is_disconnected()`. `LaggedError` ends the response, as does the Broadcaster
    closing (end of stream, or a pipeline rebuild).
 
-If the current Broadcaster is already closed when a client connects, the route returns **`410
-Gone`** instead of a stream — the player uses this to tell "the stream ended / is being rebuilt"
-apart from a network error.
+If the requested `stream_id` doesn't match the current build's id, or the current Broadcaster is
+already closed, the route returns **`410 Gone`** instead of a stream — the player uses this to
+tell "the stream ended / is being rebuilt" apart from a network error. `GET /api/stream-url`
+returns `{"url": "/<stream_id>.mp4"}` for the current build; the player calls it before every
+connect attempt (initial load and every reconnect) since the path itself changes on each rebuild.
 
 `POST /api/source` takes `{"url": ...}` (http/https only) and rebuilds the whole pipeline against
 that URL via `PipelineManager.switch_to_url`, returning the new `{width, height, fps}`. The switch
@@ -432,14 +439,22 @@ so only one ffmpeg pair + ONNX engine ever runs at a time, at the cost of a shor
 gap that the player bridges by polling. `SuppressShutdownCancellation` silences the harmless
 `CancelledError` noise from cutting open connections on Ctrl-C.
 
+Every successful build also starts a **watchdog** task tagged with a monotonic generation number.
+It waits for its broadcaster to close and, if that generation is still the current one (i.e. an
+explicit `/api/source` switch didn't already replace it), rebuilds the *same* source after a short
+backoff — 2 s, doubling to a 30 s cap on repeated failures. This is what makes source exhaustion,
+an ffmpeg crash, or a dropped network connection a self-healed hiccup instead of a stream that's
+stuck returning `410` forever.
+
 ---
 
 ### 10. Browser playback — `static/player.js`
 
 - Advertises MIME `video/mp4; codecs="avc1.42001e"` (must match the encoder's baseline/level 3.0).
-- Creates a `MediaSource`, adds a `SourceBuffer`, `fetch("/stream.mp4")`, and pumps the streamed
-  `response.body` into the buffer through a small **append queue** (MSE forbids overlapping
-  `appendBuffer` calls, so a `pump()`/`updateend` loop serializes them).
+- Creates a `MediaSource`, adds a `SourceBuffer`, resolves the current stream path from
+  `GET /api/stream-url` and `fetch`es it, then pumps the streamed `response.body` into the buffer
+  through a small **append queue** (MSE forbids overlapping `appendBuffer` calls, so a
+  `pump()`/`updateend` loop serializes them).
 
 > **Buffering point G — the MSE `SourceBuffer`.** This is the client-side playback buffer. Two
 > behaviors keep it healthy:

@@ -20,17 +20,22 @@ def _resolve_resize(
 ) -> tuple[int, int]:
     """Resolve ffmpeg-style -1 placeholders to actual pixel counts.
 
-    -1 means "keep aspect ratio, round to nearest even number".
+    -1 means "keep aspect ratio, round to nearest even number". Always clamps
+    the result to even dimensions (even the (-1, -1) "keep native" passthrough)
+    since libx264's yuv420p output requires even width/height — an odd-sized
+    source would otherwise make the encoder exit immediately on startup.
     """
     rw, rh = resize
     if rw == -1 and rh == -1:
-        return src_w, src_h
-    if rw == -1:
+        rw, rh = src_w, src_h
+    elif rw == -1:
         rw = max(1, round(src_w * rh / src_h))
         rw += rw % 2
-    if rh == -1:
+    elif rh == -1:
         rh = max(1, round(src_h * rw / src_w))
         rh += rh % 2
+    rw -= rw % 2
+    rh -= rh % 2
     return rw, rh
 
 
@@ -64,9 +69,10 @@ class SyntheticInputVideoLoader(InputVideoLoader):
     ) -> AsyncIterator[SyntheticInputVideoLoader]:
         await ensure_sample_asset(path)
         w, h, fps = await probe_video_info(path)
-        out_w, out_h = _resolve_resize(w, h, resize) if resize else (w, h)
+        out_w, out_h = _resolve_resize(w, h, resize or (-1, -1))
+        decoder_resize = (out_w, out_h) if (out_w, out_h) != (w, h) else None
         async with Reader.start(
-            str(path), loop=loop, resize=resize, read_rate=speed_factor
+            str(path), loop=loop, resize=decoder_resize, read_rate=speed_factor
         ) as reader:
             yield cls(reader=reader, width=out_w, height=out_h, fps=fps)
 
@@ -118,9 +124,10 @@ class UrlInputVideoLoader(InputVideoLoader):
             )
         direct = stdout.decode().strip()
         w, h, fps = await probe_video_info(direct)
-        out_w, out_h = _resolve_resize(w, h, resize) if resize else (w, h)
+        out_w, out_h = _resolve_resize(w, h, resize or (-1, -1))
+        decoder_resize = (out_w, out_h) if (out_w, out_h) != (w, h) else None
         async with Reader.start(
-            direct, loop=loop, resize=resize, read_rate=speed_factor
+            direct, loop=loop, resize=decoder_resize, read_rate=speed_factor
         ) as reader:
             yield cls(reader=reader, width=out_w, height=out_h, fps=fps)
 

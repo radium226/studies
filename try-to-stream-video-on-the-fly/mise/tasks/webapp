@@ -4,7 +4,7 @@ set -euxo pipefail
 
 uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer \
     --input-video=url \
-    --input-video-url=https://www.youtube.com/watch?v=got1w6Tjo7Q \
+    --input-video-url="https://lelombrik.net/168922" \
     --repeat-input-video \
     --speed-factor=3 \
     --resize-video=600x-1

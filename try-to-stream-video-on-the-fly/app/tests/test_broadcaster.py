@@ -58,6 +58,21 @@ async def test_close_wakes_waiters_and_returns_none() -> None:
     assert b.is_closed
 
 
+async def test_wait_closed_returns_immediately_if_already_closed() -> None:
+    b = Broadcaster()
+    await b.close()
+    await asyncio.wait_for(b.wait_closed(), timeout=0.1)
+
+
+async def test_wait_closed_wakes_on_close() -> None:
+    b = Broadcaster()
+    waiter = asyncio.create_task(b.wait_closed())
+    await asyncio.sleep(0)  # let the waiter block on the condition
+    assert not waiter.done()
+    await b.close()
+    await asyncio.wait_for(waiter, timeout=0.1)
+
+
 async def test_snapshot_for_new_client_gives_init_and_latest_only() -> None:
     b = Broadcaster()
     assert b.snapshot_for_new_client() == (None, None)

@@ -70,7 +70,7 @@ to a single-worker `ThreadPoolExecutor`. Everything is composed as async context
 shared pipeline serves all clients and the whole stack can be torn down and rebuilt at runtime
 when a new source URL arrives via `POST /api/source`. Rebuilds are **teardown-first** (old stack
 fully closed before the new one starts — one ffmpeg pair + ONNX engine at a time); clients bridge
-the gap by polling, driven by the `410 Gone` contract on `/stream.mp4` (see below).
+the gap by polling, driven by the `410 Gone` contract on the live stream endpoint (see below).
 
 ```
 ffmpeg decoder (loop/readrate source -> optional scale filter -> raw BGR24 on stdout) reader.py
@@ -144,19 +144,32 @@ Key files (`app/src/video_streamer/`):
   stdin (flushing trailing fragments); encoder EOF closes the broadcaster.
 - **`pipeline.py`** — `PipelineManager`: owns the pipeline's `AsyncExitStack` lifecycle — initial
   build in `lifespan`, teardown-first rebuild in `switch_to_url()` (serialized by a lock). Updates
-  `app.state.broadcaster`/`app.state.engine` after each successful build.
+  `app.state.broadcaster`/`app.state.engine`/`app.state.stream_id` after each successful build — a
+  fresh random UUID minted per build, since every build is a genuinely new broadcaster/encoder
+  session (fresh init segment, PTS from zero) and gets served at its own `/{stream_id}.mp4` URL.
+  Every successful `_build()` also spawns a **watchdog task** (tagged with a monotonic generation
+  number) that waits on the new broadcaster closing unexpectedly (source exhaustion, a crash, a
+  dropped network connection — not an explicit `/api/source` switch, which the generation check
+  lets win instead) and auto-rebuilds the *same* source after a backoff (2s, doubling to a 30s cap
+  on repeated failures). This is what keeps the stream self-healing instead of dying permanently
+  the first time ffmpeg falls over.
 - **`pipe_io.py`** — shared async subprocess-pipe helpers (`read_exact`, `drain_stderr`,
   `drain_and_discard`, `terminate_and_wait`); note the drain-during-shutdown requirement.
+  `drain_stderr` logs decoder/encoder stderr at `INFO` (matching `app.py`'s log level) so ffmpeg
+  failures are actually visible instead of silently swallowed at `DEBUG`.
 - **`sample_asset.py`** — generates the synthetic `testsrc` sample on first run.
 - **`app.py`** — Starlette wiring + `click` CLI. `lifespan` delegates to `PipelineManager`.
-  Routes: `/` (player page), `/stream.mp4` (live tail; returns `410 Gone` when the current
-  broadcaster is closed so the player can distinguish "ended/rebuilding" from a network error),
-  `/metrics`, and `POST /api/source` (http/https-validated, 60 s timeout → `504`, other build
-  failures → `400`).
+  Routes: `/` (player page), `/{stream_id}.mp4` (live tail for the given build's unique UUID;
+  returns `410 Gone` when `stream_id` doesn't match the current build or its broadcaster is
+  closed, so the player can distinguish "ended/rebuilding" from a network error),
+  `/api/stream-url` (tells the player the current `/{stream_id}.mp4` path — polled before every
+  connect attempt since the path changes on every rebuild), `/metrics`, and `POST /api/source`
+  (http/https-validated, 60 s timeout → `504`, other build failures → `400`).
 - **`static/player.js`** — browser: `MediaSource` + `SourceBuffer`, streamed `fetch`, seek to the
   live edge (encoder PTS runs from server start, not client connect), trim old buffered ranges,
-  `QuotaExceededError` recovery (requeue + evict older half). Reconnects after 1 s on errors;
-  on `410` it ends playback and polls every 3 s for a new stream.
+  `QuotaExceededError` recovery (requeue + evict older half). Resolves the current stream URL via
+  `/api/stream-url` before every connect attempt. Reconnects after 1 s on errors; on `410` it ends
+  playback and polls every 3 s for a new stream.
 - **`static/source.js`** — the source-switch form: POSTs the URL to `/api/source` and reports the
   result in the status line; on failure the full server error (yt-dlp/ffprobe stderr) is shown in
   a dismissible `#source-error` panel, since player.js's reconnect polling overwrites the shared

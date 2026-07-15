@@ -36,7 +36,7 @@ async def drain_stderr(stream: asyncio.StreamReader, name: str) -> None:
         line = await stream.readline()
         if not line:
             break
-        logger.debug("%s: %s", name, line.decode(errors="replace").rstrip())
+        logger.info("%s: %s", name, line.decode(errors="replace").rstrip())
 
 
 async def drain_and_discard(stream: asyncio.StreamReader) -> None:
