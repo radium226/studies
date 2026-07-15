@@ -134,7 +134,7 @@ video {
   backdrop-filter: blur(2px);
 }
 
-.source-form input {
+.source-form input[type="text"] {
   width: 16rem;
   max-width: 40vw;
   padding: 0.3rem 0.5rem;
@@ -148,6 +148,17 @@ video {
 
 .source-form input::placeholder {
   color: #888;
+}
+
+.source-loop {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #ccc;
+  font-family: system-ui, sans-serif;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .source-form button {

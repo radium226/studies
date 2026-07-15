@@ -30,16 +30,81 @@ video.addEventListener("playing", () => {
 });
 
 let currentObjectUrl = null;
+// Each failure record from /api/status carries a monotonic id; track the last
+// one we surfaced so a sticky error is shown as a popup exactly once.
+let lastShownErrorId = 0;
 
-async function start() {
-  loadingPhase = true;
+// How often to re-poll /api/status while idle, waiting for a source.
+const IDLE_POLL_MS = 2000;
+
+function maybeShowError(error) {
+  if (error && error.id > lastShownErrorId) {
+    lastShownErrorId = error.id;
+    if (window.showSourceError) {
+      window.showSourceError(error.source || "source", error.message || "unknown error");
+    }
+  }
+}
+
+// Detach any media so the <video> stops showing the last decoded frame and
+// falls back to its black background.
+function clearVideo() {
+  if (currentObjectUrl) {
+    URL.revokeObjectURL(currentObjectUrl);
+    currentObjectUrl = null;
+  }
+  if (video.hasAttribute("src")) {
+    video.removeAttribute("src");
+    try { video.load(); } catch { /* resetting an empty element */ }
+  }
+}
+
+// Idle: no source. Blank the frame and hide the progress bar (no loading
+// spinner while we're just waiting), then show the given status text.
+function showIdle(text) {
+  loadingPhase = false;
+  starvedForData = false;
   updateProgressBar();
+  clearVideo();
+  setStatus(text);
+}
 
+// Entry point / reconnect target: ask the server whether a source is playing.
+// Idle -> show the waiting state and poll again; playing -> hook up MSE.
+async function start() {
   if (!window.MediaSource || !MediaSource.isTypeSupported(MIME)) {
     setStatus("MediaSource + H.264 baseline not supported in this browser.");
     return;
   }
 
+  let status;
+  try {
+    const res = await fetch("/api/status");
+    status = await res.json();
+  } catch (err) {
+    // Server momentarily unreachable (e.g. mid-rebuild); stay idle and retry.
+    setTimeout(start, IDLE_POLL_MS);
+    return;
+  }
+
+  maybeShowError(status.error);
+
+  if (status.state !== "playing" || !status.stream_url) {
+    // No source: keep the bar hidden and the frame blank while we poll.
+    showIdle("No source, waiting for URL");
+    setTimeout(start, IDLE_POLL_MS);
+    return;
+  }
+
+  loadingPhase = true;
+  updateProgressBar();
+  setStatus("connecting...");
+  play(status.stream_url);
+}
+
+// Build a fresh MediaSource and stream the given live fMP4 URL until it ends
+// or errors, then fall back to start()'s idle poll.
+function play(streamUrl) {
   // Each (re)connect gets a fresh MediaSource; release the previous one's
   // object URL so reconnects don't leak blob references.
   if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
@@ -52,10 +117,6 @@ async function start() {
     const queue = [];
     let appending = false;
     let joinedLive = false;
-
-    function scheduleRestart(delayMs) {
-      setTimeout(start, delayMs);
-    }
 
     function bufferedSpan() {
       if (sourceBuffer.buffered.length === 0) return null;
@@ -130,20 +191,16 @@ async function start() {
     const IDLE_TIMEOUT_MS = 8000;
 
     try {
-      setStatus("connecting...");
-      const urlResponse = await fetch("/api/stream-url");
-      const { url: streamUrl } = await urlResponse.json();
       const response = await fetch(streamUrl, { signal: abortController.signal });
       if (!response.ok) {
-        // 410: the stream ended server-side - the source finished, or a
-        // source switch is rebuilding the pipeline. Poll slowly for a new one.
-        setStatus("stream ended - waiting for a source...");
-        loadingPhase = false;
-        updateProgressBar();
+        // 410: the stream ended server-side - the source finished, failed, or
+        // was stopped, and we're now idle. Blank the frame right away, then
+        // fall back to the status poll (which shows "waiting" or a failure popup).
         if (mediaSource.readyState === "open") {
           try { mediaSource.endOfStream(); } catch { /* already ending */ }
         }
-        scheduleRestart(3000);
+        showIdle("stream ended - waiting for a source...");
+        setTimeout(start, IDLE_POLL_MS);
         return;
       }
       const reader = response.body.getReader();
@@ -165,10 +222,11 @@ async function start() {
     } catch (err) {
       console.error("stream fetch failed", err);
     }
+    // Stream ended or dropped: re-poll status (idle -> waiting, or a new source).
     setStatus("reconnecting...");
     loadingPhase = true;
     updateProgressBar();
-    scheduleRestart(1000);
+    setTimeout(start, 1000);
   });
 }
 

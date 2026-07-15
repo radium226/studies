@@ -1,5 +1,6 @@
-"""Owns the shared pipeline's lifecycle: initial build at startup, and live
-rebuilds when the input source changes (e.g. a URL submitted through the UI).
+"""Owns the shared pipeline's lifecycle: it starts idle (no source), builds a
+pipeline when the UI requests one, and tears back down to idle when the source
+ends, fails, or is explicitly stopped.
 
 Wraps loader -> writer -> engine -> broadcaster -> orchestrator in an
 AsyncExitStack so the whole stack can be torn down and rebuilt on demand,
@@ -9,12 +10,12 @@ not just via a fixed `async with` block scope.
 from __future__ import annotations
 
 import asyncio
-import logging
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
 
+from loguru import logger
 from starlette.applications import Starlette
 
 from video_streamer.broadcaster import Broadcaster
@@ -27,16 +28,9 @@ from video_streamer.input_video import (
 from video_streamer.orchestrator import Orchestrator
 from video_streamer.writer import Writer
 
-logger = logging.getLogger(__name__)
-
-# Backoff for auto-rebuilding after the pipeline closes unexpectedly (source
-# exhaustion the loop flag didn't cover, a decoder/encoder crash, a dropped
-# network connection, ...). Doubles on repeated failures, capped, and resets
-# once a rebuild succeeds.
-_INITIAL_HEAL_BACKOFF_S = 2.0
-_MAX_HEAL_BACKOFF_S = 30.0
-
 LoaderFactory = Callable[[], AbstractAsyncContextManager[InputVideoLoader]]
+
+SYNTHETIC_SOURCE_LABEL = "test pattern"
 
 
 class PipelineManager:
@@ -50,56 +44,79 @@ class PipelineManager:
         self._closing = False
         self._watchdog_tasks: set[asyncio.Task[None]] = set()
 
-        # Snapshot the CLI-configured knobs once; only the input source
-        # itself ever changes via switch_to_url().
-        self._loop: bool = app.state.repeat_input_video
+        # The currently-running pipeline's orchestrator (for its crash reason)
+        # and a human label for the active source; both None while idle.
+        self._orchestrator: Orchestrator | None = None
+        self._current_source_label: str | None = None
+        # Last unexpected-failure record, surfaced to the browser as a popup.
+        # Monotonic id lets the player show each failure exactly once.
+        self._last_error: dict[str, object] | None = None
+        self._error_seq = 0
+
+        # Snapshot the CLI-configured global tuning knobs once; the input
+        # source (and its per-source loop flag) arrive via start_url/start_synthetic.
         self._resize: tuple[int, int] | None = app.state.resize
         self._speed_factor: float = app.state.speed_factor
         self._frag_duration_ms: int = app.state.frag_duration_ms
         self._scrfd_batch_frames: int = app.state.scrfd_batch_frames
         self._arcface_batch_crops: int = app.state.arcface_batch_crops
 
-    def _synthetic_loader_factory(self) -> LoaderFactory:
+        # Start idle: no broadcaster/engine/stream yet.
+        self._set_idle_state()
+
+    def _set_idle_state(self) -> None:
+        self._app.state.broadcaster = None
+        self._app.state.engine = None
+        self._app.state.stream_id = None
+
+    def _synthetic_loader_factory(self, loop: bool) -> LoaderFactory:
         return lambda: SyntheticInputVideoLoader.start(
             self._sample_video,
-            loop=self._loop,
+            loop=loop,
             resize=self._resize,
             speed_factor=self._speed_factor,
         )
 
-    def _url_loader_factory(self, url: str) -> LoaderFactory:
+    def _url_loader_factory(self, url: str, loop: bool) -> LoaderFactory:
         return lambda: UrlInputVideoLoader.start(
             url,
-            loop=self._loop,
+            loop=loop,
             resize=self._resize,
             speed_factor=self._speed_factor,
         )
 
-    async def build_initial(self) -> None:
-        if self._app.state.input_video == "synthetic":
-            loader_factory = self._synthetic_loader_factory()
-        else:
-            loader_factory = self._url_loader_factory(self._app.state.input_video_url)
+    async def start_url(self, url: str, loop: bool) -> tuple[int, int, float]:
         async with self._lock:
-            await self._build(loader_factory)
+            return await self._build(self._url_loader_factory(url, loop), url)
 
-    async def switch_to_url(self, url: str) -> tuple[int, int, float]:
+    async def start_synthetic(self, loop: bool) -> tuple[int, int, float]:
         async with self._lock:
-            return await self._build(self._url_loader_factory(url))
+            return await self._build(
+                self._synthetic_loader_factory(loop), SYNTHETIC_SOURCE_LABEL
+            )
 
-    async def _build(self, loader_factory: LoaderFactory) -> tuple[int, int, float]:
+    async def go_idle(self) -> None:
+        """Explicit stop: tear the pipeline down to idle. Not a failure, so no
+        error popup is recorded."""
+        async with self._lock:
+            await self._go_idle_locked(error=None)
+
+    async def _build(
+        self, loader_factory: LoaderFactory, source_label: str
+    ) -> tuple[int, int, float]:
         # Teardown-first: only one ffmpeg pair + ONNX engine ever runs at a
         # time, at the cost of a client-visible gap during the rebuild. The
         # closed broadcaster makes the live stream endpoint return 410, and
-        # the player polls until the new pipeline is up. A watchdog spawned below
-        # auto-retries this same source if the new pipeline later closes on
-        # its own (source exhaustion, a crash, ...). If this build itself
-        # raises, self._generation is never bumped, so the watchdog watching
-        # the *old* (just-closed-by-aclose-above) broadcaster still matches
-        # the current generation once it wakes - it takes over and retries
-        # the previous source instead of leaving the pipeline dead.
+        # the player polls until the new pipeline is up. A watchdog spawned
+        # below takes the pipeline back to idle if it later closes on its own
+        # (source exhaustion, a crash, ...). If this build itself raises,
+        # self._generation is never bumped, so the watchdog watching the *old*
+        # (just-closed-by-aclose-above) broadcaster still matches the current
+        # generation once it wakes - it takes the pipeline to idle instead of
+        # leaving a half-dead stack.
         await self._stack.aclose()
         self._stack = AsyncExitStack()
+        self._set_idle_state()
 
         new_stack = AsyncExitStack()
         try:
@@ -122,7 +139,7 @@ class PipelineManager:
                 )
             )
             broadcaster = await new_stack.enter_async_context(Broadcaster.start())
-            await new_stack.enter_async_context(
+            orchestrator = await new_stack.enter_async_context(
                 Orchestrator.start(loader, engine, writer, broadcaster)
             )
         except BaseException:
@@ -130,54 +147,73 @@ class PipelineManager:
             raise
 
         self._stack = new_stack
+        self._orchestrator = orchestrator
+        self._current_source_label = source_label
+        self._last_error = None
         self._app.state.broadcaster = broadcaster
         self._app.state.engine = engine
         self._app.state.stream_id = str(uuid.uuid4())
         self._generation += 1
         generation = self._generation
         task = asyncio.create_task(
-            self._watch_and_heal(broadcaster, generation, loader_factory),
+            self._watch_and_idle(broadcaster, generation),
             name=f"pipeline-watchdog-{generation}",
         )
         self._watchdog_tasks.add(task)
         task.add_done_callback(self._watchdog_tasks.discard)
         return w, h, fps
 
-    async def _watch_and_heal(
-        self,
-        broadcaster: Broadcaster,
-        generation: int,
-        loader_factory: LoaderFactory,
-        backoff_s: float | None = None,
-    ) -> None:
-        if backoff_s is None:
-            backoff_s = _INITIAL_HEAL_BACKOFF_S
+    async def _watch_and_idle(self, broadcaster: Broadcaster, generation: int) -> None:
         await broadcaster.wait_closed()
-        await asyncio.sleep(backoff_s)
         async with self._lock:
             # A newer generation already replaced this pipeline (an explicit
-            # /api/source switch, or an earlier retry) - nothing to heal.
+            # stop, or a source switch) - nothing to do; that action owns the
+            # transition.
             if self._closing or generation != self._generation:
                 return
-            logger.warning(
-                "pipeline (generation %d) closed unexpectedly; auto-rebuilding "
-                "the same source after %.0fs backoff",
-                generation,
-                backoff_s,
+            # The pipeline closed on its own. A crash carries a failure reason
+            # (-> popup); a natural end-of-source does not (-> silent idle).
+            reason = self._orchestrator.failure_reason if self._orchestrator else None
+            source = self._current_source_label
+            error: dict[str, object] | None = (
+                {"source": source, "message": reason} if reason is not None else None
             )
-            try:
-                await self._build(loader_factory)
-            except Exception:
-                logger.exception(
-                    "auto-rebuild of generation %d failed; will retry", generation
+            if error is not None:
+                logger.warning(
+                    "pipeline (generation {}) failed on source {!r}: {}",
+                    generation,
+                    source,
+                    reason,
                 )
-                next_backoff = min(backoff_s * 2, _MAX_HEAL_BACKOFF_S)
-                task = asyncio.create_task(
-                    self._watch_and_heal(broadcaster, generation, loader_factory, next_backoff),
-                    name=f"pipeline-watchdog-{generation}-retry",
+            else:
+                logger.info(
+                    "pipeline (generation {}) reached end of source {!r}; going idle",
+                    generation,
+                    source,
                 )
-                self._watchdog_tasks.add(task)
-                task.add_done_callback(self._watchdog_tasks.discard)
+            await self._go_idle_locked(error=error)
+
+    async def _go_idle_locked(self, error: dict[str, object] | None) -> None:
+        # Bump the generation first so any other watchdog waiting on the lock
+        # sees a mismatch and returns instead of double-handling this close.
+        self._generation += 1
+        await self._stack.aclose()
+        self._stack = AsyncExitStack()
+        self._orchestrator = None
+        self._current_source_label = None
+        self._set_idle_state()
+        if error is not None:
+            self._error_seq += 1
+            self._last_error = {"id": self._error_seq, **error}
+
+    def status(self) -> dict[str, object]:
+        stream_id = self._app.state.stream_id
+        return {
+            "state": "playing" if stream_id is not None else "idle",
+            "stream_url": f"/{stream_id}.mp4" if stream_id is not None else None,
+            "source": self._current_source_label,
+            "error": self._last_error,
+        }
 
     async def aclose(self) -> None:
         self._closing = True

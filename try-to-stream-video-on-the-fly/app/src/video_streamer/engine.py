@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +13,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from loguru import logger
 
 from video_streamer.detection import Detection, FaceDetector, FaceEmbedder
 from video_streamer.interpolation import LookaheadTrackBuffer
@@ -21,8 +21,6 @@ from video_streamer.metrics import MetricsCollector
 from video_streamer.overlay import draw_dashed_rect, draw_overlay
 from video_streamer.token_bucket import TokenBucket
 from video_streamer.tracking import ByteTracker, TrackedFace
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -109,7 +107,7 @@ class Engine:
             evicted = next(iter(self._pending_frames))
             del self._pending_frames[evicted]
             logger.warning(
-                "pending-frame buffer full, dropped frame %d — detection is falling behind",
+                "pending-frame buffer full, dropped frame {} — detection is falling behind",
                 evicted,
             )
 
@@ -141,7 +139,7 @@ class Engine:
                         active_tracks=active_tracks,
                     )
                 except Exception:
-                    logger.warning("detection failed", exc_info=True)
+                    logger.opt(exception=True).warning("detection failed")
             self._detection_task = None
 
         # Schedule a new detection batch if the budget allows and none is
@@ -182,7 +180,7 @@ class Engine:
             if not self._fallback_active:
                 self._fallback_active = True
                 logger.warning(
-                    "frame %d already evicted; emitting frames without boxes "
+                    "frame {} already evicted; emitting frames without boxes "
                     "until the render cursor catches up",
                     t_q,
                 )

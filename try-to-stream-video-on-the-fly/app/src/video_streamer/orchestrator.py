@@ -8,17 +8,16 @@ the encoder's fMP4 byte stream into ISO BMFF boxes and publishes them.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+
+from loguru import logger
 
 from video_streamer.broadcaster import Broadcaster
 from video_streamer.engine import Engine
 from video_streamer.input_video import InputVideoLoader
 from video_streamer.iso_bmff import BoxReader, BoxType
 from video_streamer.writer import Writer
-
-logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
@@ -34,6 +33,7 @@ class Orchestrator:
         self._writer = writer
         self._broadcaster = broadcaster
         self._failure_close_task: asyncio.Task | None = None
+        self._failure_exc: BaseException | None = None
 
     @classmethod
     @asynccontextmanager
@@ -65,12 +65,23 @@ class Orchestrator:
             if self._failure_close_task is not None:
                 await self._failure_close_task
 
+    @property
+    def failure_reason(self) -> str | None:
+        """Human-readable reason a pipeline task crashed, or None for a clean
+        end (natural EOF). Read by the PipelineManager watchdog to decide
+        whether going idle should surface a failure popup."""
+        return str(self._failure_exc) if self._failure_exc is not None else None
+
     def _on_task_done(self, task: asyncio.Task) -> None:
         if task.cancelled() or task.exception() is None:
             return
-        logger.error(
-            "pipeline task %r crashed", task.get_name(), exc_info=task.exception()
+        logger.opt(exception=task.exception()).error(
+            "pipeline task {!r} crashed", task.get_name()
         )
+        # Record the crash so the manager can tell an unexpected failure apart
+        # from a natural end-of-source (which never sets this).
+        if self._failure_exc is None:
+            self._failure_exc = task.exception()
         # Close the broadcaster so clients end cleanly instead of stalling on
         # a pipeline that silently stopped producing.
         if self._failure_close_task is None:
@@ -124,6 +135,6 @@ class Orchestrator:
                         logger.warning("mdat box with no preceding moof, dropping")
                 else:
                     logger.debug(
-                        "ignoring unexpected top-level box %r after init segment",
+                        "ignoring unexpected top-level box {!r} after init segment",
                         box_type,
                     )

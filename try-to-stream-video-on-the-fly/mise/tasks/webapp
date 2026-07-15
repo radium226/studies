@@ -2,9 +2,7 @@
 #MISE description="Run the video-streamer webapp"
 set -euxo pipefail
 
+# The app starts idle; enter a source URL (and tick "loop") in the web UI.
 uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer \
-    --input-video=url \
-    --input-video-url="https://lelombrik.net/168922" \
-    --repeat-input-video \
     --speed-factor=3 \
     --resize-video=600x-1

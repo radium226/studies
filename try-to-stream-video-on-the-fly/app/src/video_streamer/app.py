@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import click
 import uvicorn
+from loguru import logger
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
@@ -19,10 +21,6 @@ from video_streamer.broadcaster import Broadcaster, LaggedError
 from video_streamer.engine import Engine
 from video_streamer.pipeline import PipelineManager
 from video_streamer.writer import DEFAULT_FRAG_DURATION_MS
-
-logging.basicConfig(level=logging.INFO)
-
-logger = logging.getLogger(__name__)
 
 
 class SuppressShutdownCancellation(logging.Filter):
@@ -37,7 +35,32 @@ class SuppressShutdownCancellation(logging.Filter):
         return not isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError))
 
 
-logging.getLogger("uvicorn.error").addFilter(SuppressShutdownCancellation())
+class InterceptHandler(logging.Handler):
+    """Redirect stdlib logging records (uvicorn, asyncio, ...) into loguru so
+    everything flows through a single sink."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        # Walk back out of the logging machinery so loguru reports the real
+        # caller as the log origin.
+        frame, depth = logging.currentframe(), 2
+        while frame is not None and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
+def configure_logging() -> None:
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+    logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
+    logging.getLogger("uvicorn.error").addFilter(SuppressShutdownCancellation())
+
+
+configure_logging()
 
 BASE_DIR = Path(__file__).parent
 ASSETS_DIR = BASE_DIR.parent.parent / "assets"
@@ -49,9 +72,10 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
+    # Starts idle: the manager sets up no-source app.state and builds nothing
+    # until the UI requests a source.
     manager = PipelineManager(app, sample_video=SAMPLE_VIDEO, models_dir=MODELS_DIR)
     app.state.pipeline_manager = manager
-    await manager.build_initial()
     try:
         yield
     finally:
@@ -63,22 +87,26 @@ async def index(request: Request):
 
 
 async def metrics(request: Request):
-    engine: Engine = request.app.state.engine
+    engine: Engine | None = request.app.state.engine
+    if engine is None:
+        # Idle: no pipeline, so no stats. The player renders a dash for missing keys.
+        return JSONResponse({})
     return JSONResponse(engine.metrics_snapshot())
 
 
-async def current_stream_url(request: Request):
-    return JSONResponse({"url": f"/{request.app.state.stream_id}.mp4"})
+async def status(request: Request):
+    manager: PipelineManager = request.app.state.pipeline_manager
+    return JSONResponse(manager.status())
 
 
 async def stream(request: Request):
     stream_id = request.path_params["stream_id"]
-    broadcaster: Broadcaster = request.app.state.broadcaster
-    if stream_id != request.app.state.stream_id or broadcaster.is_closed:
-        # Either this id belongs to a superseded build, or the current one's
-        # broadcaster already closed. Distinguishable from a network error so
-        # the player can show "ended" and retry slowly (a source switch may
-        # bring up a new broadcaster at a new URL).
+    broadcaster: Broadcaster | None = request.app.state.broadcaster
+    if broadcaster is None or stream_id != request.app.state.stream_id or broadcaster.is_closed:
+        # No pipeline (idle), this id belongs to a superseded build, or the
+        # current one's broadcaster already closed. Distinguishable from a
+        # network error so the player can show "ended" and drop back to its
+        # idle poll loop (a new source may bring up a broadcaster at a new URL).
         return JSONResponse({"error": "stream ended"}, status_code=410)
 
     async def generate():
@@ -121,27 +149,43 @@ SOURCE_SWITCH_TIMEOUT_S = 60
 
 async def set_source(request: Request):
     body = await request.json()
-    url = (body.get("url") or "").strip()
-    if not url:
-        return JSONResponse({"error": "url must not be empty"}, status_code=400)
-    if not url.startswith(("http://", "https://")):
-        return JSONResponse({"error": "url must be http(s)"}, status_code=400)
     manager: PipelineManager = request.app.state.pipeline_manager
+    loop = bool(body.get("loop"))
+    synthetic = bool(body.get("synthetic"))
+
+    if synthetic:
+        label = "test pattern"
+        start = lambda: manager.start_synthetic(loop)  # noqa: E731
+    else:
+        url = (body.get("url") or "").strip()
+        if not url:
+            return JSONResponse({"error": "url must not be empty"}, status_code=400)
+        if not url.startswith(("http://", "https://")):
+            return JSONResponse({"error": "url must be http(s)"}, status_code=400)
+        label = url
+        start = lambda: manager.start_url(url, loop)  # noqa: E731
+
     try:
         # The timeout bounds how long a hung yt-dlp/ffprobe can hold the
         # rebuild lock (and this request) hostage.
         async with asyncio.timeout(SOURCE_SWITCH_TIMEOUT_S):
-            w, h, fps = await manager.switch_to_url(url)
+            w, h, fps = await start()
     except TimeoutError:
-        logger.error("source switch to %r timed out after %ss", url, SOURCE_SWITCH_TIMEOUT_S)
+        logger.error("source start ({!r}) timed out after {}s", label, SOURCE_SWITCH_TIMEOUT_S)
         return JSONResponse(
-            {"error": f"source switch timed out after {SOURCE_SWITCH_TIMEOUT_S}s"},
+            {"error": f"source start timed out after {SOURCE_SWITCH_TIMEOUT_S}s"},
             status_code=504,
         )
     except Exception as exc:
-        logger.exception("source switch to %r failed", url)
+        logger.exception("source start ({!r}) failed", label)
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"width": w, "height": h, "fps": fps})
+
+
+async def stop_source(request: Request):
+    manager: PipelineManager = request.app.state.pipeline_manager
+    await manager.go_idle()
+    return JSONResponse({"state": "idle"})
 
 
 app = Starlette(
@@ -150,8 +194,9 @@ app = Starlette(
         Route("/", index),
         Route("/{stream_id}.mp4", stream),
         Route("/metrics", metrics),
-        Route("/api/stream-url", current_stream_url),
+        Route("/api/status", status),
         Route("/api/source", set_source, methods=["POST"]),
+        Route("/api/stop", stop_source, methods=["POST"]),
         Mount(
             "/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"
         ),
@@ -160,24 +205,6 @@ app = Starlette(
 
 
 @click.command()
-@click.option(
-    "--input-video",
-    type=click.Choice(["synthetic", "url"]),
-    default="synthetic",
-    show_default=True,
-    help="Input video strategy.",
-)
-@click.option(
-    "--input-video-url",
-    default=None,
-    help="URL to stream via yt-dlp (required when --input-video=url).",
-)
-@click.option(
-    "--repeat-input-video",
-    is_flag=True,
-    default=False,
-    help="Loop the input video indefinitely.",
-)
 @click.option(
     "--resize-video",
     default=None,
@@ -215,18 +242,12 @@ app = Starlette(
     help="Max face crops per batched ArcFace embedding pass; larger batches are chunked (M).",
 )
 def main(
-    input_video: str,
-    input_video_url: str | None,
-    repeat_input_video: bool,
     resize_video: str | None,
     speed_factor: float,
     frag_duration_ms: int,
     scrfd_batch_frames: int,
     arcface_batch_crops: int,
 ) -> None:
-    if input_video == "url" and not input_video_url:
-        raise click.UsageError("--input-video-url is required when --input-video=url")
-
     resize: tuple[int, int] | None = None
     if resize_video:
         try:
@@ -237,9 +258,6 @@ def main(
                 "expected WxH format, e.g. 1280x720", param_hint="'--resize-video'"
             ) from None
 
-    app.state.input_video = input_video
-    app.state.input_video_url = input_video_url
-    app.state.repeat_input_video = repeat_input_video
     app.state.resize = resize
     app.state.speed_factor = speed_factor
     app.state.frag_duration_ms = frag_duration_ms
@@ -249,8 +267,10 @@ def main(
     # Bounds how long uvicorn waits for in-flight live stream connections on
     # SIGINT/SIGTERM before force-cancelling them; matches wait_for_next's own
     # 5s per-iteration timeout so shutdown isn't needlessly slow.
+    # log_config=None keeps uvicorn from installing its own stderr handlers, so
+    # its records propagate to the root InterceptHandler and flow through loguru.
     config = uvicorn.Config(
-        app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=5
+        app, host="127.0.0.1", port=8000, timeout_graceful_shutdown=5, log_config=None
     )
     server = uvicorn.Server(config)
     # Server.run() already completes a graceful shutdown on Ctrl-C - uvicorn

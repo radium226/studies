@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 async def terminate_and_wait(proc: asyncio.subprocess.Process, timeout: float) -> None:
@@ -36,7 +35,7 @@ async def drain_stderr(stream: asyncio.StreamReader, name: str) -> None:
         line = await stream.readline()
         if not line:
             break
-        logger.info("%s: %s", name, line.decode(errors="replace").rstrip())
+        logger.info("{}: {}", name, line.decode(errors="replace").rstrip())
 
 
 async def drain_and_discard(stream: asyncio.StreamReader) -> None:

@@ -17,7 +17,10 @@
     </div>
     <form id="source-form" class="source-form">
       <input id="source-url" type="text" placeholder="Paste a video URL…" autocomplete="off" />
+      <label class="source-loop"><input id="source-loop" type="checkbox" /> loop</label>
       <button type="submit">Load</button>
+      <button id="source-synthetic" type="button">Test pattern</button>
+      <button id="source-stop" type="button">Stop</button>
     </form>
     <div id="source-error" class="source-error" hidden>
       <div class="source-error-header">
