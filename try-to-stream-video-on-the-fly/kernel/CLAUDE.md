@@ -55,6 +55,9 @@ src/video_analyzer/kernel/
 │   │                        interpolate(list[T | None]) -> list[T] — stateless gap-fill
 │   └── scene_detector.py    SceneDetector[T]: detect_scene_cut(prev, curr) -> bool (not yet
 │                            wired into Pipeline — no scene-cut algorithm exists to drive it)
+├── stop_token.py       StopToken — cooperative one-shot signal that ends `produce_frames`'
+│                       loop early; kernel exposes only this primitive, no concrete stop
+│                       condition (see below)
 ├── token_bucket.py     TokenBucket — continuous-refill rate limiter (gate-then-spend)
 ├── batch_gate.py       BatchGate — fires a detection batch when full or lag exceeded, built
 │                       on TokenBucket
@@ -67,7 +70,9 @@ src/video_analyzer/kernel/
 
 1. **`produce_frames`** — reads from `FrameSource`, fans each frame out to two channels: one
    for detection sampling, one for eventual rendering (every frame gets rendered, not just
-   sampled ones).
+   sampled ones). Before each read it also checks an injected `StopToken`; once set, it takes
+   the exact same exit path as source exhaustion — no separate teardown logic exists anywhere
+   else in the pipeline for an early stop.
 2. **`sample_and_detect`** — buffers frames, uses `BatchGate.should_fire()` to decide when to
    fire (batch full or lag exceeded), samples up to `config.batching.max_frames` frames evenly
    spread since the last fire (plain int/float math — no numpy), calls `FaceDetector.detect_faces`
@@ -95,6 +100,14 @@ snapshot collector rather than awaiting it. Both matter for failure, not the hap
 that dies or gets cancelled must still deliver an end of stream, or a consumer parked on an open
 channel wedges the `TaskGroup` shutdown and the original exception is never reported — the process
 just hangs. `tests/test_pipeline.py` pins this.
+
+`Pipeline.drain()` accepts an optional `StopToken`. Setting it only stops `produce_frames` from
+reading further frames — it never cancels or hard-cuts anything downstream; frames already read
+keep flowing through detection/tracking/interpolation/render exactly as they would at natural end
+of stream, so an early, graceful stop needs no teardown path beyond the one that already exists
+for source exhaustion. Kernel exposes only the token: deciding *when* to call `request_stop()`
+(after N frames, once a face is found, ...) is composing code's job, built as a decorator around
+an existing `FrameSource`/`FrameBroadcaster`/`FrameSink` — not a new kernel service ABC.
 
 The two channels carrying whole frames (`render_frames`, `annotated_frames`) are **bounded**, so a
 sink slower than the source pushes backpressure back to the decoder. Unbounded, a slow sink silently

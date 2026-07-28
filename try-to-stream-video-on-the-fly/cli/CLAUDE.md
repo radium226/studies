@@ -38,6 +38,14 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
   (`batching.max_lag_ms`, default `0` = fire immediately).
 - `--lookahead K` — interpolation lookahead in detection snapshots (`rendering.lookahead_snapshots`,
   default `3`).
+- `--stop-after-frames N` — stop early after N frames are read, via `core.StopAfterFrameCount`
+  wrapping the `FrameSource`. Graceful: frames already read still drain all the way through the
+  pipeline, same as natural end-of-stream (see `kernel.StopToken`).
+- `--stop-on-face-found` — stop early the first time a face is detected, via
+  `core.StopOnFaceFound` wrapping the `FrameBroadcaster`. Since that's the last stage before
+  output, the stop only takes effect once the triggering frame has gone all the way through
+  detection/tracking/interpolation/`--lookahead`, so a few extra frames may still play past the
+  actual first detection.
 
 Or via `mise` from the repo root: `mise run cli -- <video>`. Both `uv run` here and the mise task
 run with `cli/` as the working directory (`uv --directory=cli`, matching `mise/tasks/webapp`'s own

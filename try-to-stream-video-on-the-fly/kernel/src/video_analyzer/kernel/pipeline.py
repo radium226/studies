@@ -7,6 +7,7 @@ from loguru import logger
 from .batch_gate import BatchGate
 from .channel import Channel
 from .config import PipelineConfig
+from .stop_token import StopToken
 from .models import AnnotatedFrame, Face, Frame, FrameIndex, Snapshot, TrackedFace
 from .services import (
     Clock,
@@ -216,11 +217,22 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         frame_source: FrameSource[FrameContentT],
         detection_frame_channel: Channel[Frame[FrameContentT]],
         render_frame_channel: Channel[Frame[FrameContentT]],
+        stop_token: StopToken,
     ) -> None:
         logger.debug("produce_frames: started")
         produced_count = 0
         try:
             while True:
+                # Checked before the next read, not raced against it: a stop
+                # takes effect with at most one already-in-flight read left to
+                # finish, same as how a source going dry is only ever noticed
+                # between reads.
+                if stop_token.is_stop_requested:
+                    logger.info(
+                        "produce_frames: stop requested after {} frames",
+                        produced_count,
+                    )
+                    break
                 frame = await frame_source.read_frame()
                 if frame is None:
                     logger.info(
@@ -433,8 +445,11 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
     async def drain(
         self,
         frame_source: FrameSource[FrameContentT],
+        *,
+        stop_token: StopToken | None = None,
     ) -> None:
         logger.info("drain: starting pipeline")
+        stop_token = stop_token if stop_token is not None else StopToken()
         detection_frame_channel: Channel[Frame[FrameContentT]] = Channel(
             name="detection_frames"
         )
@@ -460,6 +475,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                         frame_source,
                         detection_frame_channel,
                         render_frame_channel,
+                        stop_token,
                     )
                 )
                 task_group.create_task(

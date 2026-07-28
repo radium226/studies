@@ -3,7 +3,7 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from video_analyzer.kernel import BatchingConfig, PipelineConfig, RenderingConfig
+from video_analyzer.kernel import BatchingConfig, PipelineConfig, RenderingConfig, StopToken
 
 from .fake import (
     Clock,
@@ -113,7 +113,9 @@ def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
         ),
     )
     # Endless source: the failure must end the run on its own, not merely
-    # coincide with the source running dry.
+    # coincide with the source running dry. This is deliberately a different
+    # code path from `StopToken` (TaskGroup exception propagation vs a
+    # graceful, caller-requested stop), so it's not converted to use one.
     frame_source = FrameSource([Frame(index=index, content=index * 10) for index in range(10_000)])
 
     raised = _run_until(lambda: pipeline.drain(frame_source))
@@ -125,3 +127,84 @@ def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
         if isinstance(exception, RuntimeError)
     ]
     assert [str(exception) for exception in runtime_errors] == ["sink exploded"]
+
+
+def _make_pipeline(
+    frame_sink: FrameSink, frame_broadcaster: FrameBroadcaster
+) -> Pipeline:
+    return Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(),
+        face_detector=FaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=frame_sink,
+        frame_broadcaster=frame_broadcaster,
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+
+
+def test_stop_token_set_before_any_frame_reads_short_circuits_drain() -> None:
+    pipeline = _make_pipeline(
+        frame_sink := FrameSink(), frame_broadcaster := FrameBroadcaster()
+    )
+    source_frames = [Frame(index=index, content=index * 10) for index in range(20)]
+    frame_source = FrameSource(source_frames)
+    stop_token = StopToken()
+    stop_token.request_stop()
+
+    asyncio.run(pipeline.drain(frame_source, stop_token=stop_token))
+
+    assert frame_source.remaining_frames == source_frames
+    assert frame_sink.written_frames == []
+    assert frame_broadcaster.broadcast_frames == []
+
+
+def test_stop_token_set_mid_stream_still_drains_already_read_frames() -> None:
+    """Graceful stop, not a hard cut: frames already read before the stop keep
+    flowing all the way to the sink/broadcaster, and nothing past the stop
+    point is ever read."""
+
+    stop_token = StopToken()
+    stop_after_index = 15
+
+    class StopAfterFewFrames(FrameSource):
+        async def read_frame(self) -> Frame | None:
+            frame = await super().read_frame()
+            if frame is not None and frame.index == stop_after_index:
+                stop_token.request_stop()
+            return frame
+
+    frame_source = StopAfterFewFrames(
+        [Frame(index=index, content=index * 10) for index in range(10_000)]
+    )
+    pipeline = _make_pipeline(
+        frame_sink := FrameSink(), frame_broadcaster := FrameBroadcaster()
+    )
+
+    asyncio.run(pipeline.drain(frame_source, stop_token=stop_token))
+
+    assert len(frame_source.remaining_frames) == 10_000 - (stop_after_index + 1)
+    assert 0 < len(frame_sink.written_frames)
+    assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
+    assert max(af.frame.index for af in frame_sink.written_frames) <= stop_after_index
+
+
+def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
+    """Regression guard for the new `stop_token` parameter itself: passing one
+    that's never triggered must behave exactly like passing none at all."""
+    pipeline = _make_pipeline(
+        frame_sink := FrameSink(), frame_broadcaster := FrameBroadcaster()
+    )
+    source_frames = [Frame(index=index, content=index * 10) for index in range(20)]
+    frame_source = FrameSource(source_frames)
+
+    asyncio.run(pipeline.drain(frame_source, stop_token=StopToken()))
+
+    assert 0 < len(frame_sink.written_frames) <= len(source_frames)
+    assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)

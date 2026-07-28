@@ -39,13 +39,21 @@ async def _run(
     speed_factor_target: float,
     batching: kernel.BatchingConfig,
     rendering: kernel.RenderingConfig,
+    stop_after_frames: int | None,
+    stop_on_face_found: bool,
 ) -> None:
+    stop_token = kernel.StopToken()
     async with core.FfmpegFrameSource.start(
         str(video_path), loop=False, read_rate=speed_factor_target
-    ) as frame_source:
+    ) as raw_frame_source:
         # Always the file's native fps — `read_rate` paces how fast frames come
         # out, it doesn't change what the video *is*.
-        width, height, fps = frame_source.video_info
+        width, height, fps = raw_frame_source.video_info
+        frame_source: kernel.FrameSource = raw_frame_source
+        if stop_after_frames is not None:
+            frame_source = core.StopAfterFrameCount(
+                frame_source, stop_token, stop_after_frames
+            )
         face_detector = core.OnnxFaceDetector(scrfd_model)
         face_embedder = core.OnnxFaceEmbedder(arcface_model)
         with face_detector, face_embedder:
@@ -56,6 +64,11 @@ async def _run(
             async with FfplayFrameSink.start(
                 width, height, fps * speed_factor_target
             ) as frame_sink:
+                frame_broadcaster: kernel.FrameBroadcaster = NoopFrameBroadcaster()
+                if stop_on_face_found:
+                    frame_broadcaster = core.StopOnFaceFound(
+                        frame_broadcaster, stop_token
+                    )
                 pipeline = kernel.Pipeline(
                     clock=SystemClock(),
                     scene_detector=NoopSceneDetector(),
@@ -67,7 +80,7 @@ async def _run(
                     tracker=core.ByteTrackTracker(fps),
                     interpolator=core.PchipInterpolator(),
                     frame_sink=frame_sink,
-                    frame_broadcaster=NoopFrameBroadcaster(),
+                    frame_broadcaster=frame_broadcaster,
                     config=kernel.PipelineConfig(
                         # Deliberately *not* scaled by speed_factor_target. This
                         # is the detection budget (BatchGate's token bucket
@@ -82,7 +95,7 @@ async def _run(
                         rendering=rendering,
                     ),
                 )
-                await pipeline.drain(frame_source)
+                await pipeline.drain(frame_source, stop_token=stop_token)
 
 
 @click.command()
@@ -139,6 +152,23 @@ async def _run(
     help="Interpolation lookahead in detection snapshots. Higher = smoother splines but "
     "more lag.",
 )
+@click.option(
+    "--stop-after-frames",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Stop the pipeline early after this many frames have been read. Frames already "
+    "read still drain all the way through detection/tracking/interpolation/render — this "
+    "doesn't cut playback off mid-frame, it just stops feeding the pipeline further input.",
+)
+@click.option(
+    "--stop-on-face-found",
+    is_flag=True,
+    default=False,
+    help="Stop the pipeline early the first time a face is detected. Reacts once that "
+    "frame has gone all the way through the pipeline (detection, tracking, interpolation, "
+    "the configured --lookahead delay), so a few extra frames may still play past the "
+    "actual first detection.",
+)
 def main(
     video_path: Path,
     scrfd_model: Path,
@@ -147,6 +177,8 @@ def main(
     max_batch_frames: int,
     max_batch_lag_ms: float,
     lookahead: int,
+    stop_after_frames: int | None,
+    stop_on_face_found: bool,
 ) -> None:
     _configure_logging()
     asyncio.run(
@@ -159,6 +191,8 @@ def main(
                 max_frames=max_batch_frames, max_lag_ms=max_batch_lag_ms
             ),
             rendering=kernel.RenderingConfig(lookahead_snapshots=lookahead),
+            stop_after_frames=stop_after_frames,
+            stop_on_face_found=stop_on_face_found,
         )
     )
 

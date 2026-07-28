@@ -62,7 +62,15 @@ src/video_analyzer/core/
 ├── overlay.py               draw_overlay / draw_dashed_rect — pure cv2 helpers, no ABC to
 │                           satisfy; draw onto annotated_frame.frame.content before it reaches
 │                           a FrameSink if you want boxes burned into the video
-└── _pipe_io.py             shared asyncio subprocess-pipe helpers for the two ffmpeg wrappers
+├── stop_after_frame_count.py StopAfterFrameCount(kernel.FrameSource) — decorates a FrameSource,
+│                           requests an early kernel.StopToken stop once the Nth frame has been
+│                           read (still returns that frame). Generic, no numpy — lives here only
+│                           because kernel exposes the StopToken primitive but no concrete
+│                           condition for what should set it
+├── stop_on_face_found.py   StopOnFaceFound(kernel.FrameBroadcaster) — decorates a
+│                           FrameBroadcaster, requests an early kernel.StopToken stop the first
+│                           time an AnnotatedFrame carries a detection. Also generic
+├── _pipe_io.py             shared asyncio subprocess-pipe helpers for the two ffmpeg wrappers
     (read_exact, drain_stderr, drain_and_discard, shutdown_process — mind the drain-during-
     shutdown requirement documented inline, or Process.wait() hangs)
 ```
@@ -95,6 +103,11 @@ ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder`
   injectable `Executor`, defaulting to the loop's default thread pool) — `ByteTrackTracker.update`
   deliberately does not, since ByteTrack's update is cheap bookkeeping, not inference; don't add
   executor offloading there without a reason.
+- `StopAfterFrameCount`/`StopOnFaceFound` are the only generic classes in `core` — an intentional
+  exception to "everything that computes numbers belongs here, only `kernel`'s `Interpolator`/
+  `Interpolable` stays generic": neither touches frame content at all (one counts reads, the other
+  inspects `detections`), so pinning them to `NDArray[np.uint8]` like every other backend here
+  would just be dishonest about what they depend on.
 - `app/` was not touched when this project was created and still has its own inline
   `engine.py`/`detection.py`/`tracking.py`/`interpolation.py`/`reader.py`/`writer.py` copies —
   migrating `app/` to depend on `core`+`kernel` instead is a separate, not-yet-done task.

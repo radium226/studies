@@ -26,6 +26,7 @@ from .services import Interpolable as Interpolable
 from .services import Interpolator as Interpolator
 from .services import SceneDetector as SceneDetector
 from .services import Tracker as Tracker
+from .stop_token import StopToken as StopToken
 from .token_bucket import TokenBucket as TokenBucket
 
 logger.disable("video_analyzer.kernel")
