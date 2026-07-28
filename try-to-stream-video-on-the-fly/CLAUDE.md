@@ -14,6 +14,14 @@ sparse detections so overlays stay smooth at full video frame rate.
 See `README.md` for a very detailed, box-by-box explanation of the pipeline (every coordinate
 space, rescale, and buffering point). Keep the two in sync when the pipeline changes.
 
+Everything below describes `app/`, the original monolithic implementation. Alongside it, a
+`kernel`/`core`/`cli` split is in progress: `kernel/` (dependency-free service contracts +
+orchestration, see `kernel/CLAUDE.md`), `core/` (real SCRFD/ArcFace/ByteTrack/PCHIP/ffmpeg
+backends for those contracts, see `core/CLAUDE.md`), and `cli/` (a small `ffplay`-based example
+composing `kernel`+`core`, see `cli/CLAUDE.md`) — three standalone `uv` projects, `core` and `cli`
+each depending on the previous via a `uv` path source. `app/` has not been migrated to depend on
+them yet (see `core/CLAUDE.md`).
+
 ## Commands
 
 All commands run from the `app/` directory (a `uv`-managed Python project) unless noted.

@@ -1,0 +1,37 @@
+[project]
+name = "video-analyzer-cli"
+version = "0.1.0"
+description = "Runnable example: play a video with detected/tracked faces drawn, via ffplay."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "video-analyzer-core",
+    "click>=8.1.0",
+    "loguru>=0.7.3",
+]
+
+[project.scripts]
+video-analyzer-cli = "video_analyzer.cli.main:main"
+
+[tool.uv.sources]
+video-analyzer-core = { path = "../core", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "video_analyzer.cli"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.21",
+    "ty>=0.0.58",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

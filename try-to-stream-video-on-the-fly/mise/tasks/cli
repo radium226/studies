@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Play a video with detected/tracked faces drawn, via ffplay"
+set -euxo pipefail
+
+uv --directory="${MISE_PROJECT_ROOT}/cli" run video-analyzer-cli "$@"
