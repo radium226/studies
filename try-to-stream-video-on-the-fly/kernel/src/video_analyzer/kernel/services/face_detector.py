@@ -8,6 +8,6 @@ class FaceDetector[FrameContentT](ABC):
     @abstractmethod
     def detect_faces(
         self,
-        frames: list[Frame[FrameContentT]],
+        frame_batch: list[Frame[FrameContentT]],
     ) -> list[list[Face[None]]]:
         raise NotImplementedError()

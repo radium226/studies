@@ -8,6 +8,6 @@ class FaceEmbedder[FaceEmbeddingT](ABC):
     @abstractmethod
     def embed_faces(
         self,
-        faces: list[Face[None]],
+        face_batch: list[Face[None]],
     ) -> list[Face[FaceEmbeddingT]]:
         raise NotImplementedError()

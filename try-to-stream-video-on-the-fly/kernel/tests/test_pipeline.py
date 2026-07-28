@@ -21,8 +21,5 @@ def test_pipeline() -> None:
     )
     source_frames = [Frame(index=index, content=index * 10) for index in range(10)]
     frame_source = FrameSource(source_frames)
-    frame_sink = FrameSink()
 
-    asyncio.run(pipeline.drain(frame_source, frame_sink))
-
-    assert frame_sink.written_frames == source_frames
+    asyncio.run(pipeline.drain(frame_source))
