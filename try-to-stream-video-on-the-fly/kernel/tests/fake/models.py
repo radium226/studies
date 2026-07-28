@@ -5,3 +5,4 @@ type FaceEmbedding = int
 
 Frame = kernel.Frame[FrameContent]
 Face = kernel.Face[FaceEmbedding]
+TrackedFace = kernel.TrackedFace[FaceEmbedding]

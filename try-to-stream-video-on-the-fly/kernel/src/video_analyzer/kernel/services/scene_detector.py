@@ -6,7 +6,7 @@ from ..models import Frame
 class SceneDetector[FrameContentT](ABC):
 
     @abstractmethod
-    def detect_scene_cut(
+    async def detect_scene_cut(
         self,
         previous_frame: Frame[FrameContentT],
         current_frame: Frame[FrameContentT],

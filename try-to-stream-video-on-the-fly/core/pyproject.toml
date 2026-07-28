@@ -1,0 +1,45 @@
+[project]
+name = "video-analyzer-core"
+version = "0.1.0"
+description = "Concrete ffmpeg/ONNX-backed implementations of video-analyzer-kernel's service contracts: SCRFD detection, ArcFace embedding, ByteTrack tracking, PCHIP interpolation."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "video-analyzer-kernel",
+    "loguru>=0.7.3",
+    "numpy>=2.4.6",
+    "opencv-python-headless>=5.0.0.93",
+    "onnxruntime>=1.18.0",
+    "scipy>=1.14",
+    "supervision>=0.25.0",
+    "trackers>=2.4.0",
+]
+
+[tool.uv.sources]
+video-analyzer-kernel = { path = "../kernel", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "video_analyzer.core"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.15.21",
+    "ty>=0.0.58",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 
-from ..models import Frame
+from ..models import AnnotatedFrame
 
 
-class FrameBroadcaster[FrameContentT](ABC):
+class FrameBroadcaster[FrameContentT, DetectionT](ABC):
 
     @abstractmethod
-    def broadcast_frame(self, frame: Frame[FrameContentT]) -> None:
+    async def broadcast_frame(
+        self,
+        annotated_frame: AnnotatedFrame[FrameContentT, DetectionT],
+    ) -> None:
         raise NotImplementedError()

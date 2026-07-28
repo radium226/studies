@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
 
-from ..models import Frame
+from ..models import AnnotatedFrame
 
 
-class FrameSink[FrameContentT](ABC):
+class FrameSink[FrameContentT, DetectionT](ABC):
 
     @abstractmethod
-    def write_frame(self, frame: Frame[FrameContentT]) -> None:
+    async def write_frame(
+        self,
+        annotated_frame: AnnotatedFrame[FrameContentT, DetectionT],
+    ) -> None:
         raise NotImplementedError()

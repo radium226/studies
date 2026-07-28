@@ -1,7 +1,7 @@
 [project]
-name = "core"
+name = "video-analyzer-kernel"
 version = "0.1.0"
-description = "Add your description here"
+description = "Dependency-free service contracts, data shapes, and pipeline orchestration for the video-analyzer CV pipeline."
 readme = "README.md"
 authors = [
     { name = "radium226", email = "radium226@rouages.xyz" }
