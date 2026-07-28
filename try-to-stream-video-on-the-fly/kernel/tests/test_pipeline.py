@@ -1,4 +1,7 @@
 import asyncio
+import threading
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from video_analyzer.kernel import BatchingConfig, PipelineConfig, RenderingConfig
 
@@ -15,6 +18,32 @@ from .fake import (
     SceneDetector,
     Tracker,
 )
+
+
+def _run_until(
+    coroutine_factory: Callable[[], Coroutine[Any, Any, None]],
+    timeout: float = 10.0,
+) -> BaseException | None:
+    """Run a coroutine on its own thread and return whatever it raised.
+
+    A daemon thread rather than `asyncio.timeout`, because the deadlock this
+    guards against swallows cancellation: an in-loop timeout could not break out
+    of it either, so a regression would hang the whole suite instead of failing
+    one test.
+    """
+    raised: dict[str, BaseException] = {}
+
+    def target() -> None:
+        try:
+            asyncio.run(coroutine_factory())
+        except BaseException as exception:  # noqa: BLE001 - reported to the caller
+            raised["exception"] = exception
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert not thread.is_alive(), f"drain() still running after {timeout}s"
+    return raised.get("exception")
 
 
 def test_pipeline() -> None:
@@ -52,3 +81,47 @@ def test_pipeline() -> None:
     # Frames are emitted in the order the render cursor advances through them.
     rendered_indices = [af.frame.index for af in frame_sink.written_frames]
     assert rendered_indices == sorted(rendered_indices)
+
+
+def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
+    """A crash in any stage has to come back out of `drain`.
+
+    Regression test: `interpolate_and_render` used to `await` its snapshot
+    collector bare in a `finally`, and that collector sat on a channel `track`
+    never got to close once the TaskGroup began cancelling. The CancelledError
+    was swallowed, the TaskGroup never exited, and the real exception was never
+    reported — the process just hung forever.
+    """
+
+    class ExplodingFrameSink(FrameSink):
+        async def write_frame(self, annotated_frame: Any) -> None:
+            raise RuntimeError("sink exploded")
+
+    pipeline = Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(),
+        face_detector=FaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=ExplodingFrameSink(),
+        frame_broadcaster=FrameBroadcaster(),
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+    # Endless source: the failure must end the run on its own, not merely
+    # coincide with the source running dry.
+    frame_source = FrameSource([Frame(index=index, content=index * 10) for index in range(10_000)])
+
+    raised = _run_until(lambda: pipeline.drain(frame_source))
+
+    assert isinstance(raised, BaseExceptionGroup)
+    runtime_errors = [
+        exception
+        for exception in raised.exceptions
+        if isinstance(exception, RuntimeError)
+    ]
+    assert [str(exception) for exception in runtime_errors] == ["sink exploded"]

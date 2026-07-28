@@ -8,7 +8,18 @@ backends into [`video-analyzer-kernel`](../kernel)'s `Pipeline`, and adds its ow
 
 ```bash
 uv run video-analyzer-cli ../app/assets/sample.mp4
+
+# Watch it 4x faster. Every frame is still decoded and drawn; the speed-up is paid for
+# with detection coverage (~1/4 of frames detected, interpolation fills the rest).
+uv run video-analyzer-cli ../app/assets/sample.mp4 --speed-factor-target 4
+
+# ...and spend a bigger detection batch per pass to buy some of that coverage back.
+uv run video-analyzer-cli ../app/assets/sample.mp4 --speed-factor-target 4 --max-batch-frames 16
 ```
+
+`--speed-factor-target`, `--max-batch-frames`, `--max-batch-lag-ms` and `--lookahead` are the
+tuning flags; `--help` documents them all, and `CLAUDE.md` explains why the detection budget
+deliberately does *not* scale with the speed factor.
 
 Relative paths (video, `--scrfd-model`, `--arcface-model`) resolve against this directory, since
 that's where `uv run`/`mise run cli` execute from — see `CLAUDE.md` for details.

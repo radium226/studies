@@ -71,7 +71,11 @@ src/video_analyzer/kernel/
 2. **`sample_and_detect`** — buffers frames, uses `BatchGate.should_fire()` to decide when to
    fire (batch full or lag exceeded), samples up to `config.batching.max_frames` frames evenly
    spread since the last fire (plain int/float math — no numpy), calls `FaceDetector.detect_faces`
-   once per fire.
+   once per fire. Because detection is awaited *inline*, each iteration first drains everything
+   already queued (`Channel.try_recv`) so the sample really does span the whole interval since the
+   last pass. Consuming one frame per iteration instead would walk the backlog oldest-first and
+   fall permanently further behind the source — one frame per pass, no batching, detections always
+   stale.
 3. **`embed_faces`** — flattens every sampled frame's faces in a batch into one
    `FaceEmbedder.embed_faces` call (real cross-frame batching), re-splits per frame.
 4. **`track`** — calls `Tracker.update` once per frame **in order** (tracking is stateful/temporal,
@@ -81,9 +85,22 @@ src/video_analyzer/kernel/
    emitted frame lies strictly between two real detections (never extrapolated); the actual
    numeric fill is delegated to the injected `Interpolator` — this class only owns segment/window/
    prune/cap timing, ported from the pre-kernel `LookaheadTrackBuffer`.
-6. **`render_and_sink`** — hands the resulting `AnnotatedFrame` to both `FrameSink` (video bytes —
-   draw overlays onto `annotated_frame.frame.content` yourself before this if you want them burned
-   in; kernel doesn't draw) and `FrameBroadcaster` (detection metadata, for other consumers).
+6. **`render_and_sink`** — hands the resulting `AnnotatedFrame` to both `FrameSink` (video bytes)
+   and `FrameBroadcaster` (detection metadata, for other consumers). The kernel doesn't draw: if you
+   want overlays burned in, the sink does it — onto a **copy**, since both consumers get the same
+   `Frame` object and a `FrameSource` may hand back read-only content (the ffmpeg one does).
+
+Every stage closes its output channel in a `finally`, and `interpolate_and_render` **cancels** its
+snapshot collector rather than awaiting it. Both matter for failure, not the happy path: a stage
+that dies or gets cancelled must still deliver an end of stream, or a consumer parked on an open
+channel wedges the `TaskGroup` shutdown and the original exception is never reported — the process
+just hangs. `tests/test_pipeline.py` pins this.
+
+The two channels carrying whole frames (`render_frames`, `annotated_frames`) are **bounded**, so a
+sink slower than the source pushes backpressure back to the decoder. Unbounded, a slow sink silently
+banks gigabytes of raw frames and then looks like a hang at end of stream while the backlog drains.
+For the same reason both `pending`/`pending_frames` buffers prune everything the cursor has passed
+instead of waiting for the `_MAX_PENDING_FRAMES` cap.
 
 ## Working in this codebase
 

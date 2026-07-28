@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from asyncio import TaskGroup
 
 from loguru import logger
@@ -24,6 +25,22 @@ from .services import (
 # stalled detector can't grow this buffer without bound; oldest frames are
 # dropped first, matching the equivalent cap in the pre-kernel implementation.
 _MAX_PENDING_FRAMES = 600
+
+# The two channels that carry whole frames are bounded, so a sink slower than
+# the source applies backpressure all the way back to the decoder instead of
+# quietly accumulating decoded frames. Every queued frame is a full raw image
+# (~2.8 MB at 720x1280 BGR24), so an unbounded queue in front of a sink that
+# can't keep up reaches gigabytes within a minute and then looks like a hang at
+# end of stream, as the pipeline drains a backlog nobody knew was there.
+#
+# Roughly a second of video at 30 fps: enough to absorb scheduling jitter,
+# small enough to keep in-flight frames to a couple of hundred MB. It doesn't
+# need to cover the interpolation lookahead — that buffering happens in
+# `pending_frames`, downstream of this channel.
+#
+# The snapshot/batch channels stay unbounded: they carry detection metadata, and
+# the frames they reference are already bounded by the pending-frame pruning.
+_MAX_QUEUED_FRAMES = 30
 
 
 def _sample_evenly(indices: list[FrameIndex], max_count: int) -> list[FrameIndex]:
@@ -202,19 +219,26 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
     ) -> None:
         logger.debug("produce_frames: started")
         produced_count = 0
-        while True:
-            frame = await frame_source.read_frame()
-            if frame is None:
-                logger.info(
-                    "produce_frames: source exhausted after {} frames", produced_count
-                )
-                break
-            logger.trace("produce_frames: read frame {}", frame.index)
-            await detection_frame_channel.send(frame)
-            await render_frame_channel.send(frame)
-            produced_count += 1
-        await detection_frame_channel.close()
-        await render_frame_channel.close()
+        try:
+            while True:
+                frame = await frame_source.read_frame()
+                if frame is None:
+                    logger.info(
+                        "produce_frames: source exhausted after {} frames",
+                        produced_count,
+                    )
+                    break
+                logger.trace("produce_frames: read frame {}", frame.index)
+                await detection_frame_channel.send(frame)
+                await render_frame_channel.send(frame)
+                produced_count += 1
+        finally:
+            # Closed in a `finally`, not just on the happy path: a stage that
+            # fails or gets cancelled must still hand its consumers an end of
+            # stream, or they sit on an open channel forever and the TaskGroup
+            # can never finish shutting down.
+            await detection_frame_channel.close()
+            await render_frame_channel.close()
         logger.debug("produce_frames: frame channels closed")
 
     async def sample_and_detect(
@@ -231,76 +255,107 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         pending: dict[FrameIndex, Frame[FrameContentT]] = {}
         last_sampled_index: FrameIndex | None = None
 
-        async for frame in detection_frame_channel:
+        def buffer(frame: Frame[FrameContentT]) -> None:
             pending[frame.index] = frame
             if len(pending) > _MAX_PENDING_FRAMES:
                 del pending[min(pending)]
 
-            available = sorted(
-                index
-                for index in pending
-                if last_sampled_index is None or index > last_sampled_index
-            )
-            if not batch_gate.should_fire(len(available)):
-                continue
+        try:
+            async for frame in detection_frame_channel:
+                buffer(frame)
+                # Detection is awaited inline below, so frames keep piling up on
+                # the channel while it runs. Take the whole backlog before
+                # deciding, rather than one frame per iteration: `_sample_evenly`
+                # is meant to spread its sample across the entire interval since
+                # the last pass, and consuming the backlog one frame at a time
+                # would instead walk it oldest-first — detecting on frames that
+                # are already stale and falling permanently further behind the
+                # source instead of skipping ahead to what it just read.
+                while (queued := detection_frame_channel.try_recv()) is not None:
+                    buffer(queued)
 
-            sample_indices = _sample_evenly(available, self.config.batching.max_frames)
-            sampled_frames = [pending[index] for index in sample_indices]
+                available = sorted(
+                    index
+                    for index in pending
+                    if last_sampled_index is None or index > last_sampled_index
+                )
+                if not batch_gate.should_fire(len(available)):
+                    continue
 
-            started_at = self.clock.now()
-            faces_by_frame = await self.face_detector.detect_faces(sampled_frames)
-            batch_gate.record_spend(self.clock.now() - started_at)
+                sample_indices = _sample_evenly(
+                    available, self.config.batching.max_frames
+                )
+                sampled_frames = [pending[index] for index in sample_indices]
 
-            batch = list(zip(sampled_frames, faces_by_frame, strict=True))
-            await face_batch_channel.send(batch)
-            last_sampled_index = sample_indices[-1]
+                started_at = self.clock.now()
+                faces_by_frame = await self.face_detector.detect_faces(sampled_frames)
+                batch_gate.record_spend(self.clock.now() - started_at)
 
-        await face_batch_channel.close()
+                batch = list(zip(sampled_frames, faces_by_frame, strict=True))
+                await face_batch_channel.send(batch)
+                last_sampled_index = sample_indices[-1]
+                # `available` only ever looks past the newest sampled index, so
+                # everything at or below it is already unreachable. Drop it now
+                # rather than leaving it for the _MAX_PENDING_FRAMES cap to
+                # evict much later: each entry pins a full raw frame (~2.8 MB at
+                # 720x1280), so sitting on 600 of them costs well over a GB.
+                for stale_index in [
+                    index for index in pending if index <= last_sampled_index
+                ]:
+                    del pending[stale_index]
+        finally:
+            await face_batch_channel.close()
 
     async def embed_faces(
         self,
         face_batch_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
         embedded_batch_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]],
     ) -> None:
-        async for batch in face_batch_channel:
-            # Faces across every sampled frame in the batch are embedded in one
-            # call (real batching for e.g. ONNX inference — the embedder needs
-            # each face's originating frame to crop and align from), then
-            # re-split back to their originating frame.
-            counts = [len(faces) for _, faces in batch]
-            flattened = [
-                (frame, face) for frame, faces in batch for face in faces
-            ]
-            embedded = await self.face_embedder.embed_faces(flattened)
+        try:
+            async for batch in face_batch_channel:
+                # Faces across every sampled frame in the batch are embedded in
+                # one call (real batching for e.g. ONNX inference — the embedder
+                # needs each face's originating frame to crop and align from),
+                # then re-split back to their originating frame.
+                counts = [len(faces) for _, faces in batch]
+                flattened = [
+                    (frame, face) for frame, faces in batch for face in faces
+                ]
+                embedded = await self.face_embedder.embed_faces(flattened)
 
-            embedded_batch: list[Snapshot[Face[FaceEmbeddingT]]] = []
-            offset = 0
-            for (frame, _), count in zip(batch, counts, strict=True):
-                embedded_batch.append(
-                    Snapshot(
-                        frame_index=frame.index,
-                        detections=embedded[offset : offset + count],
+                embedded_batch: list[Snapshot[Face[FaceEmbeddingT]]] = []
+                offset = 0
+                for (frame, _), count in zip(batch, counts, strict=True):
+                    embedded_batch.append(
+                        Snapshot(
+                            frame_index=frame.index,
+                            detections=embedded[offset : offset + count],
+                        )
                     )
-                )
-                offset += count
-            await embedded_batch_channel.send(embedded_batch)
-        await embedded_batch_channel.close()
+                    offset += count
+                await embedded_batch_channel.send(embedded_batch)
+        finally:
+            await embedded_batch_channel.close()
 
     async def track(
         self,
         embedded_batch_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]],
         tracked_snapshot_channel: Channel[Snapshot[TrackedFace[FaceEmbeddingT]]],
     ) -> None:
-        async for batch in embedded_batch_channel:
-            # Frames within a batch are processed in order — the tracker keeps
-            # temporal state (Kalman-style prediction), so calls cannot be
-            # reordered or parallelized across frames.
-            for snapshot in batch:
-                tracked_faces = await self.tracker.update(snapshot.detections)
-                await tracked_snapshot_channel.send(
-                    Snapshot(frame_index=snapshot.frame_index, detections=tracked_faces)
-                )
-        await tracked_snapshot_channel.close()
+        try:
+            async for batch in embedded_batch_channel:
+                # Frames within a batch are processed in order — the tracker keeps
+                # temporal state (Kalman-style prediction), so calls cannot be
+                # reordered or parallelized across frames.
+                for snapshot in batch:
+                    tracked_faces = await self.tracker.update(snapshot.detections)
+                    await tracked_snapshot_channel.send(
+                        Snapshot(
+                            frame_index=snapshot.frame_index, detections=tracked_faces
+                        )
+                    )
+        finally:
+            await tracked_snapshot_channel.close()
 
     async def interpolate_and_render(
         self,
@@ -331,8 +386,16 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     continue
                 frame_index, is_exact, bracket, detections = result
                 rendered_frame = pending_frames.pop(frame_index, None)
+                # The render cursor only ever moves forward, so any frame older
+                # than the one it just asked for is unreachable — same reason as
+                # in `sample_and_detect`, same cost for holding on to it.
+                for stale_index in [
+                    index for index in pending_frames if index < frame_index
+                ]:
+                    del pending_frames[stale_index]
                 if rendered_frame is None:
-                    # Already evicted by the pending-frames cap — nothing to render.
+                    # Either the cursor is clamped and re-asked for a frame we
+                    # already emitted, or the frame aged out — nothing to render.
                     continue
                 await annotated_frame_channel.send(
                     AnnotatedFrame(
@@ -343,8 +406,19 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     )
                 )
         finally:
-            await collector
-        await annotated_frame_channel.close()
+            # `collect_snapshots` has no end of its own — it sits on
+            # `tracked_snapshot_channel` until that channel closes. Awaiting it
+            # bare deadlocks whenever this stage stops first: on our own
+            # cancellation (a sibling stage crashed, and the TaskGroup cancelled
+            # `track` before it could close the channel) the await swallows the
+            # CancelledError and never returns, so the TaskGroup never exits and
+            # the original exception is never reported — the whole process just
+            # hangs. Cancel it instead; once rendering is over, any further
+            # snapshot is unusable anyway.
+            collector.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await collector
+            await annotated_frame_channel.close()
 
     async def render_and_sink(
         self,
@@ -364,7 +438,9 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         detection_frame_channel: Channel[Frame[FrameContentT]] = Channel(
             name="detection_frames"
         )
-        render_frame_channel: Channel[Frame[FrameContentT]] = Channel(name="render_frames")
+        render_frame_channel: Channel[Frame[FrameContentT]] = Channel(
+            _MAX_QUEUED_FRAMES, name="render_frames"
+        )
         face_batch_channel: Channel[
             list[tuple[Frame[FrameContentT], list[Face[None]]]]
         ] = Channel(name="face_batches")
@@ -376,7 +452,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         )
         annotated_frame_channel: Channel[
             AnnotatedFrame[FrameContentT, TrackedFace[FaceEmbeddingT]]
-        ] = Channel(name="annotated_frames")
+        ] = Channel(_MAX_QUEUED_FRAMES, name="annotated_frames")
         try:
             async with TaskGroup() as task_group:
                 task_group.create_task(

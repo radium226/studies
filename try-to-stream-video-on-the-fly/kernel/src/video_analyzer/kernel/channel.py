@@ -1,4 +1,4 @@
-from asyncio import Queue, QueueShutDown
+from asyncio import Queue, QueueEmpty, QueueShutDown
 from typing import AsyncIterator
 
 from loguru import logger
@@ -16,7 +16,22 @@ class Channel[ItemT]:
             "Channel[{}]: item sent ({} queued)", self.name, self.queue.qsize()
         )
 
+    def try_recv(self) -> ItemT | None:
+        """Take an already-queued item without suspending; None if there is
+        nothing queued (or the channel is closed).
+
+        Lets a stage that awaits slow work mid-loop catch up on the backlog
+        that piled up while it was busy, instead of draining it one item per
+        `async for` iteration.
+        """
+        try:
+            return self.queue.get_nowait()
+        except (QueueEmpty, QueueShutDown):
+            return None
+
     async def close(self) -> None:
+        # Idempotent, so every producer can close in a `finally` without
+        # having to know whether it already did.
         self.queue.shutdown()
 
     async def __aiter__(self) -> AsyncIterator[ItemT]:

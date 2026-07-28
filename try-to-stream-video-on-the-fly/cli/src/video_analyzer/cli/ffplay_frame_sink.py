@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Self
@@ -80,6 +81,7 @@ class FfplayFrameSink(
             *self._ffplay_cmd(),
             stdin=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._ffplay_env(),
         )
         assert self._proc.stderr is not None
         self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc.stderr))
@@ -95,7 +97,13 @@ class FfplayFrameSink(
         ],
     ) -> None:
         assert self._proc is not None and self._proc.stdin is not None
-        frame = annotated_frame.frame.content
+        # Single copy per emitted frame, matching app/'s own
+        # `pending.frame.copy()`. Drawing into `frame.content` directly is not
+        # ours to do: the pipeline hands the very same `Frame` object to the
+        # detection buffer and to the broadcaster, so burned-in boxes would leak
+        # into both — and `FfmpegFrameSource` frames are read-only views over the
+        # decoder pipe's `bytes`, so OpenCV rejects them outright anyway.
+        frame = annotated_frame.frame.content.copy()
         _draw_detections(frame, annotated_frame.detections, annotated_frame.is_exact)
         try:
             self._proc.stdin.write(frame.tobytes())
@@ -130,6 +138,24 @@ class FfplayFrameSink(
             if not line:
                 break
             logger.info("ffplay: {}", line.decode(errors="replace").rstrip())
+
+    @staticmethod
+    def _ffplay_env() -> dict[str, str] | None:
+        """Ask SDL for its native Wayland driver when we're on a Wayland session.
+
+        Left to itself, SDL picks its x11 driver and goes through XWayland, whose
+        blit path is far too slow for a full-size rawvideo stream: a 720x1280
+        clip measured ~6 fps that way versus exact realtime on the Wayland
+        driver. Since this sink pushes uncompressed frames at video rate, that
+        difference is the difference between smooth playback and the pipeline
+        spending the whole run under backpressure.
+
+        Only a default — an explicit `SDL_VIDEODRIVER` always wins. Returns None
+        to inherit the environment unchanged.
+        """
+        if "WAYLAND_DISPLAY" not in os.environ or "SDL_VIDEODRIVER" in os.environ:
+            return None
+        return os.environ | {"SDL_VIDEODRIVER": "wayland"}
 
     def _ffplay_cmd(self) -> list[str]:
         return [
