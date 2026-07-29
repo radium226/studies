@@ -23,7 +23,7 @@ from numpy.typing import NDArray
 
 from video_analyzer import kernel
 
-from ._pipe_io import drain_stderr, shutdown_process
+from .pipe_io import drain_stderr, shutdown_process
 
 _KEYFRAME_INTERVAL_SECONDS = 2
 _DEFAULT_FRAG_DURATION_MS = 200

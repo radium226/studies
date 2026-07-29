@@ -24,6 +24,13 @@ _SCRFD_NUM_ANCHORS: int = 2
 _SCRFD_MEAN: float = 127.5
 _SCRFD_STD: float = 128.0
 
+# The model emits 9 output tensors, grouped by kind and ordered by stride
+# within each group: [scores@8, scores@16, scores@32, bbox-distances@8, ...,
+# landmark-distances@32]. These offsets index the start of each group.
+_SCRFD_SCORES_OFFSET: int = 0
+_SCRFD_BBOXES_OFFSET: int = 3
+_SCRFD_LANDMARKS_OFFSET: int = 6
+
 
 class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
     def __init__(
@@ -190,9 +197,9 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
         all_landmarks: list[NDArray[np.float32]] = []
 
         for i, stride in enumerate(_SCRFD_STRIDES):
-            scores: NDArray[np.float32] = outputs[i].flatten()
-            bbox_dists: NDArray[np.float32] = outputs[3 + i] * stride
-            lm_dists: NDArray[np.float32] = outputs[6 + i] * stride
+            scores: NDArray[np.float32] = outputs[_SCRFD_SCORES_OFFSET + i].flatten()
+            bbox_dists: NDArray[np.float32] = outputs[_SCRFD_BBOXES_OFFSET + i] * stride
+            lm_dists: NDArray[np.float32] = outputs[_SCRFD_LANDMARKS_OFFSET + i] * stride
 
             centers = self._anchors(stride)
             bboxes = self._dist_to_bbox(centers, bbox_dists)

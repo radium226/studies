@@ -60,3 +60,36 @@ async def test_update_assigns_stable_track_id_across_calls() -> None:
 async def test_update_empty_input() -> None:
     tracker = ByteTrackTracker(fps=30.0)
     assert await tracker.update([]) == []
+
+
+def test_best_match_skips_excluded_faces() -> None:
+    faces = [_face(0, 0, 10, 10), _face(2, 2, 10, 10)]
+    track_box = np.array([1.0, 1.0, 11.0, 11.0], dtype=np.float32)
+    assert ByteTrackTracker._best_iou_match(track_box, faces, exclude={0}) == 1
+
+
+async def test_each_face_is_claimed_by_at_most_one_track() -> None:
+    # Two well-separated faces tracked long enough to confirm both, then a
+    # single face left: only one track may claim it.
+    tracker = ByteTrackTracker(fps=30.0)
+    left, right = _face(0, 0, 10, 10), _face(100, 0, 10, 10)
+    for _ in range(5):
+        await tracker.update([left, right])
+
+    tracked = await tracker.update([left])
+
+    assert len(tracked) <= 1
+
+
+async def test_reset_forgets_confirmed_tracks() -> None:
+    tracker = ByteTrackTracker(fps=30.0)
+    face = _face(0, 0, 10, 10)
+    for _ in range(5):
+        await tracker.update([face])
+    assert await tracker.update([face])  # confirmed by now
+
+    await tracker.reset()
+
+    # A fresh tracker's first observation is tentative again (filtered out),
+    # proving the pre-reset confirmation didn't survive.
+    assert await tracker.update([face]) == []

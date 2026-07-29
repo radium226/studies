@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 
 from video_analyzer import kernel
 
-from ._pipe_io import drain_stderr, read_exact, shutdown_process
+from .pipe_io import drain_stderr, read_exact, shutdown_process
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,27 +52,28 @@ async def probe_video_info(source: str | Path) -> VideoInfo:
     return VideoInfo(int(stream["width"]), int(stream["height"]), fps)
 
 
+def _even(pixels: int) -> int:
+    return max(2, pixels - pixels % 2)
+
+
 def resolve_resize(
     source_width: int, source_height: int, resize: tuple[int, int]
 ) -> tuple[int, int]:
     """Resolve ffmpeg-style -1 placeholders to actual pixel counts.
 
-    -1 means "keep aspect ratio, round to nearest even number". Always clamps
-    the result to even dimensions (even the (-1, -1) "keep native" passthrough)
-    since libx264's yuv420p output requires even width/height.
+    -1 means "keep aspect ratio". Both axes — whether user-given, computed, or
+    the (-1, -1) "keep native" passthrough — are then rounded **down** to the
+    nearest even value (minimum 2), one rule for everything, because libx264's
+    yuv420p output requires even width/height.
     """
     resized_width, resized_height = resize
     if resized_width == -1 and resized_height == -1:
         resized_width, resized_height = source_width, source_height
     elif resized_width == -1:
-        resized_width = max(1, round(source_width * resized_height / source_height))
-        resized_width += resized_width % 2
+        resized_width = round(source_width * resized_height / source_height)
     elif resized_height == -1:
-        resized_height = max(1, round(source_height * resized_width / source_width))
-        resized_height += resized_height % 2
-    resized_width -= resized_width % 2
-    resized_height -= resized_height % 2
-    return resized_width, resized_height
+        resized_height = round(source_height * resized_width / source_width)
+    return _even(resized_width), _even(resized_height)
 
 
 class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):

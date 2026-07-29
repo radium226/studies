@@ -1,10 +1,10 @@
-"""PCHIP/cubic/linear spline gap-fill, generic over anything `Interpolable`.
+"""PCHIP/cubic/linear spline point query, generic over anything `Interpolable`.
 
-This is the pure numeric half of the pre-kernel `LookaheadTrackBuffer`: the
-lookahead/segment/windowing bookkeeping (when to interpolate, which snapshots
-bracket the query point) lives in `kernel.Pipeline`'s `_RenderCursor`; this
-class only fills numeric gaps in an already-built `list[Interpolable | None]`,
-via `to_vector()`/`with_vector()` — it knows nothing about faces, tracks, or
+This is the pure numeric half of the render path: the lookahead/segment/
+windowing bookkeeping (when to interpolate, which snapshots bracket the query
+point) lives in `kernel`'s `RenderCursor`; this class only evaluates one
+position of an already-built `list[Interpolable | None]` window, via
+`to_vector()`/`with_vector()` — it knows nothing about faces, tracks, or
 frames.
 """
 
@@ -49,7 +49,10 @@ class SplineInterpolator[InterpolableT: kernel.Interpolable](
     async def interpolate(
         self,
         interpolables: list[InterpolableT | None],
-    ) -> list[InterpolableT]:
+        at: int,
+    ) -> InterpolableT:
+        if (known_at := interpolables[at]) is not None:
+            return known_at
         known = [
             (index, value) for index, value in enumerate(interpolables) if value is not None
         ]
@@ -61,12 +64,5 @@ class SplineInterpolator[InterpolableT: kernel.Interpolable](
         template = known[0][1]
         known_indices = np.array([index for index, _ in known], dtype=np.float64)
         known_values = np.array([value.to_vector() for _, value in known], dtype=np.float64)
-
-        result: list[InterpolableT] = []
-        for index, value in enumerate(interpolables):
-            if value is not None:
-                result.append(value)
-                continue
-            vector = _interpolate_1d(known_indices, known_values, float(index), self._method)
-            result.append(template.with_vector(list(vector)))
-        return result
+        vector = _interpolate_1d(known_indices, known_values, float(at), self._method)
+        return template.with_vector(list(vector))
