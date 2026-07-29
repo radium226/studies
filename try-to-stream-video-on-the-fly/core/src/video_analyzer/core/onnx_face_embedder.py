@@ -48,9 +48,9 @@ class OnnxFaceEmbedder(OnnxModel, kernel.FaceEmbedder[NDArray[np.uint8], NDArray
     ) -> list[kernel.Face[NDArray[np.float32]]]:
         loop = asyncio.get_running_loop()
         items = [(frame.content, face) for frame, face in face_batch]
-        return await loop.run_in_executor(self._executor, self._embed_many, items)
+        return await loop.run_in_executor(self._executor, self._embed_batch, items)
 
-    def _embed_many(
+    def _embed_batch(
         self,
         items: list[tuple[NDArray[np.uint8], kernel.Face[None]]],
     ) -> list[kernel.Face[NDArray[np.float32]]]:
@@ -66,15 +66,15 @@ class OnnxFaceEmbedder(OnnxModel, kernel.FaceEmbedder[NDArray[np.uint8], NDArray
             return []
 
         prepared = [
-            self._preprocess(self._align(frame, face.detection.landmarks))
+            self._normalize_aligned_crop(self._align_face(frame, face.detection.landmarks))
             for frame, face in items
         ]
         input_name: str = session.get_inputs()[0].name
-        chunk = max(1, self.max_batch)
+        chunk_size = max(1, self.max_batch)
 
         embeddings: list[NDArray[np.float32]] = []
-        for start in range(0, len(prepared), chunk):
-            batch = np.stack(prepared[start : start + chunk]).astype(np.float32)
+        for start in range(0, len(prepared), chunk_size):
+            batch = np.stack(prepared[start : start + chunk_size]).astype(np.float32)
             raw = cast(
                 "NDArray[np.float32]", session.run(None, {input_name: batch})[0]
             )
@@ -89,14 +89,23 @@ class OnnxFaceEmbedder(OnnxModel, kernel.FaceEmbedder[NDArray[np.uint8], NDArray
             for (_, face), embedding in zip(items, embeddings, strict=True)
         ]
 
-    def _align(
+    def _align_face(
         self,
         img_bgr: NDArray[np.uint8],
-        landmarks: tuple[tuple[float, float], ...],
+        landmarks: kernel.FaceLandmarks,
     ) -> NDArray[np.uint8]:
-        source = np.array(landmarks, dtype=np.float32)
+        source_landmarks = np.array(
+            [
+                landmarks.left_eye,
+                landmarks.right_eye,
+                landmarks.nose,
+                landmarks.mouth_left,
+                landmarks.mouth_right,
+            ],
+            dtype=np.float32,
+        )
         transform, _ = cv2.estimateAffinePartial2D(
-            source, self._REFERENCE_LANDMARKS, method=cv2.LMEDS
+            source_landmarks, self._REFERENCE_LANDMARKS, method=cv2.LMEDS
         )
         if transform is None:
             return cv2.resize(img_bgr, (_ARCFACE_OUTPUT_SIZE, _ARCFACE_OUTPUT_SIZE))
@@ -104,7 +113,7 @@ class OnnxFaceEmbedder(OnnxModel, kernel.FaceEmbedder[NDArray[np.uint8], NDArray
             img_bgr, transform, (_ARCFACE_OUTPUT_SIZE, _ARCFACE_OUTPUT_SIZE)
         ).astype(np.uint8)
 
-    def _preprocess(self, aligned_bgr: NDArray[np.uint8]) -> NDArray[np.float32]:
+    def _normalize_aligned_crop(self, aligned_bgr: NDArray[np.uint8]) -> NDArray[np.float32]:
         img_rgb = aligned_bgr[:, :, ::-1].astype(np.float32)
         normalized = (img_rgb - _ARCFACE_MEAN) / _ARCFACE_STD
         return normalized.transpose(2, 0, 1)

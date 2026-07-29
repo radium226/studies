@@ -2,12 +2,12 @@
 
 import numpy as np
 
-from video_analyzer.core.overlay import draw_dashed_rect, draw_overlay
+from video_analyzer.core.overlay import draw_caption_text, draw_dashed_rect
 
 
-def test_draw_overlay_paints_green_pixels() -> None:
+def test_draw_caption_text_paints_green_pixels() -> None:
     frame = np.zeros((100, 200, 3), dtype=np.uint8)
-    draw_overlay(frame, "hello")
+    draw_caption_text(frame, "hello")
     assert frame.any()
     # cv2.putText's green channel is what we asked for (0, 255, 0)
     ys, xs = np.nonzero(frame[:, :, 1])

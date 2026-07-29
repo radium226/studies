@@ -2,8 +2,8 @@
 annotated BGR24 `(H, W, 3)` frames, writes the raw bytes to the encoder's
 stdin. Overlay drawing is not done here — a caller wanting boxes burned into
 the video should draw onto `annotated_frame.frame.content` (using
-`draw_overlay`/`draw_dashed_rect` from this package) before it reaches this
-sink; this class only knows about ffmpeg's raw input, not detections.
+`draw_caption_text`/`draw_dashed_rect` from this package) before it reaches
+this sink; this class only knows about ffmpeg's raw input, not detections.
 
 The encoder's *output* side (the fragmented MP4 byte stream — box parsing,
 broadcasting to viewers) is not part of any kernel contract and stays outside
@@ -25,18 +25,18 @@ from video_analyzer import kernel
 
 from ._pipe_io import drain_stderr, shutdown_process
 
-KEYFRAME_INTERVAL_SECONDS = 2
-DEFAULT_FRAG_DURATION_MS = 200
+_KEYFRAME_INTERVAL_SECONDS = 2
+_DEFAULT_FRAG_DURATION_MS = 200
 
 
-class FfmpegFrameSink[DetectionT](kernel.FrameSink[NDArray[np.uint8], DetectionT]):
+class FfmpegFrameSink[FaceRecordT](kernel.FrameSink[NDArray[np.uint8], FaceRecordT]):
     def __init__(
         self,
         width: int,
         height: int,
         fps: float,
         *,
-        frag_duration_ms: int = DEFAULT_FRAG_DURATION_MS,
+        frag_duration_ms: int = _DEFAULT_FRAG_DURATION_MS,
     ) -> None:
         self._width = width
         self._height = height
@@ -53,7 +53,7 @@ class FfmpegFrameSink[DetectionT](kernel.FrameSink[NDArray[np.uint8], DetectionT
         height: int,
         fps: float,
         *,
-        frag_duration_ms: int = DEFAULT_FRAG_DURATION_MS,
+        frag_duration_ms: int = _DEFAULT_FRAG_DURATION_MS,
         stop_timeout: float = 5.0,
     ) -> AsyncIterator[Self]:
         self = cls(width, height, fps, frag_duration_ms=frag_duration_ms)
@@ -73,7 +73,7 @@ class FfmpegFrameSink[DetectionT](kernel.FrameSink[NDArray[np.uint8], DetectionT
 
     async def write_frame(
         self,
-        annotated_frame: kernel.AnnotatedFrame[NDArray[np.uint8], DetectionT],
+        annotated_frame: kernel.AnnotatedFrame[NDArray[np.uint8], FaceRecordT],
     ) -> None:
         assert self._proc is not None and self._proc.stdin is not None
         self._proc.stdin.write(annotated_frame.frame.content.tobytes())
@@ -95,7 +95,7 @@ class FfmpegFrameSink[DetectionT](kernel.FrameSink[NDArray[np.uint8], DetectionT
         return await self._proc.stdout.read(size)
 
     def _encoder_cmd(self) -> list[str]:
-        gop = max(1, round(self._fps * KEYFRAME_INTERVAL_SECONDS))
+        keyframe_interval_frames = max(1, round(self._fps * _KEYFRAME_INTERVAL_SECONDS))
         return [
             "ffmpeg",
             "-hide_banner",
@@ -125,13 +125,13 @@ class FfmpegFrameSink[DetectionT](kernel.FrameSink[NDArray[np.uint8], DetectionT
             "-tune",
             "zerolatency",
             "-g",
-            str(gop),
+            str(keyframe_interval_frames),
             "-keyint_min",
-            str(gop),
+            str(keyframe_interval_frames),
             "-sc_threshold",
             "0",
             "-force_key_frames",
-            f"expr:gte(t,n_forced*{KEYFRAME_INTERVAL_SECONDS})",
+            f"expr:gte(t,n_forced*{_KEYFRAME_INTERVAL_SECONDS})",
             "-movflags",
             "frag_keyframe+empty_moov+default_base_moof",
             "-frag_duration",

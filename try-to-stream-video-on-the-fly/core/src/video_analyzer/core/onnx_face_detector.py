@@ -59,7 +59,7 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
         # differ in size. The per-frame scale (used to rescale detections back
         # to source pixels) is kept alongside so it can be applied when
         # decoding that batch element.
-        prepared = [self._preprocess(f) for f in frames]
+        prepared = [self._letterbox(frame) for frame in frames]
         batch = np.stack([tensor for tensor, _ in prepared]).astype(np.float32)
         input_name: str = session.get_inputs()[0].name
         outputs = cast(
@@ -67,9 +67,9 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
         )
 
         results: list[list[kernel.Face[None]]] = []
-        for b, (_, scale) in enumerate(prepared):
-            image_outputs = [o[b] for o in outputs]
-            scores, bboxes, landmarks = self._decode(image_outputs)
+        for batch_index, (_, scale) in enumerate(prepared):
+            image_outputs = [output[batch_index] for output in outputs]
+            scores, bboxes, landmarks = self._decode_detections(image_outputs)
 
             if len(bboxes) == 0:
                 results.append([])
@@ -81,21 +81,21 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
             landmarks = landmarks[kept]
 
             faces: list[kernel.Face[None]] = []
-            for bbox, lm, score in zip(bboxes, landmarks, scores, strict=True):
+            for bbox, face_landmarks, score in zip(bboxes, landmarks, scores, strict=True):
                 x1, y1, x2, y2 = (float(v) / scale for v in bbox)
-                points = (lm / scale).astype(np.float32)
+                points = (face_landmarks / scale).astype(np.float32)
                 faces.append(
                     kernel.Face(
                         detection=kernel.Detection(
                             bounding_box=kernel.BoundingBox(
                                 x=x1, y=y1, width=x2 - x1, height=y2 - y1
                             ),
-                            landmarks=(
-                                (float(points[0][0]), float(points[0][1])),
-                                (float(points[1][0]), float(points[1][1])),
-                                (float(points[2][0]), float(points[2][1])),
-                                (float(points[3][0]), float(points[3][1])),
-                                (float(points[4][0]), float(points[4][1])),
+                            landmarks=kernel.FaceLandmarks(
+                                left_eye=(float(points[0][0]), float(points[0][1])),
+                                right_eye=(float(points[1][0]), float(points[1][1])),
+                                nose=(float(points[2][0]), float(points[2][1])),
+                                mouth_left=(float(points[3][0]), float(points[3][1])),
+                                mouth_right=(float(points[4][0]), float(points[4][1])),
                             ),
                             confidence=float(score),
                         ),
@@ -105,7 +105,7 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
             results.append(faces)
         return results
 
-    def _preprocess(
+    def _letterbox(
         self, img_bgr: NDArray[np.uint8]
     ) -> tuple[NDArray[np.float32], float]:
         """Letterbox to the SCRFD input size.
@@ -115,10 +115,10 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
         """
         img_h, img_w = img_bgr.shape[:2]
         scale = min(_SCRFD_INPUT_H / img_h, _SCRFD_INPUT_W / img_w)
-        rw, rh = int(img_w * scale), int(img_h * scale)
-        resized = cv2.resize(img_bgr, (rw, rh))
+        resized_width, resized_height = int(img_w * scale), int(img_h * scale)
+        resized = cv2.resize(img_bgr, (resized_width, resized_height))
         padded = np.zeros((_SCRFD_INPUT_H, _SCRFD_INPUT_W, 3), dtype=np.uint8)
-        padded[:rh, :rw] = resized
+        padded[:resized_height, :resized_width] = resized
         img_rgb = padded[:, :, ::-1].astype(np.float32)
         normalized = (img_rgb - _SCRFD_MEAN) / _SCRFD_STD
         return normalized.transpose(2, 0, 1), scale
@@ -128,8 +128,9 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
         fixed input size, so each grid is built exactly once."""
         cached = self._anchor_cache.get(stride)
         if cached is None:
-            fh, fw = _SCRFD_INPUT_H // stride, _SCRFD_INPUT_W // stride
-            grid_y, grid_x = np.mgrid[:fh, :fw]
+            feature_map_height = _SCRFD_INPUT_H // stride
+            feature_map_width = _SCRFD_INPUT_W // stride
+            grid_y, grid_x = np.mgrid[:feature_map_height, :feature_map_width]
             centers = np.stack([grid_x, grid_y], axis=-1).astype(np.float32)
             centers = (centers * stride).reshape(-1, 2)
             cached = np.stack([centers] * _SCRFD_NUM_ANCHORS, axis=1).reshape(-1, 2)
@@ -180,7 +181,7 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
             order = rest[iou <= self.iou_threshold]
         return np.array(kept, dtype=np.int64)
 
-    def _decode(
+    def _decode_detections(
         self,
         outputs: list[NDArray[np.float32]],
     ) -> tuple[NDArray[np.float32], NDArray[np.float32], NDArray[np.float32]]:

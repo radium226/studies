@@ -1,4 +1,5 @@
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any, Self
 
@@ -109,8 +110,8 @@ class PipelineConfig:
     """
 
     frames_per_second: float = 30.0
-    batching: BatchingConfig = field(default_factory=BatchingConfig)
-    rendering: RenderingConfig = field(default_factory=RenderingConfig)
+    batching: BatchingConfig = dataclass_field(default_factory=BatchingConfig)
+    rendering: RenderingConfig = dataclass_field(default_factory=RenderingConfig)
 
     def __post_init__(self) -> None:
         if self.frames_per_second <= 0.0:
@@ -154,12 +155,12 @@ class PipelineConfig:
         return {
             "frames_per_second": self.frames_per_second,
             "batching": {
-                field_.name: getattr(self.batching, field_.name)
-                for field_ in fields(self.batching)
+                field.name: getattr(self.batching, field.name)
+                for field in fields(self.batching)
             },
             "rendering": {
-                field_.name: getattr(self.rendering, field_.name)
-                for field_ in fields(self.rendering)
+                field.name: getattr(self.rendering, field.name)
+                for field in fields(self.rendering)
             },
         }
 

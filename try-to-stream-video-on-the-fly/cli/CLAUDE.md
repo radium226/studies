@@ -7,9 +7,10 @@ subproject. See the repo root `CLAUDE.md` for how this fits alongside `app/`, `k
 ## What this is
 
 `video-analyzer-cli` (importable as `video_analyzer.cli`) — a small runnable example that plays a
-local video file with detected/tracked faces drawn on it, via `ffplay`. It's the first real
-end-to-end consumer of [`kernel`](../kernel)'s `Pipeline` wired to [`core`](../core)'s SCRFD/
-ArcFace/ByteTrack/PCHIP/ffmpeg backends, outside their own unit tests.
+local video file with detected/tracked faces drawn on it, via `ffplay`, and can optionally replay
+each discovered face track afterward (`--play-tracks`). It's the first real end-to-end consumer of
+[`kernel`](../kernel)'s `Pipeline` wired to [`core`](../core)'s SCRFD/ArcFace/ByteTrack/spline/
+ffmpeg backends, outside their own unit tests.
 
 Depends on `core` via a `uv` path source (`../core`, editable), which transitively pulls in
 `kernel` the same way. Not a workspace, matching the standalone-project style `app/`, `kernel`,
@@ -42,35 +43,61 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
   wrapping the `FrameSource`. Graceful: frames already read still drain all the way through the
   pipeline, same as natural end-of-stream (see `kernel.StopToken`).
 - `--stop-on-face-found` — stop early the first time a face is detected, via
-  `core.StopOnFaceFound` wrapping the `FrameBroadcaster`. Since that's the last stage before
+  `core.StopOnFirstAnnotation` wrapping the `FrameBroadcaster`. Since that's the last stage before
   output, the stop only takes effect once the triggering frame has gone all the way through
   detection/tracking/interpolation/`--lookahead`, so a few extra frames may still play past the
   actual first detection.
+- `--play-tracks` — after the main video's `ffplay` window closes, replay each discovered face
+  track through its own `ffplay` window, one track at a time, in track-id order, via
+  `TrackRecordingFrameBroadcaster` (a real `FrameBroadcaster` — `core` ships none, see
+  `core/CLAUDE.md`). Every rendered frame's faces are cropped and buffered in memory for the whole
+  run, so this trades RAM for the replay; `--track-crop-size` (default `160`) controls the
+  side length each crop is resized to.
 
-Or via `mise` from the repo root: `mise run cli -- <video>`. Both `uv run` here and the mise task
-run with `cli/` as the working directory (`uv --directory=cli`, matching `mise/tasks/webapp`'s own
-convention for `app/`) — so a relative `<video>` path is resolved against `cli/`, not the repo
-root or your shell's cwd; use `../app/assets/sample.mp4`-style relative paths or an absolute path.
+Or via `mise` from anywhere in the repo: `mise run cli -- <video>`. `uv run` here (and the mise
+task's own call into it) runs with `cli/` as the working directory (`uv --directory=cli`, matching
+`mise/tasks/webapp`'s own convention for `app/`) — so a relative `<video>` path passed directly to
+`uv run video-analyzer-cli` (bypassing mise) is resolved against `cli/`, not the repo root or your
+shell's cwd; use `../app/assets/sample.mp4`-style relative paths or an absolute path in that case.
+The `mise run cli` path doesn't have this problem: `mise/tasks/cli` resolves its first non-flag
+argument to an absolute path (via `realpath`, explicitly anchored at `${MISE_PROJECT_ROOT}`)
+*before* handing it to `uv --directory=cli`, so a `<video>` path relative to the repo root
+survives that later directory change unchanged — regardless of which directory you actually ran
+`mise run cli` from (mise itself always starts the task with `$MISE_PROJECT_ROOT` as `cwd`, not
+your shell's cwd, which is exactly why the repo root — not "wherever you typed the command" — is
+the right anchor here).
 
 ## Architecture
 
 ```
 src/video_analyzer/cli/
 ├── main.py                   click entry point: wires FfmpegFrameSource + OnnxFaceDetector +
-│                              OnnxFaceEmbedder + ByteTrackTracker + PchipInterpolator (all from
+│                              OnnxFaceEmbedder + ByteTrackTracker + SplineInterpolator (all from
 │                              core) + this package's own FfplayFrameSink/stubs into
-│                              kernel.Pipeline, then calls pipeline.drain(frame_source)
+│                              kernel.Pipeline, then calls pipeline.run(frame_source); if
+│                              --play-tracks, follows up with _play_tracks() once the main
+│                              FfplayFrameSink has closed
 ├── ffplay_frame_sink.py       FfplayFrameSink(kernel.FrameSink) — spawns `ffplay`, draws each
 │                              frame's detections onto a *copy* (solid box = exact detection,
 │                              dashed via core.overlay.draw_dashed_rect = interpolated), pipes raw
 │                              BGR24 bytes to its stdin. No encoding step — ffplay reads rawvideo
 │                              directly. Owned here, not in core: core has no opinion on
-│                              transport (see core/CLAUDE.md), and this is one.
+│                              transport (see core/CLAUDE.md), and this is one. Reused as-is by
+│                              _play_tracks() for each track's replay window (faces=[], so no
+│                              boxes are drawn — the crop itself is tight enough already).
+├── track_recording_frame_broadcaster.py  TrackRecordingFrameBroadcaster(kernel.FrameBroadcaster)
+│                              — a real (non-noop) FrameBroadcaster: crops+resizes every tracked
+│                              face out of each rendered frame and buffers it by track_id in
+│                              crops_by_track. Only wired in when --play-tracks is passed; still
+│                              composes with --stop-on-face-found (core.StopOnFirstAnnotation
+│                              wraps it, same "wrapped" decorator convention as stop_after_frame_count
+│                              in core).
 ├── noop_scene_detector.py     NoopSceneDetector(kernel.SceneDetector) — always returns False;
 │                              satisfies Pipeline's constructor even though nothing calls
 │                              detect_scene_cut yet and core has no scene-cut algorithm to port
-├── noop_frame_broadcaster.py  NoopFrameBroadcaster(kernel.FrameBroadcaster) — no-op; this example
-│                              has nothing else consuming detection metadata
+├── noop_frame_broadcaster.py  NoopFrameBroadcaster(kernel.FrameBroadcaster) — no-op; used whenever
+│                              --play-tracks isn't passed and nothing else consumes detection
+│                              metadata
 └── system_clock.py            SystemClock(kernel.Clock) — time.monotonic(), since kernel.Clock is
                                sync and Pipeline's BatchGate calls it directly
 ```
@@ -108,13 +135,20 @@ the repo, but can point anywhere.
   gain. `app/` makes the same choice ("the CV `Engine` keeps native fps"). Everything downstream is
   **frame-index** based, not time based, so nothing else needs rescaling.
 - **It's a *target*, not a guarantee, and deliberately un-clamped.** `kernel`'s frame-carrying
-  channels are bounded (`_MAX_QUEUED_FRAMES`), so a sink that can't keep up pushes backpressure
+  channels are bounded (`_FRAME_CHANNEL_CAPACITY`), so a sink that can't keep up pushes backpressure
   through `produce_frames` into the decoder's pipe until `ffmpeg` blocks — the achieved multiplier
   silently caps at whatever the `.copy()` + cv2 draw + pipe write path sustains (~2.8 MB/frame at
   720x1280). Likewise, `fps * N` above the monitor's refresh rate is left for SDL/ffplay's own
   frame-drop path to absorb: no warning, no clamp, and no decimation in the sink.
 - `OnnxFaceDetector`/`OnnxFaceEmbedder` are sync context managers (`OnnxModel.__enter__`/
   `__exit__` lazily load/release the ONNX session) — open both with a `with` block before calling
-  `pipeline.drain()`, same as any other `core` consumer would.
+  `pipeline.run()`, same as any other `core` consumer would.
 - No test suite here on purpose — it's a thin wiring example; `kernel`/`core` already unit-test
   every piece it composes.
+- `TrackRecordingFrameBroadcaster.crops_by_track` grows for the entire run — nothing prunes it,
+  unlike every bounded buffer in `kernel`/`core`. Deliberate for a study-project example (`--stop-
+  after-frames`/`--stop-on-face-found` are the practical way to bound a `--play-tracks` run today),
+  but a long, face-heavy video will use a lot of RAM.
+- `_play_tracks` is sequential, one `ffplay` window per track, closed before the next opens — not
+  because concurrent windows can't work, but because it keeps the demo simple and avoids
+  contending with the main video's own `ffplay` process for the Wayland/X11 session.

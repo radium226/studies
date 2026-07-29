@@ -4,6 +4,6 @@ from .frame import FrameIndex
 
 
 @dataclass(frozen=True, slots=True)
-class Snapshot[DetectionT]:
+class Snapshot[FaceRecordT]:
     frame_index: FrameIndex
-    detections: list[DetectionT]
+    faces: list[FaceRecordT]

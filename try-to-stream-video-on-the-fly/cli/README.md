@@ -21,5 +21,6 @@ uv run video-analyzer-cli ../app/assets/sample.mp4 --speed-factor-target 4 --max
 tuning flags; `--help` documents them all, and `CLAUDE.md` explains why the detection budget
 deliberately does *not* scale with the speed factor.
 
-Relative paths (video, `--scrfd-model`, `--arcface-model`) resolve against this directory, since
-that's where `uv run`/`mise run cli` execute from — see `CLAUDE.md` for details.
+Relative paths (video, `--scrfd-model`, `--arcface-model`) passed directly to `uv run` resolve
+against this directory, since that's where it executes from. `mise run cli -- <video>` resolves
+the video path against the repo root instead — see `CLAUDE.md` for details.

@@ -5,9 +5,11 @@ from .snapshot import Snapshot
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotatedFrame[FrameContentT, DetectionT]:
+class AnnotatedFrame[FrameContentT, FaceRecordT]:
     frame: Frame[FrameContentT]
-    detections: list[DetectionT]
-    bracket: tuple[Snapshot[DetectionT], Snapshot[DetectionT]] | None
+    faces: list[FaceRecordT]
+    # The two real-detection snapshots straddling this rendered frame (the
+    # interpolation window it was computed from), or None before enough
+    # snapshots have arrived to bracket anything yet.
+    interpolation_bracket: tuple[Snapshot[FaceRecordT], Snapshot[FaceRecordT]] | None
     is_exact: bool
-    flushed: bool = False

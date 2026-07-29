@@ -1,6 +1,7 @@
 from .annotated_frame import AnnotatedFrame as AnnotatedFrame
 from .bounding_box import BoundingBox as BoundingBox
 from .detection import Detection as Detection
+from .detection import FaceLandmarks as FaceLandmarks
 from .detection import Landmark as Landmark
 from .face import Face as Face
 from .frame import Frame as Frame

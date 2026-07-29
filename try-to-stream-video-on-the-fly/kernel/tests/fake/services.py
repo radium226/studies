@@ -45,12 +45,12 @@ class FaceDetector(kernel.FaceDetector[FrameContent]):
                         bounding_box=kernel.BoundingBox(
                             x=float(frame.index), y=0.0, width=10.0, height=10.0
                         ),
-                        landmarks=(
-                            (0.0, 0.0),
-                            (1.0, 0.0),
-                            (0.5, 0.5),
-                            (0.0, 1.0),
-                            (1.0, 1.0),
+                        landmarks=kernel.FaceLandmarks(
+                            left_eye=(0.0, 0.0),
+                            right_eye=(1.0, 0.0),
+                            nose=(0.5, 0.5),
+                            mouth_left=(0.0, 1.0),
+                            mouth_right=(1.0, 1.0),
                         ),
                         confidence=1.0,
                     ),

@@ -42,7 +42,7 @@ def _run_until(
     thread = threading.Thread(target=target, daemon=True)
     thread.start()
     thread.join(timeout)
-    assert not thread.is_alive(), f"drain() still running after {timeout}s"
+    assert not thread.is_alive(), f"run() still running after {timeout}s"
     return raised.get("exception")
 
 
@@ -65,7 +65,7 @@ def test_pipeline() -> None:
     source_frames = [Frame(index=index, content=index * 10) for index in range(20)]
     frame_source = FrameSource(source_frames)
 
-    asyncio.run(pipeline.drain(frame_source))
+    asyncio.run(pipeline.run(frame_source))
 
     # Detection runs sparsely and interpolation lags by design (it needs
     # future snapshots to avoid extrapolating), so not every source frame is
@@ -74,21 +74,24 @@ def test_pipeline() -> None:
     assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
 
     for annotated_frame in frame_sink.written_frames:
-        assert annotated_frame.bracket is not None
-        assert len(annotated_frame.detections) == 1
-        assert annotated_frame.detections[0].track_id == 0
+        assert annotated_frame.interpolation_bracket is not None
+        assert len(annotated_frame.faces) == 1
+        assert annotated_frame.faces[0].track_id == 0
 
     # Frames are emitted in the order the render cursor advances through them.
-    rendered_indices = [af.frame.index for af in frame_sink.written_frames]
+    rendered_indices = [
+        annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
+    ]
     assert rendered_indices == sorted(rendered_indices)
 
 
 def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
-    """A crash in any stage has to come back out of `drain`.
+    """A crash in any stage has to come back out of `run`.
 
     Regression test: `interpolate_and_render` used to `await` its snapshot
-    collector bare in a `finally`, and that collector sat on a channel `track`
-    never got to close once the TaskGroup began cancelling. The CancelledError
+    collector bare in a `finally`, and that collector sat on a channel
+    `track_faces` never got to close once the TaskGroup began cancelling. The
+    CancelledError
     was swallowed, the TaskGroup never exited, and the real exception was never
     reported — the process just hung forever.
     """
@@ -118,7 +121,7 @@ def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
     # graceful, caller-requested stop), so it's not converted to use one.
     frame_source = FrameSource([Frame(index=index, content=index * 10) for index in range(10_000)])
 
-    raised = _run_until(lambda: pipeline.drain(frame_source))
+    raised = _run_until(lambda: pipeline.run(frame_source))
 
     assert isinstance(raised, BaseExceptionGroup)
     runtime_errors = [
@@ -149,7 +152,7 @@ def _make_pipeline(
     )
 
 
-def test_stop_token_set_before_any_frame_reads_short_circuits_drain() -> None:
+def test_stop_token_set_before_any_frame_reads_short_circuits_run() -> None:
     pipeline = _make_pipeline(
         frame_sink := FrameSink(), frame_broadcaster := FrameBroadcaster()
     )
@@ -158,7 +161,7 @@ def test_stop_token_set_before_any_frame_reads_short_circuits_drain() -> None:
     stop_token = StopToken()
     stop_token.request_stop()
 
-    asyncio.run(pipeline.drain(frame_source, stop_token=stop_token))
+    asyncio.run(pipeline.run(frame_source, stop_token=stop_token))
 
     assert frame_source.remaining_frames == source_frames
     assert frame_sink.written_frames == []
@@ -187,12 +190,12 @@ def test_stop_token_set_mid_stream_still_drains_already_read_frames() -> None:
         frame_sink := FrameSink(), frame_broadcaster := FrameBroadcaster()
     )
 
-    asyncio.run(pipeline.drain(frame_source, stop_token=stop_token))
+    asyncio.run(pipeline.run(frame_source, stop_token=stop_token))
 
     assert len(frame_source.remaining_frames) == 10_000 - (stop_after_index + 1)
     assert 0 < len(frame_sink.written_frames)
     assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
-    assert max(af.frame.index for af in frame_sink.written_frames) <= stop_after_index
+    assert max(annotated_frame.frame.index for annotated_frame in frame_sink.written_frames) <= stop_after_index
 
 
 def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
@@ -204,7 +207,7 @@ def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
     source_frames = [Frame(index=index, content=index * 10) for index in range(20)]
     frame_source = FrameSource(source_frames)
 
-    asyncio.run(pipeline.drain(frame_source, stop_token=StopToken()))
+    asyncio.run(pipeline.run(frame_source, stop_token=StopToken()))
 
     assert 0 < len(frame_sink.written_frames) <= len(source_frames)
     assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)

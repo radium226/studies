@@ -4,7 +4,7 @@ from loguru import logger
 
 
 class StopToken:
-    """Cooperative, idempotent signal to end `Pipeline.drain()`'s frame-reading
+    """Cooperative, idempotent signal to end `Pipeline.run()`'s frame-reading
     loop early. Setting it does not cancel anything: `produce_frames` merely
     stops asking `FrameSource.read_frame()` for more and takes the exact same
     end-of-stream path as source exhaustion — every frame already read keeps

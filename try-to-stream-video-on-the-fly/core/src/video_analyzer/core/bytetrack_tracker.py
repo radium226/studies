@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import supervision as sv
 from numpy.typing import NDArray
-from trackers import ByteTrackTracker as _ByteTrackTracker
+from trackers import ByteTrackTracker as _VendoredByteTrackTracker
 from trackers.utils.iou import BIoU
 
 from video_analyzer import kernel
@@ -22,7 +22,7 @@ def _xyxy(bounding_box: kernel.BoundingBox) -> tuple[float, float, float, float]
 
 class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
     def __init__(self, fps: float, *, lost_track_buffer: int = 30) -> None:
-        self._tracker = _ByteTrackTracker(
+        self._bytetrack = _VendoredByteTrackTracker(
             frame_rate=fps,
             lost_track_buffer=lost_track_buffer,
             minimum_consecutive_frames=1,
@@ -44,7 +44,7 @@ class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
         if not faces:
             return []
 
-        sv_dets = sv.Detections(
+        supervision_detections = sv.Detections(
             xyxy=np.array(
                 [_xyxy(face.detection.bounding_box) for face in faces], dtype=np.float32
             ),
@@ -52,7 +52,7 @@ class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
                 [face.detection.confidence for face in faces], dtype=np.float32
             ),
         )
-        tracked = self._tracker.update(sv_dets)
+        tracked = self._bytetrack.update(supervision_detections)
 
         result: list[kernel.TrackedFace[NDArray[np.float32]]] = []
         if tracked.tracker_id is None:
@@ -62,32 +62,38 @@ class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
         # that drift from the actual detection. Draw the *matched* input
         # detection instead, so the box and its landmarks stay mutually
         # consistent and aligned with the face; use the tracker only for the id.
-        for i, tid in enumerate(tracked.tracker_id):
-            if tid < 0:  # skip unconfirmed tracks
+        for i, tracker_id in enumerate(tracked.tracker_id):
+            if tracker_id < 0:  # skip unconfirmed tracks
                 continue
-            face_idx = self._best_match(tracked.xyxy[i], faces)
+            face_idx = self._best_iou_match(tracked.xyxy[i], faces)
             if face_idx is None:
                 continue
-            result.append(kernel.TrackedFace(track_id=int(tid), face=faces[face_idx]))
+            result.append(
+                kernel.TrackedFace(track_id=int(tracker_id), face=faces[face_idx])
+            )
         return result
 
     @staticmethod
-    def _best_match(
+    def _best_iou_match(
         track_box: NDArray[np.float32],
         faces: list[kernel.Face[NDArray[np.float32]]],
     ) -> int | None:
         """Index of the input face with the highest IoU against a track box."""
-        tx1, ty1, tx2, ty2 = (float(v) for v in track_box)
+        track_x1, track_y1, track_x2, track_y2 = (float(v) for v in track_box)
         best_idx: int | None = None
         best_iou = 0.0
         for idx, face in enumerate(faces):
-            dx1, dy1, dx2, dy2 = _xyxy(face.detection.bounding_box)
-            ix1, iy1 = max(tx1, dx1), max(ty1, dy1)
-            ix2, iy2 = min(tx2, dx2), min(ty2, dy2)
+            det_x1, det_y1, det_x2, det_y2 = _xyxy(face.detection.bounding_box)
+            ix1, iy1 = max(track_x1, det_x1), max(track_y1, det_y1)
+            ix2, iy2 = min(track_x2, det_x2), min(track_y2, det_y2)
             inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
             if inter <= 0.0:
                 continue
-            union = (tx2 - tx1) * (ty2 - ty1) + (dx2 - dx1) * (dy2 - dy1) - inter
+            union = (
+                (track_x2 - track_x1) * (track_y2 - track_y1)
+                + (det_x2 - det_x1) * (det_y2 - det_y1)
+                - inter
+            )
             iou = inter / union if union > 0.0 else 0.0
             if iou > best_iou:
                 best_iou, best_idx = iou, idx

@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 from asyncio import TaskGroup
+from typing import NamedTuple
 
 from loguru import logger
 
@@ -41,7 +42,7 @@ _MAX_PENDING_FRAMES = 600
 #
 # The snapshot/batch channels stay unbounded: they carry detection metadata, and
 # the frames they reference are already bounded by the pending-frame pruning.
-_MAX_QUEUED_FRAMES = 30
+_FRAME_CHANNEL_CAPACITY = 30
 
 
 def _sample_evenly(indices: list[FrameIndex], max_count: int) -> list[FrameIndex]:
@@ -58,12 +59,19 @@ def _sample_evenly(indices: list[FrameIndex], max_count: int) -> list[FrameIndex
     return [indices[round(i * step)] for i in range(max_count)]
 
 
+class _AdvanceResult[FaceEmbeddingT](NamedTuple):
+    frame_index: FrameIndex
+    is_exact: bool
+    bracket: tuple[Snapshot[TrackedFace[FaceEmbeddingT]], Snapshot[TrackedFace[FaceEmbeddingT]]]
+    faces: list[TrackedFace[FaceEmbeddingT]]
+
+
 class _RenderCursor[FaceEmbeddingT]:
-    """Lags `lookahead` snapshots behind the newest tracked snapshot so every
-    frame it emits lies strictly between two real detections — never
+    """Lags `lookahead_snapshots` snapshots behind the newest tracked snapshot so
+    every frame it emits lies strictly between two real detections — never
     extrapolated. One `advance()` call is expected per incoming video frame,
-    matching however many `push()` calls have landed by then (detection and
-    video run at unrelated rates).
+    matching however many `push_snapshot()` calls have landed by then
+    (detection and video run at unrelated rates).
 
     This holds only the *timing* bookkeeping (which segment, which frame index
     to render, when to prune old snapshots) — the actual coordinate math is
@@ -72,70 +80,69 @@ class _RenderCursor[FaceEmbeddingT]:
 
     def __init__(
         self,
-        lookahead: int,
+        lookahead_snapshots: int,
         interpolator: Interpolator[TrackedFace[FaceEmbeddingT]],
     ) -> None:
-        self._lookahead = lookahead
+        self._lookahead_snapshots = lookahead_snapshots
         self._interpolator = interpolator
         self._snapshots: list[Snapshot[TrackedFace[FaceEmbeddingT]]] = []
-        self._seg_idx = 0
+        self._segment_index = 0
         self._render_cursor: float | None = None
 
-    def push(self, snapshot: Snapshot[TrackedFace[FaceEmbeddingT]]) -> None:
+    def push_snapshot(self, snapshot: Snapshot[TrackedFace[FaceEmbeddingT]]) -> None:
         self._snapshots.append(snapshot)
 
     @property
-    def ready(self) -> bool:
-        # Need the segment end (seg_idx+1) plus `lookahead` more snapshots ahead of it.
-        return len(self._snapshots) > self._seg_idx + self._lookahead + 1
+    def can_advance(self) -> bool:
+        # Need the segment end (segment_index+1) plus `lookahead_snapshots` more
+        # snapshots ahead of it.
+        return len(self._snapshots) > self._segment_index + self._lookahead_snapshots + 1
 
-    async def advance(
-        self,
-    ) -> tuple[
-        FrameIndex,
-        bool,
-        tuple[Snapshot[TrackedFace[FaceEmbeddingT]], Snapshot[TrackedFace[FaceEmbeddingT]]],
-        list[TrackedFace[FaceEmbeddingT]],
-    ] | None:
-        if not self.ready:
+    async def advance(self) -> _AdvanceResult[FaceEmbeddingT] | None:
+        if not self.can_advance:
             return None
         frame_index, is_exact = self._advance_segment()
-        bracket = (self._snapshots[self._seg_idx], self._snapshots[self._seg_idx + 1])
-        detections = await self._interpolate(frame_index)
-        return frame_index, is_exact, bracket, detections
+        bracket = (
+            self._snapshots[self._segment_index],
+            self._snapshots[self._segment_index + 1],
+        )
+        faces = await self._interpolate(frame_index)
+        return _AdvanceResult(
+            frame_index=frame_index, is_exact=is_exact, bracket=bracket, faces=faces
+        )
 
     def _advance_segment(self) -> tuple[FrameIndex, bool]:
-        seg_start = self._snapshots[self._seg_idx]
-        seg_end = self._snapshots[self._seg_idx + 1]
+        segment_start = self._snapshots[self._segment_index]
+        segment_end = self._snapshots[self._segment_index + 1]
 
         if self._render_cursor is None:
-            self._render_cursor = float(seg_start.frame_index)
+            self._render_cursor = float(segment_start.frame_index)
 
         # Clamp to the current segment for pure interpolation.
         frame_index = int(
-            min(max(self._render_cursor, seg_start.frame_index), seg_end.frame_index)
+            min(max(self._render_cursor, segment_start.frame_index), segment_end.frame_index)
         )
-        is_exact = frame_index in (seg_start.frame_index, seg_end.frame_index)
+        is_exact = frame_index in (segment_start.frame_index, segment_end.frame_index)
         self._render_cursor += 1.0
 
         # Advance to the next segment once the cursor leaves the current one,
         # but only while enough lookahead remains beyond the new segment end.
         while (
-            self._render_cursor > self._snapshots[self._seg_idx + 1].frame_index
-            and len(self._snapshots) > self._seg_idx + self._lookahead + 2
+            self._render_cursor > self._snapshots[self._segment_index + 1].frame_index
+            and len(self._snapshots) > self._segment_index + self._lookahead_snapshots + 2
         ):
-            self._seg_idx += 1
+            self._segment_index += 1
 
         # Snapshots behind the spline window can never be used again.
-        drop = self._seg_idx - self._lookahead
+        drop = self._segment_index - self._lookahead_snapshots
         if drop > 0:
             del self._snapshots[:drop]
-            self._seg_idx -= drop
+            self._segment_index -= drop
 
         # Cap the cursor at the newest frame we can still interpolate, so a gap
         # in detection arrivals doesn't let the cursor free-run and then lurch
         # forward once the next burst of snapshots lands.
-        newest = len(self._snapshots) - self._lookahead - 1
+        newest = len(self._snapshots) - self._lookahead_snapshots - 1
         if newest >= 1:
             cap = float(self._snapshots[newest].frame_index)
             if self._render_cursor > cap:
@@ -148,22 +155,29 @@ class _RenderCursor[FaceEmbeddingT]:
     ) -> list[TrackedFace[FaceEmbeddingT]]:
         """Interpolate every face of the current segment's start snapshot,
         matching control points across snapshots by track id."""
-        seg_start = self._snapshots[self._seg_idx]
+        segment_start = self._snapshots[self._segment_index]
 
-        window_start = max(0, self._seg_idx - self._lookahead)
-        window_end = min(len(self._snapshots), self._seg_idx + self._lookahead + 2)
+        window_start = max(0, self._segment_index - self._lookahead_snapshots)
+        window_end = min(
+            len(self._snapshots), self._segment_index + self._lookahead_snapshots + 2
+        )
         window = self._snapshots[window_start:window_end]
         span_start = window[0].frame_index
         span = window[-1].frame_index - span_start + 1
 
         results: list[TrackedFace[FaceEmbeddingT]] = []
-        for tracked_face in seg_start.detections:
+        for tracked_face in segment_start.faces:
             track_id = tracked_face.track_id
             slots: list[TrackedFace[FaceEmbeddingT] | None] = [None] * span
             known = 0
             for snapshot in window:
                 match = next(
-                    (tf for tf in snapshot.detections if tf.track_id == track_id), None
+                    (
+                        candidate_face
+                        for candidate_face in snapshot.faces
+                        if candidate_face.track_id == track_id
+                    ),
+                    None,
                 )
                 if match is not None:
                     slots[snapshot.frame_index - span_start] = match
@@ -256,7 +270,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
     async def sample_and_detect(
         self,
         detection_frame_channel: Channel[Frame[FrameContentT]],
-        face_batch_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
+        frame_faces_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
     ) -> None:
         batch_gate = BatchGate(
             self.clock,
@@ -264,13 +278,13 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             self.config.batching.max_frames,
             self.config.batching.max_lag_ms,
         )
-        pending: dict[FrameIndex, Frame[FrameContentT]] = {}
+        pending_frames: dict[FrameIndex, Frame[FrameContentT]] = {}
         last_sampled_index: FrameIndex | None = None
 
         def buffer(frame: Frame[FrameContentT]) -> None:
-            pending[frame.index] = frame
-            if len(pending) > _MAX_PENDING_FRAMES:
-                del pending[min(pending)]
+            pending_frames[frame.index] = frame
+            if len(pending_frames) > _MAX_PENDING_FRAMES:
+                del pending_frames[min(pending_frames)]
 
         try:
             async for frame in detection_frame_channel:
@@ -288,7 +302,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
 
                 available = sorted(
                     index
-                    for index in pending
+                    for index in pending_frames
                     if last_sampled_index is None or index > last_sampled_index
                 )
                 if not batch_gate.should_fire(len(available)):
@@ -297,14 +311,14 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 sample_indices = _sample_evenly(
                     available, self.config.batching.max_frames
                 )
-                sampled_frames = [pending[index] for index in sample_indices]
+                sampled_frames = [pending_frames[index] for index in sample_indices]
 
                 started_at = self.clock.now()
                 faces_by_frame = await self.face_detector.detect_faces(sampled_frames)
                 batch_gate.record_spend(self.clock.now() - started_at)
 
-                batch = list(zip(sampled_frames, faces_by_frame, strict=True))
-                await face_batch_channel.send(batch)
+                frame_faces_batch = list(zip(sampled_frames, faces_by_frame, strict=True))
+                await frame_faces_channel.send(frame_faces_batch)
                 last_sampled_index = sample_indices[-1]
                 # `available` only ever looks past the newest sampled index, so
                 # everything at or below it is already unreachable. Drop it now
@@ -312,59 +326,57 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 # evict much later: each entry pins a full raw frame (~2.8 MB at
                 # 720x1280), so sitting on 600 of them costs well over a GB.
                 for stale_index in [
-                    index for index in pending if index <= last_sampled_index
+                    index for index in pending_frames if index <= last_sampled_index
                 ]:
-                    del pending[stale_index]
+                    del pending_frames[stale_index]
         finally:
-            await face_batch_channel.close()
+            await frame_faces_channel.close()
 
     async def embed_faces(
         self,
-        face_batch_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
-        embedded_batch_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]],
+        frame_faces_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
+        embedded_snapshots_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]],
     ) -> None:
         try:
-            async for batch in face_batch_channel:
+            async for frame_faces_batch in frame_faces_channel:
                 # Faces across every sampled frame in the batch are embedded in
                 # one call (real batching for e.g. ONNX inference — the embedder
                 # needs each face's originating frame to crop and align from),
                 # then re-split back to their originating frame.
-                counts = [len(faces) for _, faces in batch]
-                flattened = [
-                    (frame, face) for frame, faces in batch for face in faces
+                counts = [len(faces) for _, faces in frame_faces_batch]
+                faces_with_frames = [
+                    (frame, face) for frame, faces in frame_faces_batch for face in faces
                 ]
-                embedded = await self.face_embedder.embed_faces(flattened)
+                embedded = await self.face_embedder.embed_faces(faces_with_frames)
 
                 embedded_batch: list[Snapshot[Face[FaceEmbeddingT]]] = []
                 offset = 0
-                for (frame, _), count in zip(batch, counts, strict=True):
+                for (frame, _), count in zip(frame_faces_batch, counts, strict=True):
                     embedded_batch.append(
                         Snapshot(
                             frame_index=frame.index,
-                            detections=embedded[offset : offset + count],
+                            faces=embedded[offset : offset + count],
                         )
                     )
                     offset += count
-                await embedded_batch_channel.send(embedded_batch)
+                await embedded_snapshots_channel.send(embedded_batch)
         finally:
-            await embedded_batch_channel.close()
+            await embedded_snapshots_channel.close()
 
-    async def track(
+    async def track_faces(
         self,
-        embedded_batch_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]],
+        embedded_snapshots_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]],
         tracked_snapshot_channel: Channel[Snapshot[TrackedFace[FaceEmbeddingT]]],
     ) -> None:
         try:
-            async for batch in embedded_batch_channel:
+            async for snapshots in embedded_snapshots_channel:
                 # Frames within a batch are processed in order — the tracker keeps
                 # temporal state (Kalman-style prediction), so calls cannot be
                 # reordered or parallelized across frames.
-                for snapshot in batch:
-                    tracked_faces = await self.tracker.update(snapshot.detections)
+                for snapshot in snapshots:
+                    tracked_faces = await self.tracker.update(snapshot.faces)
                     await tracked_snapshot_channel.send(
-                        Snapshot(
-                            frame_index=snapshot.frame_index, detections=tracked_faces
-                        )
+                        Snapshot(frame_index=snapshot.frame_index, faces=tracked_faces)
                     )
         finally:
             await tracked_snapshot_channel.close()
@@ -384,7 +396,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
 
         async def collect_snapshots() -> None:
             async for snapshot in tracked_snapshot_channel:
-                cursor.push(snapshot)
+                cursor.push_snapshot(snapshot)
 
         collector = asyncio.ensure_future(collect_snapshots())
         try:
@@ -396,13 +408,12 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 result = await cursor.advance()
                 if result is None:
                     continue
-                frame_index, is_exact, bracket, detections = result
-                rendered_frame = pending_frames.pop(frame_index, None)
+                rendered_frame = pending_frames.pop(result.frame_index, None)
                 # The render cursor only ever moves forward, so any frame older
                 # than the one it just asked for is unreachable — same reason as
                 # in `sample_and_detect`, same cost for holding on to it.
                 for stale_index in [
-                    index for index in pending_frames if index < frame_index
+                    index for index in pending_frames if index < result.frame_index
                 ]:
                     del pending_frames[stale_index]
                 if rendered_frame is None:
@@ -412,9 +423,9 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 await annotated_frame_channel.send(
                     AnnotatedFrame(
                         frame=rendered_frame,
-                        detections=detections,
-                        bracket=bracket,
-                        is_exact=is_exact,
+                        faces=result.faces,
+                        interpolation_bracket=result.bracket,
+                        is_exact=result.is_exact,
                     )
                 )
         finally:
@@ -422,17 +433,17 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             # `tracked_snapshot_channel` until that channel closes. Awaiting it
             # bare deadlocks whenever this stage stops first: on our own
             # cancellation (a sibling stage crashed, and the TaskGroup cancelled
-            # `track` before it could close the channel) the await swallows the
-            # CancelledError and never returns, so the TaskGroup never exits and
-            # the original exception is never reported — the whole process just
-            # hangs. Cancel it instead; once rendering is over, any further
+            # `track_faces` before it could close the channel) the await swallows
+            # the CancelledError and never returns, so the TaskGroup never exits
+            # and the original exception is never reported — the whole process
+            # just hangs. Cancel it instead; once rendering is over, any further
             # snapshot is unusable anyway.
             collector.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await collector
             await annotated_frame_channel.close()
 
-    async def render_and_sink(
+    async def write_and_broadcast(
         self,
         annotated_frame_channel: Channel[
             AnnotatedFrame[FrameContentT, TrackedFace[FaceEmbeddingT]]
@@ -442,32 +453,32 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             await self.frame_sink.write_frame(annotated_frame)
             await self.frame_broadcaster.broadcast_frame(annotated_frame)
 
-    async def drain(
+    async def run(
         self,
         frame_source: FrameSource[FrameContentT],
         *,
         stop_token: StopToken | None = None,
     ) -> None:
-        logger.info("drain: starting pipeline")
+        logger.info("run: starting pipeline")
         stop_token = stop_token if stop_token is not None else StopToken()
         detection_frame_channel: Channel[Frame[FrameContentT]] = Channel(
             name="detection_frames"
         )
         render_frame_channel: Channel[Frame[FrameContentT]] = Channel(
-            _MAX_QUEUED_FRAMES, name="render_frames"
+            _FRAME_CHANNEL_CAPACITY, name="render_frames"
         )
-        face_batch_channel: Channel[
+        frame_faces_channel: Channel[
             list[tuple[Frame[FrameContentT], list[Face[None]]]]
-        ] = Channel(name="face_batches")
-        embedded_batch_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]] = Channel(
-            name="embedded_batches"
+        ] = Channel(name="frame_faces")
+        embedded_snapshots_channel: Channel[list[Snapshot[Face[FaceEmbeddingT]]]] = Channel(
+            name="embedded_snapshots"
         )
         tracked_snapshot_channel: Channel[Snapshot[TrackedFace[FaceEmbeddingT]]] = Channel(
             name="tracked_snapshots"
         )
         annotated_frame_channel: Channel[
             AnnotatedFrame[FrameContentT, TrackedFace[FaceEmbeddingT]]
-        ] = Channel(_MAX_QUEUED_FRAMES, name="annotated_frames")
+        ] = Channel(_FRAME_CHANNEL_CAPACITY, name="annotated_frames")
         try:
             async with TaskGroup() as task_group:
                 task_group.create_task(
@@ -479,13 +490,13 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     )
                 )
                 task_group.create_task(
-                    self.sample_and_detect(detection_frame_channel, face_batch_channel)
+                    self.sample_and_detect(detection_frame_channel, frame_faces_channel)
                 )
                 task_group.create_task(
-                    self.embed_faces(face_batch_channel, embedded_batch_channel)
+                    self.embed_faces(frame_faces_channel, embedded_snapshots_channel)
                 )
                 task_group.create_task(
-                    self.track(embedded_batch_channel, tracked_snapshot_channel)
+                    self.track_faces(embedded_snapshots_channel, tracked_snapshot_channel)
                 )
                 task_group.create_task(
                     self.interpolate_and_render(
@@ -494,8 +505,8 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                         annotated_frame_channel,
                     )
                 )
-                task_group.create_task(self.render_and_sink(annotated_frame_channel))
+                task_group.create_task(self.write_and_broadcast(annotated_frame_channel))
         except Exception:
-            logger.exception("drain: pipeline failed")
+            logger.exception("run: pipeline failed")
             raise
-        logger.info("drain: pipeline finished")
+        logger.info("run: pipeline finished")

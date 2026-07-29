@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 
-def draw_overlay(frame: np.ndarray, text: str) -> None:
+def draw_caption_text(frame: np.ndarray, text: str) -> None:
     """Draw a text line in-place. The caller owns the copy — draw onto a
     delayed/annotated frame, never the pristine one still awaiting detection."""
     cv2.putText(
@@ -24,7 +24,7 @@ def draw_overlay(frame: np.ndarray, text: str) -> None:
 
 
 def draw_dashed_rect(
-    img: np.ndarray,
+    frame: np.ndarray,
     pt1: tuple[int, int],
     pt2: tuple[int, int],
     color: tuple[int, int, int],
@@ -42,18 +42,29 @@ def draw_dashed_rect(
         ((x2, y2), (x1, y2)),  # bottom
         ((x1, y2), (x1, y1)),  # left
     ]
-    for (ax, ay), (bx, by) in edges:
-        length = int(((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5)
+    for (edge_start_x, edge_start_y), (edge_end_x, edge_end_y) in edges:
+        length = int(
+            ((edge_end_x - edge_start_x) ** 2 + (edge_end_y - edge_start_y) ** 2) ** 0.5
+        )
         if length == 0:
             continue
-        dx, dy = (bx - ax) / length, (by - ay) / length
+        direction_x = (edge_end_x - edge_start_x) / length
+        direction_y = (edge_end_y - edge_start_y) / length
         pos = 0
         draw = True
         while pos < length:
             end = min(pos + dash_len, length)
             if draw:
-                sx, sy = int(ax + dx * pos), int(ay + dy * pos)
-                ex, ey = int(ax + dx * end), int(ay + dy * end)
-                cv2.line(img, (sx, sy), (ex, ey), color, thickness)
+                dash_start_x = int(edge_start_x + direction_x * pos)
+                dash_start_y = int(edge_start_y + direction_y * pos)
+                dash_end_x = int(edge_start_x + direction_x * end)
+                dash_end_y = int(edge_start_y + direction_y * end)
+                cv2.line(
+                    frame,
+                    (dash_start_x, dash_start_y),
+                    (dash_end_x, dash_end_y),
+                    color,
+                    thickness,
+                )
             pos = end
             draw = not draw

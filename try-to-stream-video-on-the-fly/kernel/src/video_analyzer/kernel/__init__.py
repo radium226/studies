@@ -10,6 +10,7 @@ from .models import AnnotatedFrame as AnnotatedFrame
 from .models import BoundingBox as BoundingBox
 from .models import Detection as Detection
 from .models import Face as Face
+from .models import FaceLandmarks as FaceLandmarks
 from .models import Frame as Frame
 from .models import FrameIndex as FrameIndex
 from .models import Landmark as Landmark

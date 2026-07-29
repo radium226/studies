@@ -13,7 +13,7 @@ to satisfy `kernel`'s (async) contracts and richer `Detection`/`Face`/`TrackedFa
 
 `kernel` stays dependency-free by design (see its own `CLAUDE.md`) — every numpy/scipy/opencv/
 onnxruntime-touching algorithm lives here instead, even when the algorithm itself is pure math
-(e.g. SCRFD box/landmark decoding, NMS, ByteTrack IoU re-association, PCHIP dispatch).
+(e.g. SCRFD box/landmark decoding, NMS, ByteTrack IoU re-association, spline dispatch).
 
 Depends on `kernel` via a `uv` path source (`../kernel`, editable) — not a workspace, matching
 the standalone-project style `app/` and `kernel/` already use.
@@ -44,12 +44,12 @@ src/video_analyzer/core/
 ├── bytetrack_tracker.py    ByteTrackTracker(kernel.Tracker) — wraps trackers.ByteTrackTracker
 │                           (buffered IoU, since detection cadence << video fps); re-associates
 │                           ByteTrack's Kalman-smoothed box back to the matched input detection
-│                           via hand-rolled IoU (_best_match) so drawn boxes/landmarks stay
+│                           via hand-rolled IoU (_best_iou_match) so drawn boxes/landmarks stay
 │                           consistent — cheap bookkeeping, no executor offload needed
-├── pchip_interpolator.py   PchipInterpolator(kernel.Interpolator) — the pure numeric half of
+├── spline_interpolator.py  SplineInterpolator(kernel.Interpolator) — the pure numeric half of
 │                           the pre-kernel LookaheadTrackBuffer: pchip/cubic/linear dispatch via
 │                           scipy, generic over anything implementing kernel.Interpolable
-│                           (to_vector/from_vector) — knows nothing about faces or tracks
+│                           (to_vector/with_vector) — knows nothing about faces or tracks
 ├── ffmpeg_frame_source.py  FfmpegFrameSource(kernel.FrameSource) — spawns the decoder ffmpeg
 │                           subprocess, probes video info, reshapes raw BGR24 bytes to
 │                           (H, W, 3) numpy frames
@@ -59,7 +59,7 @@ src/video_analyzer/core/
 │                           viewers) is NOT part of any kernel contract — read
 │                           read_output_chunk() yourself and wire it up downstream, same as
 │                           app/orchestrator.py does today
-├── overlay.py               draw_overlay / draw_dashed_rect — pure cv2 helpers, no ABC to
+├── overlay.py               draw_caption_text / draw_dashed_rect — pure cv2 helpers, no ABC to
 │                           satisfy; draw onto annotated_frame.frame.content before it reaches
 │                           a FrameSink if you want boxes burned into the video
 ├── stop_after_frame_count.py StopAfterFrameCount(kernel.FrameSource) — decorates a FrameSource,
@@ -67,18 +67,19 @@ src/video_analyzer/core/
 │                           read (still returns that frame). Generic, no numpy — lives here only
 │                           because kernel exposes the StopToken primitive but no concrete
 │                           condition for what should set it
-├── stop_on_face_found.py   StopOnFaceFound(kernel.FrameBroadcaster) — decorates a
+├── stop_on_first_annotation.py StopOnFirstAnnotation(kernel.FrameBroadcaster) — decorates a
 │                           FrameBroadcaster, requests an early kernel.StopToken stop the first
-│                           time an AnnotatedFrame carries a detection. Also generic
+│                           time an AnnotatedFrame carries a face record. Also generic
 ├── _pipe_io.py             shared asyncio subprocess-pipe helpers for the two ffmpeg wrappers
     (read_exact, drain_stderr, drain_and_discard, shutdown_process — mind the drain-during-
     shutdown requirement documented inline, or Process.wait() hangs)
 ```
 
 Not implemented here (no source algorithm exists anywhere to port, so nothing was invented):
-`SceneDetector`. `FrameBroadcaster` has no concrete implementation either — it's meant to be
-supplied by whatever application wires the pipeline together (e.g. push `AnnotatedFrame`
-metadata over a websocket); `core` has no opinion on transport.
+`SceneDetector`. `FrameBroadcaster` has no concrete implementation either (`StopOnFirstAnnotation`
+decorates one, but doesn't implement transport) — it's meant to be supplied by whatever
+application wires the pipeline together (e.g. push `AnnotatedFrame` metadata over a websocket);
+`core` has no opinion on transport.
 
 ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder` take a
 `model_path: Path` constructor argument; point it at `app/models/scrfd_10g_kps_dynamic.onnx` /
@@ -103,11 +104,11 @@ ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder`
   injectable `Executor`, defaulting to the loop's default thread pool) — `ByteTrackTracker.update`
   deliberately does not, since ByteTrack's update is cheap bookkeeping, not inference; don't add
   executor offloading there without a reason.
-- `StopAfterFrameCount`/`StopOnFaceFound` are the only generic classes in `core` — an intentional
-  exception to "everything that computes numbers belongs here, only `kernel`'s `Interpolator`/
-  `Interpolable` stays generic": neither touches frame content at all (one counts reads, the other
-  inspects `detections`), so pinning them to `NDArray[np.uint8]` like every other backend here
-  would just be dishonest about what they depend on.
+- `StopAfterFrameCount`/`StopOnFirstAnnotation` are the only generic classes in `core` — an
+  intentional exception to "everything that computes numbers belongs here, only `kernel`'s
+  `Interpolator`/`Interpolable` stays generic": neither touches frame content at all (one counts
+  reads, the other inspects `faces`), so pinning them to `NDArray[np.uint8]` like every other
+  backend here would just be dishonest about what they depend on.
 - `app/` was not touched when this project was created and still has its own inline
   `engine.py`/`detection.py`/`tracking.py`/`interpolation.py`/`reader.py`/`writer.py` copies —
   migrating `app/` to depend on `core`+`kernel` instead is a separate, not-yet-done task.

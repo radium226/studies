@@ -12,7 +12,13 @@ def _face(x: float, y: float, width: float, height: float) -> kernel.Face[np.nda
     return kernel.Face(
         detection=kernel.Detection(
             bounding_box=kernel.BoundingBox(x=x, y=y, width=width, height=height),
-            landmarks=((0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)),
+            landmarks=kernel.FaceLandmarks(
+                left_eye=(0.0, 0.0),
+                right_eye=(0.0, 0.0),
+                nose=(0.0, 0.0),
+                mouth_left=(0.0, 0.0),
+                mouth_right=(0.0, 0.0),
+            ),
             confidence=1.0,
         ),
         embedding=np.zeros(1, dtype=np.float32),
@@ -22,18 +28,18 @@ def _face(x: float, y: float, width: float, height: float) -> kernel.Face[np.nda
 def test_best_match_picks_highest_iou() -> None:
     faces = [_face(0, 0, 10, 10), _face(100, 100, 10, 10)]
     track_box = np.array([1.0, 1.0, 11.0, 11.0], dtype=np.float32)
-    assert ByteTrackTracker._best_match(track_box, faces) == 0
+    assert ByteTrackTracker._best_iou_match(track_box, faces) == 0
 
 
 def test_best_match_returns_none_when_no_overlap() -> None:
     faces = [_face(0, 0, 10, 10)]
     track_box = np.array([100.0, 100.0, 110.0, 110.0], dtype=np.float32)
-    assert ByteTrackTracker._best_match(track_box, faces) is None
+    assert ByteTrackTracker._best_iou_match(track_box, faces) is None
 
 
 def test_best_match_empty_faces() -> None:
     track_box = np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float32)
-    assert ByteTrackTracker._best_match(track_box, []) is None
+    assert ByteTrackTracker._best_iou_match(track_box, []) is None
 
 
 async def test_update_assigns_stable_track_id_across_calls() -> None:

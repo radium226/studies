@@ -104,7 +104,7 @@ class FfplayFrameSink(
         # into both — and `FfmpegFrameSource` frames are read-only views over the
         # decoder pipe's `bytes`, so OpenCV rejects them outright anyway.
         frame = annotated_frame.frame.content.copy()
-        _draw_detections(frame, annotated_frame.detections, annotated_frame.is_exact)
+        _draw_detections(frame, annotated_frame.faces, annotated_frame.is_exact)
         try:
             self._proc.stdin.write(frame.tobytes())
             await self._proc.stdin.drain()

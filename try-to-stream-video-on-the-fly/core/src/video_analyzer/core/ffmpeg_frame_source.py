@@ -7,8 +7,9 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple, Self
+from typing import Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,7 +19,8 @@ from video_analyzer import kernel
 from ._pipe_io import drain_stderr, read_exact, shutdown_process
 
 
-class VideoInfo(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class VideoInfo:
     width: int
     height: int
     fps: float
@@ -50,25 +52,27 @@ async def probe_video_info(source: str | Path) -> VideoInfo:
     return VideoInfo(int(stream["width"]), int(stream["height"]), fps)
 
 
-def resolve_resize(src_w: int, src_h: int, resize: tuple[int, int]) -> tuple[int, int]:
+def resolve_resize(
+    source_width: int, source_height: int, resize: tuple[int, int]
+) -> tuple[int, int]:
     """Resolve ffmpeg-style -1 placeholders to actual pixel counts.
 
     -1 means "keep aspect ratio, round to nearest even number". Always clamps
     the result to even dimensions (even the (-1, -1) "keep native" passthrough)
     since libx264's yuv420p output requires even width/height.
     """
-    rw, rh = resize
-    if rw == -1 and rh == -1:
-        rw, rh = src_w, src_h
-    elif rw == -1:
-        rw = max(1, round(src_w * rh / src_h))
-        rw += rw % 2
-    elif rh == -1:
-        rh = max(1, round(src_h * rw / src_w))
-        rh += rh % 2
-    rw -= rw % 2
-    rh -= rh % 2
-    return rw, rh
+    resized_width, resized_height = resize
+    if resized_width == -1 and resized_height == -1:
+        resized_width, resized_height = source_width, source_height
+    elif resized_width == -1:
+        resized_width = max(1, round(source_width * resized_height / source_height))
+        resized_width += resized_width % 2
+    elif resized_height == -1:
+        resized_height = max(1, round(source_height * resized_width / source_width))
+        resized_height += resized_height % 2
+    resized_width -= resized_width % 2
+    resized_height -= resized_height % 2
+    return resized_width, resized_height
 
 
 class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
@@ -101,13 +105,19 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
         read_rate: float = 1.0,
         stop_timeout: float = 5.0,
     ) -> AsyncIterator[Self]:
-        width, height, fps = await probe_video_info(source)
-        out_w, out_h = resolve_resize(width, height, resize or (-1, -1))
-        decoder_resize = (out_w, out_h) if (out_w, out_h) != (width, height) else None
+        source_video_info = await probe_video_info(source)
+        output_width, output_height = resolve_resize(
+            source_video_info.width, source_video_info.height, resize or (-1, -1)
+        )
+        decoder_resize = (
+            (output_width, output_height)
+            if (output_width, output_height) != (source_video_info.width, source_video_info.height)
+            else None
+        )
 
         self = cls(
             source,
-            VideoInfo(out_w, out_h, fps),
+            VideoInfo(output_width, output_height, source_video_info.fps),
             loop=loop,
             resize=decoder_resize,
             read_rate=read_rate,
@@ -127,7 +137,7 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
 
     async def read_frame(self) -> kernel.Frame[NDArray[np.uint8]] | None:
         assert self._proc is not None and self._proc.stdout is not None
-        width, height, _ = self.video_info
+        width, height = self.video_info.width, self.video_info.height
         frame_size = width * height * 3
         raw = await read_exact(self._proc.stdout, frame_size)
         if raw is None:

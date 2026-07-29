@@ -1,8 +1,10 @@
 """Play a local video file with detected/tracked faces drawn on it, via `ffplay`.
 
-Wires `core`'s real SCRFD/ArcFace/ByteTrack/PCHIP backends into `kernel.Pipeline`, adding this
+Wires `core`'s real SCRFD/ArcFace/ByteTrack/spline backends into `kernel.Pipeline`, adding this
 package's own `FfplayFrameSink` plus `NoopSceneDetector`/`NoopFrameBroadcaster` stubs for the two
-service slots neither `kernel` nor `core` implements.
+service slots neither `kernel` nor `core` implements. `--play-tracks` swaps the no-op broadcaster
+for `TrackRecordingFrameBroadcaster`, which replays each discovered face track through its own
+`ffplay` window once the main video finishes.
 """
 
 from __future__ import annotations
@@ -12,7 +14,10 @@ import sys
 from pathlib import Path
 
 import click
+import numpy as np
 from loguru import logger
+from numpy.typing import NDArray
+from video_analyzer.core.overlay import draw_caption_text
 
 from video_analyzer import core, kernel
 
@@ -20,6 +25,7 @@ from .ffplay_frame_sink import FfplayFrameSink
 from .noop_frame_broadcaster import NoopFrameBroadcaster
 from .noop_scene_detector import NoopSceneDetector
 from .system_clock import SystemClock
+from .track_recording_frame_broadcaster import TrackRecordingFrameBroadcaster
 
 
 def _configure_logging() -> None:
@@ -29,6 +35,34 @@ def _configure_logging() -> None:
     logger.remove()
     logger.add(sys.stderr, level="TRACE")
     logger.enable("video_analyzer")
+
+
+async def _play_tracks(
+    crops_by_track: dict[int, list[NDArray[np.uint8]]],
+    *,
+    crop_size: int,
+    fps: float,
+) -> None:
+    """Play each recorded track's face crops back through its own `ffplay` window, one track
+    at a time, in track-id order — after the main video's own window has already closed."""
+    if not crops_by_track:
+        logger.info("play-tracks: no tracks were found")
+        return
+    for track_id in sorted(crops_by_track):
+        crops = crops_by_track[track_id]
+        logger.info("play-tracks: playing track #{} ({} frames)", track_id, len(crops))
+        async with FfplayFrameSink.start(crop_size, crop_size, fps) as track_sink:
+            for index, crop in enumerate(crops):
+                content = crop.copy()
+                draw_caption_text(content, f"track #{track_id}")
+                await track_sink.write_frame(
+                    kernel.AnnotatedFrame(
+                        frame=kernel.Frame(index=index, content=content),
+                        faces=[],
+                        interpolation_bracket=None,
+                        is_exact=True,
+                    )
+                )
 
 
 async def _run(
@@ -41,6 +75,8 @@ async def _run(
     rendering: kernel.RenderingConfig,
     stop_after_frames: int | None,
     stop_on_face_found: bool,
+    play_tracks: bool,
+    track_crop_size: int,
 ) -> None:
     stop_token = kernel.StopToken()
     async with core.FfmpegFrameSource.start(
@@ -48,7 +84,8 @@ async def _run(
     ) as raw_frame_source:
         # Always the file's native fps — `read_rate` paces how fast frames come
         # out, it doesn't change what the video *is*.
-        width, height, fps = raw_frame_source.video_info
+        video_info = raw_frame_source.video_info
+        width, height, fps = video_info.width, video_info.height, video_info.fps
         frame_source: kernel.FrameSource = raw_frame_source
         if stop_after_frames is not None:
             frame_source = core.StopAfterFrameCount(
@@ -65,8 +102,14 @@ async def _run(
                 width, height, fps * speed_factor_target
             ) as frame_sink:
                 frame_broadcaster: kernel.FrameBroadcaster = NoopFrameBroadcaster()
+                track_recorder: TrackRecordingFrameBroadcaster | None = None
+                if play_tracks:
+                    track_recorder = TrackRecordingFrameBroadcaster(
+                        crop_size=track_crop_size
+                    )
+                    frame_broadcaster = track_recorder
                 if stop_on_face_found:
-                    frame_broadcaster = core.StopOnFaceFound(
+                    frame_broadcaster = core.StopOnFirstAnnotation(
                         frame_broadcaster, stop_token
                     )
                 pipeline = kernel.Pipeline(
@@ -78,7 +121,7 @@ async def _run(
                     # detection snapshot, not per video frame, so its wall-clock
                     # update rate doesn't move with playback speed.
                     tracker=core.ByteTrackTracker(fps),
-                    interpolator=core.PchipInterpolator(),
+                    interpolator=core.SplineInterpolator(),
                     frame_sink=frame_sink,
                     frame_broadcaster=frame_broadcaster,
                     config=kernel.PipelineConfig(
@@ -95,7 +138,13 @@ async def _run(
                         rendering=rendering,
                     ),
                 )
-                await pipeline.drain(frame_source, stop_token=stop_token)
+                await pipeline.run(frame_source, stop_token=stop_token)
+            if track_recorder is not None:
+                await _play_tracks(
+                    track_recorder.crops_by_track,
+                    crop_size=track_crop_size,
+                    fps=fps * speed_factor_target,
+                )
 
 
 @click.command()
@@ -169,6 +218,22 @@ async def _run(
     "the configured --lookahead delay), so a few extra frames may still play past the "
     "actual first detection.",
 )
+@click.option(
+    "--play-tracks",
+    is_flag=True,
+    default=False,
+    help="After the main video finishes, replay each discovered face track's crop through "
+    "its own ffplay window, one track at a time, in track-id order. Every rendered frame's "
+    "faces are buffered in memory for the whole run, so this costs more RAM the longer the "
+    "video and the more faces it contains.",
+)
+@click.option(
+    "--track-crop-size",
+    type=click.IntRange(min=16),
+    default=160,
+    show_default=True,
+    help="Side length (pixels) each face crop is resized to for --play-tracks playback.",
+)
 def main(
     video_path: Path,
     scrfd_model: Path,
@@ -179,6 +244,8 @@ def main(
     lookahead: int,
     stop_after_frames: int | None,
     stop_on_face_found: bool,
+    play_tracks: bool,
+    track_crop_size: int,
 ) -> None:
     _configure_logging()
     asyncio.run(
@@ -193,6 +260,8 @@ def main(
             rendering=kernel.RenderingConfig(lookahead_snapshots=lookahead),
             stop_after_frames=stop_after_frames,
             stop_on_face_found=stop_on_face_found,
+            play_tracks=play_tracks,
+            track_crop_size=track_crop_size,
         )
     )
 

@@ -10,23 +10,23 @@ class BatchGate:
         self,
         clock: Clock,
         frames_per_second: float,
-        max_batch_frames: int,
-        max_batch_lag_ms: float,
+        max_frames: int,
+        max_lag_ms: float,
     ) -> None:
         self.clock = clock
         self.frames_per_second = frames_per_second
-        self.max_batch_frames = max(1, max_batch_frames)
-        self.max_batch_lag_ms = max(0.0, max_batch_lag_ms)
+        self.max_frames = max(1, max_frames)
+        self.max_lag_ms = max(0.0, max_lag_ms)
         self.token_bucket = TokenBucket(
             capacity=1.0, refill_rate=frames_per_second, clock=clock
         )
         self.eligible_since: float | None = None
         logger.debug(
-            "BatchGate configured: frames_per_second={}, max_batch_frames={}, "
-            "max_batch_lag_ms={}",
+            "BatchGate configured: frames_per_second={}, max_frames={}, "
+            "max_lag_ms={}",
             frames_per_second,
-            self.max_batch_frames,
-            self.max_batch_lag_ms,
+            self.max_frames,
+            self.max_lag_ms,
         )
 
     def reset(self) -> None:
@@ -51,16 +51,16 @@ class BatchGate:
                 available_frames,
             )
             self.eligible_since = now
-        batch_full = available_frames >= self.max_batch_frames
+        batch_full = available_frames >= self.max_frames
         lag_ms = (now - self.eligible_since) * 1000.0
-        lag_exceeded = lag_ms >= self.max_batch_lag_ms
+        lag_exceeded = lag_ms >= self.max_lag_ms
         if not batch_full and not lag_exceeded:
             logger.trace(
                 "BatchGate: holding — {} of {} frames, lag {:.1f} of {:.1f} ms",
                 available_frames,
-                self.max_batch_frames,
+                self.max_frames,
                 lag_ms,
-                self.max_batch_lag_ms,
+                self.max_lag_ms,
             )
             return False
         logger.debug(

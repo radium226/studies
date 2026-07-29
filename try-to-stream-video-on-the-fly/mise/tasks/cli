@@ -2,4 +2,15 @@
 #MISE description="Play a video with detected/tracked faces drawn, via ffplay"
 set -euxo pipefail
 
+# `uv --directory=cli` below runs video-analyzer-cli with cli/ as its cwd, so a
+# relative video path would resolve against cli/ instead of where it's meant
+# to be interpreted from. Resolve it (if present and not itself an option
+# flag) to an absolute path against MISE_PROJECT_ROOT before that directory
+# change happens, so it survives unchanged either way.
+if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+    video_path="$(cd "${MISE_PROJECT_ROOT}" && realpath -- "$1")"
+    shift
+    set -- "${video_path}" "$@"
+fi
+
 uv --directory="${MISE_PROJECT_ROOT}/cli" run video-analyzer-cli "$@"

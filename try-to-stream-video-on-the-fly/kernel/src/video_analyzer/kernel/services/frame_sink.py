@@ -3,15 +3,15 @@ from abc import ABC, abstractmethod
 from ..models import AnnotatedFrame
 
 
-class FrameSink[FrameContentT, DetectionT](ABC):
+class FrameSink[FrameContentT, FaceRecordT](ABC):
 
     @abstractmethod
     async def write_frame(
         self,
-        annotated_frame: AnnotatedFrame[FrameContentT, DetectionT],
+        annotated_frame: AnnotatedFrame[FrameContentT, FaceRecordT],
     ) -> None:
         """Consume one rendered frame. The kernel never draws — burning the
-        frame's `detections` into its pixels, if that's wanted, is the sink's job.
+        frame's `faces` into its pixels, if that's wanted, is the sink's job.
 
         Do it on a **copy**: `annotated_frame.frame.content` is shared with the
         detection buffer and with the `FrameBroadcaster` that is handed the same
