@@ -48,10 +48,15 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
 - `--stop-after-frames N` — stop early after N frames are read, via `core.StopAfterFrameCount`
   wrapping the `FrameSource`. Graceful: frames already read still drain all the way through the
   pipeline, same as natural end-of-stream (see `kernel.StopToken`).
-- `--stop-on-first-track` — stop early as soon as the tracker confirms its first face track, via
-  `core.StopOnFirstTrack` wrapping the `Tracker`. Fires at the tracking stage, so no
-  interpolation/`--lookahead` drain has to happen first — but the stop is still graceful: frames
-  already read keep flowing through the pipeline, so playback continues briefly past the trigger.
+- `--stop-on-first-track` — stop early once the first face track reaches `--min-track-frames N`
+  rendered frames (default `30`, ~1 s at 30 fps), via `core.StopOnFirstTrack` wrapping the
+  `FrameBroadcaster`. N is *the definition of a track* here, measured in video frames — exact
+  detections and the interpolated frames between them count alike, which is exactly why the
+  condition sits at the broadcast stage: interpolated frames only exist downstream of the render
+  cursor, so a tracker-level condition could only ever count sparse detection snapshots. The
+  stop is still graceful (same `kernel.StopToken` contract as `--stop-after-frames`): frames
+  already read keep flowing through the pipeline, so playback continues briefly past the
+  trigger and the track keeps growing while the tail drains.
 - `--play-tracks` — after the main video's `ffplay` window closes, replay each discovered face
   track through its own `ffplay` window, one track at a time, in track-id order, via
   `TrackRecordingFrameBroadcaster` (a real `FrameBroadcaster` — `core` ships none, see
@@ -106,9 +111,14 @@ src/video_analyzer/cli/
 │                              — a real (non-noop) FrameBroadcaster: crops+resizes tracked faces
 │                              out of each rendered frame and buffers them by track_id in
 │                              crops_by_track (up to max_crops_per_track each — the track's first
-│                              N frames). Only wired in when --play-tracks is passed; composes
-│                              with --stop-on-first-track (which decorates the Tracker, not the
-│                              broadcaster), still recording whatever drains after the stop.
+│                              N frames). Records every rendered frame a track appears in —
+│                              interpolated and held frames as much as exact detections, each
+│                              cropped at that frame's own (possibly interpolated) box
+│                              (tests/test_track_recording_frame_broadcaster.py pins this). Only
+│                              wired in when --play-tracks is passed; composes with
+│                              --stop-on-first-track (core.StopOnFirstTrack wraps *around* this
+│                              recorder, delegating every frame before counting it), still
+│                              recording whatever drains after the stop.
 ├── noop_scene_detector.py     NoopSceneDetector(kernel.SceneDetector) — always returns False;
 │                              the --no-scene-detection backend (the pipeline calls
 │                              detect_scene_cut on every frame pair; answering False means
@@ -163,9 +173,11 @@ the repo, but can point anywhere.
   `AsyncExitStack` as the async ffmpeg/ffplay contexts (`enter_context` vs
   `enter_async_context`), which is exactly what the stack is for.
 - The test suite (`tests/`) is deliberately minimal — it's a thin wiring example; `kernel`/`core`
-  already unit-test every piece it composes. The only tests here cover `main()`'s own logic: the
-  SOURCE argument's file-or-URL validation and pass-through (`_run` is stubbed out, so no
-  pipeline, ffmpeg, or yt-dlp runs). Don't grow it beyond glue this package itself owns.
+  already unit-test every piece it composes. The only tests here cover glue this package itself
+  owns: `main()`'s SOURCE argument handling (file-or-URL validation and pass-through — `_run` is
+  stubbed out, so no pipeline, ffmpeg, or yt-dlp runs) and
+  `TrackRecordingFrameBroadcaster`'s recording of interpolated/held frames. Don't grow it beyond
+  that.
 - `TrackRecordingFrameBroadcaster.crops_by_track` is bounded *per track* by `--max-track-crops`
   (default `300` crops — a track's first N rendered frames; `0`/`None` restores the old
   record-everything behavior). Note the bound is per track, not global: total memory still grows

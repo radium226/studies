@@ -76,9 +76,14 @@ src/video_analyzer/core/
 │                           read (still returns that frame). Generic, no numpy — lives here only
 │                           because kernel exposes the StopToken primitive but no concrete
 │                           condition for what should set it
-├── stop_on_first_track.py  StopOnFirstTrack(kernel.Tracker) — decorates a Tracker, requests an
-│                           early kernel.StopToken stop the first time update() comes back with
-│                           a confirmed track. Also generic
+├── stop_on_first_track.py  StopOnFirstTrack(kernel.FrameBroadcaster) — decorates a
+│                           FrameBroadcaster, requests an early kernel.StopToken stop once one
+│                           same track id has appeared in `min_track_frames` *rendered* frames
+│                           (default 1). The definition of a track in video frames — exact,
+│                           interpolated, and held appearances all count, which is why it sits
+│                           on the output side: interpolated frames only exist downstream of
+│                           the render cursor. Per-track counts reset at scene-start frames
+│                           (ByteTrack may reuse ids after its own reset). Also generic
 ├── yt_dlp_url_resolver.py  resolve_direct_media_url — resolves a page URL (YouTube, etc.) to a
 │                           direct media URL via the `yt-dlp` CLI (a subprocess on PATH, like
 │                           ffmpeg/ffprobe — not a Python package), so it can be handed to
@@ -122,8 +127,8 @@ ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder`
 - `StopAfterFrameCount`/`StopOnFirstTrack` are the only generic classes in `core` — an
   intentional exception to "everything that computes numbers belongs here, only `kernel`'s
   `Interpolator`/`Interpolable` stays generic": neither touches frame content at all (one counts
-  reads, the other inspects the tracker's output), so pinning them to `NDArray[np.uint8]` like
-  every other backend here would just be dishonest about what they depend on.
+  reads, the other counts rendered frames per track id), so pinning them to `NDArray[np.uint8]`
+  like every other backend here would just be dishonest about what they depend on.
 - `app/` was not touched when this project was created and still has its own inline
   `engine.py`/`detection.py`/`tracking.py`/`interpolation.py`/`reader.py`/`writer.py` copies —
   migrating `app/` to depend on `core`+`kernel` instead is a separate, not-yet-done task.

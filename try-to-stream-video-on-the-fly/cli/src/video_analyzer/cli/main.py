@@ -76,6 +76,7 @@ async def _run(
     scene_detection: bool,
     stop_after_frames: int | None,
     stop_on_first_track: bool,
+    min_track_frames: int,
     play_tracks: bool,
     track_crop_size: int,
     max_track_crops: int | None,
@@ -118,13 +119,20 @@ async def _run(
                 crop_size=track_crop_size, max_crops_per_track=max_track_crops
             )
             frame_broadcaster = track_recorder
+        if stop_on_first_track:
+            # The stop condition sits at the broadcast stage — the only place
+            # interpolated frames exist — so "a track" really means a face on
+            # screen for at least --min-track-frames rendered frames, exact
+            # and interpolated alike. A tracker-level condition could only
+            # count sparse detection snapshots.
+            frame_broadcaster = core.StopOnFirstTrack(
+                frame_broadcaster, stop_token, min_track_frames=min_track_frames
+            )
 
         # Native fps here too: the tracker is stepped once per detection
         # snapshot, not per video frame, so its wall-clock update rate
         # doesn't move with playback speed.
         tracker: kernel.Tracker = core.ByteTrackTracker(fps)
-        if stop_on_first_track:
-            tracker = core.StopOnFirstTrack(tracker, stop_token)
 
         pipeline = kernel.Pipeline(
             clock=SystemClock(),
@@ -233,9 +241,19 @@ async def _run(
     "--stop-on-first-track",
     is_flag=True,
     default=False,
-    help="Stop the pipeline early as soon as the tracker confirms its first face track. "
-    "Graceful, like --stop-after-frames: frames already read still drain all the way "
-    "through the pipeline, so playback continues briefly past the trigger.",
+    help="Stop the pipeline early once the first face track reaches --min-track-frames "
+    "rendered frames. Graceful, like --stop-after-frames: frames already read still "
+    "drain all the way through the pipeline, so playback continues briefly past the "
+    "trigger (and the track keeps growing while it does).",
+)
+@click.option(
+    "--min-track-frames",
+    type=click.IntRange(min=1),
+    default=30,
+    show_default=True,
+    help="What defines a track for --stop-on-first-track: the minimum number of video "
+    "frames a face must appear in — exact detections and the interpolated frames between "
+    "them alike (~1 s at 30 fps by default). Ignored without --stop-on-first-track.",
 )
 @click.option(
     "--play-tracks",
@@ -274,6 +292,7 @@ def main(
     scene_detection: bool,
     stop_after_frames: int | None,
     stop_on_first_track: bool,
+    min_track_frames: int,
     play_tracks: bool,
     track_crop_size: int,
     max_track_crops: int,
@@ -300,6 +319,7 @@ def main(
             scene_detection=scene_detection,
             stop_after_frames=stop_after_frames,
             stop_on_first_track=stop_on_first_track,
+            min_track_frames=min_track_frames,
             play_tracks=play_tracks,
             track_crop_size=track_crop_size,
             # click can't express "int or unlimited" in one type, so 0 is the
