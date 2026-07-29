@@ -67,22 +67,22 @@ def test_pipeline() -> None:
 
     asyncio.run(pipeline.run(frame_source))
 
-    # Detection runs sparsely and interpolation lags by design (it needs
-    # future snapshots to avoid extrapolating), so not every source frame is
-    # guaranteed to make it out the other end — but at least some should.
-    assert 0 < len(frame_sink.written_frames) <= len(source_frames)
-    assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
-
-    for annotated_frame in frame_sink.written_frames:
-        assert annotated_frame.interpolation_bracket is not None
-        assert len(annotated_frame.faces) == 1
-        assert annotated_frame.faces[0].track_id == 0
-
-    # Frames are emitted in the order the render cursor advances through them.
+    # Every input frame comes out exactly once, in order: detection runs
+    # sparsely and interpolation lags, but the render cursor catches up in
+    # bursts and the end-of-stream flush drains the lookahead tail.
     rendered_indices = [
         annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
     ]
-    assert rendered_indices == sorted(rendered_indices)
+    assert rendered_indices == [frame.index for frame in source_frames]
+    assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
+
+    for annotated_frame in frame_sink.written_frames:
+        assert len(annotated_frame.faces) == 1
+        assert annotated_frame.faces[0].track_id == 0
+        if annotated_frame.interpolation_bracket is None:
+            # Held frame: only the flushed tail past the last detection
+            # snapshot may lack a bracket.
+            assert annotated_frame.is_exact is False
 
 
 def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
@@ -193,9 +193,11 @@ def test_stop_token_set_mid_stream_still_drains_already_read_frames() -> None:
     asyncio.run(pipeline.run(frame_source, stop_token=stop_token))
 
     assert len(frame_source.remaining_frames) == 10_000 - (stop_after_index + 1)
-    assert 0 < len(frame_sink.written_frames)
+    # Every frame read before the stop still comes out, exactly once, in order.
+    assert [
+        annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
+    ] == list(range(stop_after_index + 1))
     assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
-    assert max(annotated_frame.frame.index for annotated_frame in frame_sink.written_frames) <= stop_after_index
 
 
 def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
@@ -209,5 +211,46 @@ def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
 
     asyncio.run(pipeline.run(frame_source, stop_token=StopToken()))
 
-    assert 0 < len(frame_sink.written_frames) <= len(source_frames)
+    assert len(frame_sink.written_frames) == len(source_frames)
     assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
+
+
+def test_all_frames_emitted_even_when_detection_stalls_mid_stream() -> None:
+    """The render cursor must never drop frames while detections are late: it
+    waits, then catches up in a burst once the next snapshots land."""
+
+    class StallingFaceDetector(FaceDetector):
+        def __init__(self) -> None:
+            self.detect_calls = 0
+
+        async def detect_faces(self, frame_batch: Any) -> Any:
+            self.detect_calls += 1
+            if self.detect_calls == 2:
+                # Let a long stretch of frames flow past while this detection
+                # pass is "busy" — the backlog must come out the other end.
+                for _ in range(500):
+                    await asyncio.sleep(0)
+            return await super().detect_faces(frame_batch)
+
+    pipeline = Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(),
+        face_detector=StallingFaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=(frame_sink := FrameSink()),
+        frame_broadcaster=FrameBroadcaster(),
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+    source_frames = [Frame(index=index, content=index * 10) for index in range(60)]
+
+    asyncio.run(pipeline.run(FrameSource(source_frames)))
+
+    assert [
+        annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
+    ] == [frame.index for frame in source_frames]

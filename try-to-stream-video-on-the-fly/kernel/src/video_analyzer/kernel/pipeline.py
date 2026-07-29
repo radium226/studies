@@ -1,13 +1,13 @@
 import asyncio
 import contextlib
 from asyncio import TaskGroup
-from typing import NamedTuple
 
 from loguru import logger
 
 from .batch_gate import BatchGate
 from .channel import Channel
 from .config import PipelineConfig
+from .render_cursor import RenderCursor
 from .stop_token import StopToken
 from .models import AnnotatedFrame, Face, Frame, FrameIndex, Snapshot, TrackedFace
 from .services import (
@@ -57,137 +57,6 @@ def _sample_evenly(indices: list[FrameIndex], max_count: int) -> list[FrameIndex
         return [indices[-1]]
     step = (len(indices) - 1) / (max_count - 1)
     return [indices[round(i * step)] for i in range(max_count)]
-
-
-class _AdvanceResult[FaceEmbeddingT](NamedTuple):
-    frame_index: FrameIndex
-    is_exact: bool
-    bracket: tuple[Snapshot[TrackedFace[FaceEmbeddingT]], Snapshot[TrackedFace[FaceEmbeddingT]]]
-    faces: list[TrackedFace[FaceEmbeddingT]]
-
-
-class _RenderCursor[FaceEmbeddingT]:
-    """Lags `lookahead_snapshots` snapshots behind the newest tracked snapshot so
-    every frame it emits lies strictly between two real detections — never
-    extrapolated. One `advance()` call is expected per incoming video frame,
-    matching however many `push_snapshot()` calls have landed by then
-    (detection and video run at unrelated rates).
-
-    This holds only the *timing* bookkeeping (which segment, which frame index
-    to render, when to prune old snapshots) — the actual coordinate math is
-    delegated to the injected `Interpolator`, which is pure numeric fill.
-    """
-
-    def __init__(
-        self,
-        lookahead_snapshots: int,
-        interpolator: Interpolator[TrackedFace[FaceEmbeddingT]],
-    ) -> None:
-        self._lookahead_snapshots = lookahead_snapshots
-        self._interpolator = interpolator
-        self._snapshots: list[Snapshot[TrackedFace[FaceEmbeddingT]]] = []
-        self._segment_index = 0
-        self._render_cursor: float | None = None
-
-    def push_snapshot(self, snapshot: Snapshot[TrackedFace[FaceEmbeddingT]]) -> None:
-        self._snapshots.append(snapshot)
-
-    @property
-    def can_advance(self) -> bool:
-        # Need the segment end (segment_index+1) plus `lookahead_snapshots` more
-        # snapshots ahead of it.
-        return len(self._snapshots) > self._segment_index + self._lookahead_snapshots + 1
-
-    async def advance(self) -> _AdvanceResult[FaceEmbeddingT] | None:
-        if not self.can_advance:
-            return None
-        frame_index, is_exact = self._advance_segment()
-        bracket = (
-            self._snapshots[self._segment_index],
-            self._snapshots[self._segment_index + 1],
-        )
-        faces = await self._interpolate(frame_index)
-        return _AdvanceResult(
-            frame_index=frame_index, is_exact=is_exact, bracket=bracket, faces=faces
-        )
-
-    def _advance_segment(self) -> tuple[FrameIndex, bool]:
-        segment_start = self._snapshots[self._segment_index]
-        segment_end = self._snapshots[self._segment_index + 1]
-
-        if self._render_cursor is None:
-            self._render_cursor = float(segment_start.frame_index)
-
-        # Clamp to the current segment for pure interpolation.
-        frame_index = int(
-            min(max(self._render_cursor, segment_start.frame_index), segment_end.frame_index)
-        )
-        is_exact = frame_index in (segment_start.frame_index, segment_end.frame_index)
-        self._render_cursor += 1.0
-
-        # Advance to the next segment once the cursor leaves the current one,
-        # but only while enough lookahead remains beyond the new segment end.
-        while (
-            self._render_cursor > self._snapshots[self._segment_index + 1].frame_index
-            and len(self._snapshots) > self._segment_index + self._lookahead_snapshots + 2
-        ):
-            self._segment_index += 1
-
-        # Snapshots behind the spline window can never be used again.
-        drop = self._segment_index - self._lookahead_snapshots
-        if drop > 0:
-            del self._snapshots[:drop]
-            self._segment_index -= drop
-
-        # Cap the cursor at the newest frame we can still interpolate, so a gap
-        # in detection arrivals doesn't let the cursor free-run and then lurch
-        # forward once the next burst of snapshots lands.
-        newest = len(self._snapshots) - self._lookahead_snapshots - 1
-        if newest >= 1:
-            cap = float(self._snapshots[newest].frame_index)
-            if self._render_cursor > cap:
-                self._render_cursor = cap
-
-        return frame_index, is_exact
-
-    async def _interpolate(
-        self, frame_index: FrameIndex
-    ) -> list[TrackedFace[FaceEmbeddingT]]:
-        """Interpolate every face of the current segment's start snapshot,
-        matching control points across snapshots by track id."""
-        segment_start = self._snapshots[self._segment_index]
-
-        window_start = max(0, self._segment_index - self._lookahead_snapshots)
-        window_end = min(
-            len(self._snapshots), self._segment_index + self._lookahead_snapshots + 2
-        )
-        window = self._snapshots[window_start:window_end]
-        span_start = window[0].frame_index
-        span = window[-1].frame_index - span_start + 1
-
-        results: list[TrackedFace[FaceEmbeddingT]] = []
-        for tracked_face in segment_start.faces:
-            track_id = tracked_face.track_id
-            slots: list[TrackedFace[FaceEmbeddingT] | None] = [None] * span
-            known = 0
-            for snapshot in window:
-                match = next(
-                    (
-                        candidate_face
-                        for candidate_face in snapshot.faces
-                        if candidate_face.track_id == track_id
-                    ),
-                    None,
-                )
-                if match is not None:
-                    slots[snapshot.frame_index - span_start] = match
-                    known += 1
-            if known < 2:
-                results.append(tracked_face)
-                continue
-            filled = await self._interpolator.interpolate(slots)
-            results.append(filled[frame_index - span_start])
-        return results
 
 
 class Pipeline[FrameContentT, FaceEmbeddingT]:
@@ -389,10 +258,51 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             AnnotatedFrame[FrameContentT, TrackedFace[FaceEmbeddingT]]
         ],
     ) -> None:
-        cursor: _RenderCursor[FaceEmbeddingT] = _RenderCursor(
+        cursor: RenderCursor[FaceEmbeddingT] = RenderCursor(
             self.config.rendering.lookahead_snapshots, self.interpolator
         )
         pending_frames: dict[FrameIndex, Frame[FrameContentT]] = {}
+        # The last faces actually emitted — held frames (ones the cursor cannot
+        # interpolate: the tail past the final snapshot, or a frame the cursor
+        # skipped past) reuse these so annotations freeze rather than vanish.
+        held_faces: list[TrackedFace[FaceEmbeddingT]] = []
+
+        async def emit_held(frame: Frame[FrameContentT]) -> None:
+            await annotated_frame_channel.send(
+                AnnotatedFrame(
+                    frame=frame,
+                    faces=held_faces,
+                    interpolation_bracket=None,
+                    is_exact=False,
+                )
+            )
+
+        async def drain_cursor() -> None:
+            """Emit every frame the cursor can currently reach — nothing while
+            detections stall, a catch-up burst once they land. Every input
+            frame comes out exactly once (short of the `_MAX_PENDING_FRAMES`
+            eviction): the cursor walks indices sequentially without duplicates
+            or gaps, and any pending frame it somehow got ahead of is emitted
+            as held rather than dropped."""
+            nonlocal held_faces
+            while (result := await cursor.advance()) is not None:
+                for skipped_index in sorted(
+                    index for index in pending_frames if index < result.frame_index
+                ):
+                    await emit_held(pending_frames.pop(skipped_index))
+                rendered_frame = pending_frames.pop(result.frame_index, None)
+                if rendered_frame is None:
+                    # Aged out via the pending cap — nothing left to render.
+                    continue
+                held_faces = result.faces
+                await annotated_frame_channel.send(
+                    AnnotatedFrame(
+                        frame=rendered_frame,
+                        faces=result.faces,
+                        interpolation_bracket=result.bracket,
+                        is_exact=result.is_exact,
+                    )
+                )
 
         async def collect_snapshots() -> None:
             async for snapshot in tracked_snapshot_channel:
@@ -404,30 +314,21 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 pending_frames[frame.index] = frame
                 if len(pending_frames) > _MAX_PENDING_FRAMES:
                     del pending_frames[min(pending_frames)]
+                await drain_cursor()
 
-                result = await cursor.advance()
-                if result is None:
-                    continue
-                rendered_frame = pending_frames.pop(result.frame_index, None)
-                # The render cursor only ever moves forward, so any frame older
-                # than the one it just asked for is unreachable — same reason as
-                # in `sample_and_detect`, same cost for holding on to it.
-                for stale_index in [
-                    index for index in pending_frames if index < result.frame_index
-                ]:
-                    del pending_frames[stale_index]
-                if rendered_frame is None:
-                    # Either the cursor is clamped and re-asked for a frame we
-                    # already emitted, or the frame aged out — nothing to render.
-                    continue
-                await annotated_frame_channel.send(
-                    AnnotatedFrame(
-                        frame=rendered_frame,
-                        faces=result.faces,
-                        interpolation_bracket=result.bracket,
-                        is_exact=result.is_exact,
-                    )
-                )
+            # Clean end of stream. The upstream stages close their channels in
+            # `finally` even when stopping early, so the collector is
+            # guaranteed to finish once the trailing detection batches have
+            # flowed through — wait for them, then flush: first everything the
+            # remaining snapshots can still interpolate (lookahead margin
+            # dropped), then the tail beyond the last snapshot with its
+            # annotations held. Without this the whole lookahead window of
+            # frames silently vanished at end of stream.
+            await collector
+            cursor.finish()
+            await drain_cursor()
+            for tail_index in sorted(pending_frames):
+                await emit_held(pending_frames.pop(tail_index))
         finally:
             # `collect_snapshots` has no end of its own — it sits on
             # `tracked_snapshot_channel` until that channel closes. Awaiting it
