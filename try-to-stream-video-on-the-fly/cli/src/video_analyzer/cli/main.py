@@ -70,7 +70,7 @@ async def _run(
     rendering: kernel.RenderingConfig,
     scene_detection: bool,
     stop_after_frames: int | None,
-    stop_on_face_found: bool,
+    stop_on_first_track: bool,
     play_tracks: bool,
     track_crop_size: int,
     max_track_crops: int | None,
@@ -110,8 +110,13 @@ async def _run(
                 crop_size=track_crop_size, max_crops_per_track=max_track_crops
             )
             frame_broadcaster = track_recorder
-        if stop_on_face_found:
-            frame_broadcaster = core.StopOnFirstAnnotation(frame_broadcaster, stop_token)
+
+        # Native fps here too: the tracker is stepped once per detection
+        # snapshot, not per video frame, so its wall-clock update rate
+        # doesn't move with playback speed.
+        tracker: kernel.Tracker = core.ByteTrackTracker(fps)
+        if stop_on_first_track:
+            tracker = core.StopOnFirstTrack(tracker, stop_token)
 
         pipeline = kernel.Pipeline(
             clock=SystemClock(),
@@ -120,10 +125,7 @@ async def _run(
             ),
             face_detector=face_detector,
             face_embedder=face_embedder,
-            # Native fps here too: the tracker is stepped once per
-            # detection snapshot, not per video frame, so its wall-clock
-            # update rate doesn't move with playback speed.
-            tracker=core.ByteTrackTracker(fps),
+            tracker=tracker,
             interpolator=core.SplineInterpolator(),
             frame_sink=frame_sink,
             frame_broadcaster=frame_broadcaster,
@@ -222,13 +224,12 @@ async def _run(
     "doesn't cut playback off mid-frame, it just stops feeding the pipeline further input.",
 )
 @click.option(
-    "--stop-on-face-found",
+    "--stop-on-first-track",
     is_flag=True,
     default=False,
-    help="Stop the pipeline early the first time a face is detected. Reacts once that "
-    "frame has gone all the way through the pipeline (detection, tracking, interpolation, "
-    "the configured --lookahead delay), so a few extra frames may still play past the "
-    "actual first detection.",
+    help="Stop the pipeline early as soon as the tracker confirms its first face track. "
+    "Graceful, like --stop-after-frames: frames already read still drain all the way "
+    "through the pipeline, so playback continues briefly past the trigger.",
 )
 @click.option(
     "--play-tracks",
@@ -266,7 +267,7 @@ def main(
     lookahead: int,
     scene_detection: bool,
     stop_after_frames: int | None,
-    stop_on_face_found: bool,
+    stop_on_first_track: bool,
     play_tracks: bool,
     track_crop_size: int,
     max_track_crops: int,
@@ -284,7 +285,7 @@ def main(
             rendering=kernel.RenderingConfig(lookahead_snapshots=lookahead),
             scene_detection=scene_detection,
             stop_after_frames=stop_after_frames,
-            stop_on_face_found=stop_on_face_found,
+            stop_on_first_track=stop_on_first_track,
             play_tracks=play_tracks,
             track_crop_size=track_crop_size,
             # click can't express "int or unlimited" in one type, so 0 is the

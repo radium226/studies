@@ -150,8 +150,9 @@ reading further frames — it never cancels or hard-cuts anything downstream; fr
 keep flowing through detection/tracking/interpolation/render exactly as they would at natural end
 of stream, so an early, graceful stop needs no teardown path beyond the one that already exists
 for source exhaustion. Kernel exposes only the token: deciding *when* to call `request_stop()`
-(after N frames, once a face is found, ...) is composing code's job, built as a decorator around
-an existing `FrameSource`/`FrameBroadcaster`/`FrameSink` — not a new kernel service ABC.
+(after N frames, once a track is confirmed, ...) is composing code's job, built as a decorator
+around an existing service (`FrameSource`, `Tracker`, `FrameBroadcaster`, `FrameSink`, ...) — not
+a new kernel service ABC.
 
 **Every** channel carrying whole frames is bounded, so a stage slower than the source pushes
 backpressure back to the decoder. `render_frames` and `annotated_frames` get

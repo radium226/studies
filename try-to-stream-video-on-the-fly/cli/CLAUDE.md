@@ -45,11 +45,10 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
 - `--stop-after-frames N` — stop early after N frames are read, via `core.StopAfterFrameCount`
   wrapping the `FrameSource`. Graceful: frames already read still drain all the way through the
   pipeline, same as natural end-of-stream (see `kernel.StopToken`).
-- `--stop-on-face-found` — stop early the first time a face is detected, via
-  `core.StopOnFirstAnnotation` wrapping the `FrameBroadcaster`. Since that's the last stage before
-  output, the stop only takes effect once the triggering frame has gone all the way through
-  detection/tracking/interpolation/`--lookahead`, so a few extra frames may still play past the
-  actual first detection.
+- `--stop-on-first-track` — stop early as soon as the tracker confirms its first face track, via
+  `core.StopOnFirstTrack` wrapping the `Tracker`. Fires at the tracking stage, so no
+  interpolation/`--lookahead` drain has to happen first — but the stop is still graceful: frames
+  already read keep flowing through the pipeline, so playback continues briefly past the trigger.
 - `--play-tracks` — after the main video's `ffplay` window closes, replay each discovered face
   track through its own `ffplay` window, one track at a time, in track-id order, via
   `TrackRecordingFrameBroadcaster` (a real `FrameBroadcaster` — `core` ships none, see
@@ -95,10 +94,9 @@ src/video_analyzer/cli/
 │                              — a real (non-noop) FrameBroadcaster: crops+resizes tracked faces
 │                              out of each rendered frame and buffers them by track_id in
 │                              crops_by_track (up to max_crops_per_track each — the track's first
-│                              N frames). Only wired in when --play-tracks is passed; still
-│                              composes with --stop-on-face-found (core.StopOnFirstAnnotation
-│                              wraps it, same "wrapped" decorator convention as stop_after_frame_count
-│                              in core).
+│                              N frames). Only wired in when --play-tracks is passed; composes
+│                              with --stop-on-first-track (which decorates the Tracker, not the
+│                              broadcaster), still recording whatever drains after the stop.
 ├── noop_scene_detector.py     NoopSceneDetector(kernel.SceneDetector) — always returns False;
 │                              the --no-scene-detection backend (the pipeline calls
 │                              detect_scene_cut on every frame pair; answering False means
@@ -158,7 +156,7 @@ the repo, but can point anywhere.
   (default `300` crops — a track's first N rendered frames; `0`/`None` restores the old
   record-everything behavior). Note the bound is per track, not global: total memory still grows
   with the number of *distinct* track ids a long video accumulates, so `--stop-after-frames`/
-  `--stop-on-face-found` remain the way to hard-bound a whole `--play-tracks` run.
+  `--stop-on-first-track` remain the way to hard-bound a whole `--play-tracks` run.
 - `_play_tracks` is sequential, one `ffplay` window per track, closed before the next opens — not
   because concurrent windows can't work, but because it keeps the demo simple and avoids
   contending with the main video's own `ffplay` process for the Wayland/X11 session.
