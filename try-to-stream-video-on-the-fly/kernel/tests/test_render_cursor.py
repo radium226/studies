@@ -137,7 +137,68 @@ def test_prunes_snapshots_behind_the_spline_window() -> None:
 
     assert [result.frame_index for result in results] == list(range(0, 191))
     # Only the spline window's worth of snapshots may be retained.
-    assert len(cursor._snapshots) <= 2 * 1 + 2  # noqa: SLF001 - pinning the prune
+    assert len(cursor._scenes[0]) <= 2 * 1 + 2  # noqa: SLF001 - pinning the prune
+
+
+def _scene_start_snapshot(frame_index: int, x: float) -> kernel.Snapshot[TrackedFace]:
+    return kernel.Snapshot(
+        frame_index=frame_index,
+        faces=[_tracked_face(x, track_id=100)],
+        is_scene_start=True,
+    )
+
+
+def test_scene_cut_holds_the_gap_and_restarts_the_window() -> None:
+    cursor = _cursor(lookahead=1)
+    # Old scene: snapshots at 0, 5, 10. Cut at frame 14; new scene's
+    # snapshots at 14, 18, 22 carry a different track id.
+    for frame_index in (0, 5, 10):
+        cursor.push_snapshot(_snapshot(frame_index))
+    cursor.push_snapshot(_scene_start_snapshot(14, x=500.0))
+    cursor.push_snapshot(
+        kernel.Snapshot(frame_index=18, faces=[_tracked_face(500.0, track_id=100)])
+    )
+    cursor.push_snapshot(
+        kernel.Snapshot(frame_index=22, faces=[_tracked_face(500.0, track_id=100)])
+    )
+
+    results = _run(_drain(cursor))
+
+    by_index = {result.frame_index: result for result in results}
+    # The old scene runs to its last snapshot (relaxed — it's closed), the
+    # gap 11..13 is held with the old scene's final faces, and the new scene
+    # renders from 14 up to its own lookahead margin (snapshot 18).
+    assert [result.frame_index for result in results] == list(range(0, 19))
+    for gap_index in (11, 12, 13):
+        assert by_index[gap_index].bracket is None
+        assert [face.track_id for face in by_index[gap_index].faces] == [0]
+    for new_scene_index in range(14, 19):
+        assert {face.track_id for face in by_index[new_scene_index].faces} == {100}
+    # No interpolation bracket ever spans the cut.
+    for result in results:
+        if result.bracket is not None:
+            segment_start, segment_end = result.bracket
+            assert (segment_start.frame_index < 14) == (segment_end.frame_index < 14)
+
+
+def test_scene_with_a_single_snapshot_before_the_next_cut() -> None:
+    cursor = _cursor(lookahead=1)
+    cursor.push_snapshot(_snapshot(0))
+    # Scene 2 gets exactly one snapshot before scene 3 begins.
+    cursor.push_snapshot(_scene_start_snapshot(4, x=500.0))
+    cursor.push_snapshot(_scene_start_snapshot(8, x=900.0))
+    cursor.finish()
+
+    results = _run(_drain(cursor))
+
+    assert [result.frame_index for result in results] == list(range(0, 9))
+    by_index = {result.frame_index: result for result in results}
+    assert by_index[4].is_exact is True
+    assert by_index[4].bracket is None
+    # Frames 5..7 hold scene 2's only snapshot; 8 is scene 3's.
+    for held_index in (5, 6, 7):
+        assert by_index[held_index].faces[0].face.detection.bounding_box.x == 500.0
+    assert by_index[8].faces[0].face.detection.bounding_box.x == 900.0
 
 
 def test_track_seen_once_in_window_is_held_not_dropped() -> None:

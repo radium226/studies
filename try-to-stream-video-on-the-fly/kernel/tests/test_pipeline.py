@@ -215,6 +215,47 @@ def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
     assert len(frame_broadcaster.broadcast_frames) == len(frame_sink.written_frames)
 
 
+def test_scene_cut_resets_track_identities_and_loses_no_frames() -> None:
+    """A scene cut must reset the tracker (the fake shifts its ids by 100 per
+    reset) and never let annotations interpolate across the cut — while the
+    every-frame-out-exactly-once invariant still holds."""
+
+    cut_index = 20
+    pipeline = Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(cut_at={cut_index}),
+        face_detector=FaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=(frame_sink := FrameSink()),
+        frame_broadcaster=FrameBroadcaster(),
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+    source_frames = [Frame(index=index, content=index * 10) for index in range(40)]
+
+    asyncio.run(pipeline.run(FrameSource(source_frames)))
+
+    assert [
+        annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
+    ] == [frame.index for frame in source_frames]
+    for annotated_frame in frame_sink.written_frames:
+        track_ids = {face.track_id for face in annotated_frame.faces}
+        if annotated_frame.frame.index < cut_index:
+            assert track_ids <= {0}
+        else:
+            assert track_ids <= {100}
+        if annotated_frame.interpolation_bracket is not None:
+            segment_start, segment_end = annotated_frame.interpolation_bracket
+            assert (segment_start.frame_index < cut_index) == (
+                segment_end.frame_index < cut_index
+            )
+
+
 def test_all_frames_emitted_even_when_detection_stalls_mid_stream() -> None:
     """The render cursor must never drop frames while detections are late: it
     waits, then catches up in a burst once the next snapshots land."""

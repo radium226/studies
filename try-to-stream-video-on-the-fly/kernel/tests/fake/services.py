@@ -21,13 +21,17 @@ class Clock(kernel.Clock):
 
 
 class SceneDetector(kernel.SceneDetector[FrameContent]):
+    """Cuts exactly at the scripted frame indices (never, by default)."""
+
+    def __init__(self, cut_at: set[int] | None = None) -> None:
+        self._cut_at = cut_at if cut_at is not None else set()
 
     async def detect_scene_cut(
         self,
         previous_frame: Frame,
         current_frame: Frame,
     ) -> bool:
-        return False
+        return current_frame.index in self._cut_at
 
 
 class FaceDetector(kernel.FaceDetector[FrameContent]):
@@ -72,13 +76,20 @@ class FaceEmbedder(kernel.FaceEmbedder[FrameContent, FaceEmbedding]):
 
 class Tracker(kernel.Tracker[FaceEmbedding]):
     """Assigns track ids by position — fine as long as fakes only ever
-    produce a stable number of faces per frame."""
+    produce a stable number of faces per frame. Each `reset` shifts the ids
+    by 100, so a test can tell which scene an id was assigned in."""
+
+    def __init__(self) -> None:
+        self.reset_count = 0
 
     async def update(self, faces: list[Face]) -> list[TrackedFace]:
         return [
-            kernel.TrackedFace(track_id=index, face=face)
+            kernel.TrackedFace(track_id=self.reset_count * 100 + index, face=face)
             for index, face in enumerate(faces)
         ]
+
+    async def reset(self) -> None:
+        self.reset_count += 1
 
 
 class Interpolator(kernel.Interpolator[TrackedFace]):

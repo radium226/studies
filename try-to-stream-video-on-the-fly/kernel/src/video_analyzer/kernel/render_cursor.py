@@ -1,3 +1,4 @@
+from collections import deque
 from typing import NamedTuple
 
 from .models import FrameIndex, Snapshot, TrackedFace
@@ -8,8 +9,8 @@ class AdvanceResult[FaceEmbeddingT](NamedTuple):
     frame_index: FrameIndex
     is_exact: bool
     # The two real-detection snapshots the faces were interpolated between, or
-    # None when there was nothing to interpolate (a finished single-snapshot
-    # stream) and the snapshot's own faces are simply held.
+    # None for a frame with nothing to interpolate: one held across an
+    # inter-scene gap, or landing on a snapshot that never got a partner.
     bracket: tuple[Snapshot[TrackedFace[FaceEmbeddingT]], Snapshot[TrackedFace[FaceEmbeddingT]]] | None
     faces: list[TrackedFace[FaceEmbeddingT]]
 
@@ -27,12 +28,18 @@ class RenderCursor[FaceEmbeddingT]:
     every frame exactly once: nothing when detections stall, a catch-up burst
     when they resume.
 
+    Snapshots flagged `is_scene_start` open a new scene. Interpolation never
+    bridges scenes: the old scene finishes in relaxed mode (its own snapshots
+    walked to the last one, no lookahead margin needed since no more will
+    join it), the frames between its last snapshot and the cut are emitted
+    with the old scene's final faces held, and the new scene then warms up
+    under the normal lookahead rules.
+
     `finish()` declares that no further snapshot will ever arrive (end of
-    stream): the lookahead requirement is dropped and the remaining snapshots
-    are walked to the very last one, so the stream's tail is rendered instead
-    of being abandoned inside the lookahead window. Frames *beyond* the last
-    snapshot are the caller's to flush — the cursor doesn't know how many
-    exist.
+    stream): the final scene is closed the same way a scene cut closes one,
+    so the stream's tail is rendered instead of being abandoned inside the
+    lookahead window. Frames *beyond* the last snapshot are the caller's to
+    flush — the cursor doesn't know how many exist.
 
     This holds only the *timing* bookkeeping (which segment, which frame index
     to render, when to prune old snapshots) — the actual coordinate math is
@@ -46,102 +53,136 @@ class RenderCursor[FaceEmbeddingT]:
     ) -> None:
         self._lookahead_snapshots = lookahead_snapshots
         self._interpolator = interpolator
-        self._snapshots: list[Snapshot[TrackedFace[FaceEmbeddingT]]] = []
+        # Snapshots partitioned by scene, oldest scene first. Only the oldest
+        # is ever rendered from; later ones queue up behind their cut.
+        self._scenes: deque[list[Snapshot[TrackedFace[FaceEmbeddingT]]]] = deque()
         self._segment_index = 0
         self._next_index: FrameIndex | None = None
         self._finished = False
 
     def push_snapshot(self, snapshot: Snapshot[TrackedFace[FaceEmbeddingT]]) -> None:
-        self._snapshots.append(snapshot)
+        if not self._scenes or snapshot.is_scene_start:
+            self._scenes.append([snapshot])
+        else:
+            self._scenes[-1].append(snapshot)
 
     def finish(self) -> None:
         """No further snapshot will arrive: let `advance()` walk the remaining
         snapshots without holding back the lookahead margin."""
         self._finished = True
 
-    @property
-    def _max_segment_end(self) -> int:
-        """Index (into `_snapshots`) of the newest snapshot usable as a segment
-        end. While live, `lookahead_snapshots` snapshots must remain beyond it
-        (that margin is what keeps every emitted frame strictly interpolated);
-        once finished, every snapshot is usable."""
-        if self._finished:
-            return len(self._snapshots) - 1
-        return len(self._snapshots) - 1 - self._lookahead_snapshots
-
     async def advance(self) -> AdvanceResult[FaceEmbeddingT] | None:
-        max_segment_end = self._max_segment_end
-        if max_segment_end < 1:
-            # No full segment inside the usable window yet. A finished stream
-            # whose only snapshot never got a partner still emits that one
-            # frame (held, nothing to interpolate); everything else waits.
-            if self._finished and self._snapshots:
-                return self._advance_on_single_snapshot()
-            return None
+        while True:
+            if not self._scenes:
+                return None
+            scene = self._scenes[0]
+            # A scene is closed once nothing can ever join it — a newer scene
+            # exists behind a cut, or the whole stream is over. Closed scenes
+            # need no lookahead margin: all their snapshots are final, so
+            # segments may run to the very last one and remain interpolation.
+            scene_is_closed = len(self._scenes) > 1 or self._finished
 
-        if self._next_index is None:
-            self._next_index = self._snapshots[0].frame_index
-        if self._next_index > self._snapshots[max_segment_end].frame_index:
-            # Caught up with the newest interpolatable frame — nothing new to
-            # emit until more snapshots land (or `finish()` widens the window).
-            return None
+            if self._next_index is None:
+                self._next_index = scene[0].frame_index
 
-        # Advance to the segment containing `_next_index`, keeping the segment
-        # end inside the usable window.
-        while (
-            self._next_index > self._snapshots[self._segment_index + 1].frame_index
-            and self._segment_index + 1 < max_segment_end
-        ):
-            self._segment_index += 1
-        self._prune_stale_snapshots()
+            if self._next_index > scene[-1].frame_index:
+                if not scene_is_closed:
+                    # Caught up with the newest snapshot; more may still join
+                    # this scene.
+                    return None
+                if len(self._scenes) > 1:
+                    next_scene_start = self._scenes[1][0].frame_index
+                    if self._next_index < next_scene_start:
+                        # The gap between the old scene's last detection and
+                        # the cut: still old-scene content, held at its final
+                        # known positions.
+                        return self._emit_unbracketed(scene[-1], is_exact=False)
+                    # The old scene is spent — start rendering the next one.
+                    self._scenes.popleft()
+                    self._segment_index = 0
+                    continue
+                # Finished and past the last snapshot: the tail is the
+                # caller's to flush (the cursor doesn't know how long it is).
+                return None
 
-        segment_start = self._snapshots[self._segment_index]
-        segment_end = self._snapshots[self._segment_index + 1]
+            max_segment_end = (
+                len(scene) - 1
+                if scene_is_closed
+                else len(scene) - 1 - self._lookahead_snapshots
+            )
+            if max_segment_end < 1:
+                if scene_is_closed and len(scene) == 1:
+                    # A closed scene whose only snapshot never got a partner:
+                    # emit that one frame as-is, nothing to interpolate.
+                    return self._emit_unbracketed(scene[0], is_exact=True)
+                return None
+            if self._next_index > scene[max_segment_end].frame_index:
+                # Caught up with the newest interpolatable frame — wait for
+                # the lookahead margin to move.
+                return None
+
+            # Advance to the segment containing `_next_index`, keeping the
+            # segment end inside the usable window.
+            while (
+                self._next_index > scene[self._segment_index + 1].frame_index
+                and self._segment_index + 1 < max_segment_end
+            ):
+                self._segment_index += 1
+            self._prune_stale_snapshots(scene)
+
+            segment_start = scene[self._segment_index]
+            segment_end = scene[self._segment_index + 1]
+            frame_index = self._next_index
+            is_exact = frame_index in (
+                segment_start.frame_index,
+                segment_end.frame_index,
+            )
+            faces = await self._interpolate(scene, frame_index)
+            self._next_index += 1
+            return AdvanceResult(
+                frame_index=frame_index,
+                is_exact=is_exact,
+                bracket=(segment_start, segment_end),
+                faces=faces,
+            )
+
+    def _emit_unbracketed(
+        self, snapshot: Snapshot[TrackedFace[FaceEmbeddingT]], *, is_exact: bool
+    ) -> AdvanceResult[FaceEmbeddingT]:
+        assert self._next_index is not None
         frame_index = self._next_index
-        is_exact = frame_index in (segment_start.frame_index, segment_end.frame_index)
-        faces = await self._interpolate(frame_index)
         self._next_index += 1
         return AdvanceResult(
             frame_index=frame_index,
             is_exact=is_exact,
-            bracket=(segment_start, segment_end),
-            faces=faces,
-        )
-
-    def _advance_on_single_snapshot(self) -> AdvanceResult[FaceEmbeddingT] | None:
-        snapshot = self._snapshots[0]
-        if self._next_index is None:
-            self._next_index = snapshot.frame_index
-        if self._next_index > snapshot.frame_index:
-            return None
-        frame_index = self._next_index
-        self._next_index += 1
-        return AdvanceResult(
-            frame_index=frame_index,
-            is_exact=frame_index == snapshot.frame_index,
             bracket=None,
             faces=list(snapshot.faces),
         )
 
-    def _prune_stale_snapshots(self) -> None:
+    def _prune_stale_snapshots(
+        self, scene: list[Snapshot[TrackedFace[FaceEmbeddingT]]]
+    ) -> None:
         # Snapshots behind the spline window can never be used again.
         drop = self._segment_index - self._lookahead_snapshots
         if drop > 0:
-            del self._snapshots[:drop]
+            del scene[:drop]
             self._segment_index -= drop
 
     async def _interpolate(
-        self, frame_index: FrameIndex
+        self,
+        scene: list[Snapshot[TrackedFace[FaceEmbeddingT]]],
+        frame_index: FrameIndex,
     ) -> list[TrackedFace[FaceEmbeddingT]]:
         """Interpolate every face of the current segment's start snapshot,
-        matching control points across snapshots by track id."""
-        segment_start = self._snapshots[self._segment_index]
+        matching control points across snapshots by track id. The window never
+        leaves the current scene."""
+        segment_start = scene[self._segment_index]
 
         window_start = max(0, self._segment_index - self._lookahead_snapshots)
         window_end = min(
-            len(self._snapshots), self._segment_index + self._lookahead_snapshots + 2
+            len(scene), self._segment_index + self._lookahead_snapshots + 2
         )
-        window = self._snapshots[window_start:window_end]
+        window = scene[window_start:window_end]
         span_start = window[0].frame_index
         span = window[-1].frame_index - span_start + 1
 

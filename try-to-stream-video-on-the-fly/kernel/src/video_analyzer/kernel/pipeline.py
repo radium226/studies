@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 from asyncio import TaskGroup
+from dataclasses import replace
 
 from loguru import logger
 
@@ -104,6 +105,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
     ) -> None:
         logger.debug("produce_frames: started")
         produced_count = 0
+        previous_frame: Frame[FrameContentT] | None = None
         try:
             while True:
                 # Checked before the next read, not raced against it: a stop
@@ -124,6 +126,14 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     )
                     break
                 logger.trace("produce_frames: read frame {}", frame.index)
+                if previous_frame is not None and await self.scene_detector.detect_scene_cut(
+                    previous_frame, frame
+                ):
+                    logger.info(
+                        "produce_frames: scene cut detected at frame {}", frame.index
+                    )
+                    frame = replace(frame, is_scene_start=True)
+                previous_frame = frame
                 await detection_frame_channel.send(frame)
                 await render_frame_channel.send(frame)
                 produced_count += 1
@@ -151,6 +161,14 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         last_sampled_index: FrameIndex | None = None
 
         def buffer(frame: Frame[FrameContentT]) -> None:
+            if frame.is_scene_start:
+                # A detection batch must never span a scene cut: whatever
+                # pre-cut frames are still waiting to be sampled are obsolete —
+                # their detections would be tracked into the new scene.
+                for pre_cut_index in [
+                    index for index in pending_frames if index < frame.index
+                ]:
+                    del pending_frames[pre_cut_index]
             pending_frames[frame.index] = frame
             if len(pending_frames) > _MAX_PENDING_FRAMES:
                 del pending_frames[min(pending_frames)]
@@ -225,6 +243,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                         Snapshot(
                             frame_index=frame.index,
                             faces=embedded[offset : offset + count],
+                            is_scene_start=frame.is_scene_start,
                         )
                     )
                     offset += count
@@ -243,9 +262,16 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 # temporal state (Kalman-style prediction), so calls cannot be
                 # reordered or parallelized across frames.
                 for snapshot in snapshots:
+                    if snapshot.is_scene_start:
+                        # Identities never survive a scene cut.
+                        await self.tracker.reset()
                     tracked_faces = await self.tracker.update(snapshot.faces)
                     await tracked_snapshot_channel.send(
-                        Snapshot(frame_index=snapshot.frame_index, faces=tracked_faces)
+                        Snapshot(
+                            frame_index=snapshot.frame_index,
+                            faces=tracked_faces,
+                            is_scene_start=snapshot.is_scene_start,
+                        )
                     )
         finally:
             await tracked_snapshot_channel.close()
