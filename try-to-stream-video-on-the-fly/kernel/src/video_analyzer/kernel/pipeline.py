@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import math
 from asyncio import TaskGroup
 from dataclasses import replace
 
@@ -42,12 +41,12 @@ _MAX_PENDING_FRAMES = 600
 # need to cover the interpolation lookahead — that buffering happens in
 # `pending_frames`, downstream of this channel.
 #
-# The detection-frame channel gets extra headroom on top of this (see
-# `_detection_channel_capacity`): frames legitimately pile up on it while a
-# detection pass is awaited inline, and its bound must not be what throttles a
-# normally-paced pass — only a genuinely stuck detector should ever push back
-# on the producer (and through it, the render path, since the producer fans
-# out to both).
+# The detection-frame channel gets the same bound: `sample_and_detect` drains
+# it every iteration even while a detection pass is running in the background,
+# so frames never accumulate on the channel itself — the backlog lives in that
+# stage's `pending_frames` buffer, whose `_MAX_PENDING_FRAMES` drop-oldest cap
+# is the real bound. A stuck detector therefore costs bounded memory and a
+# widening sampling stride, never backpressure on the producer.
 #
 # The snapshot/batch channels stay unbounded: they carry detection metadata, and
 # the frames they reference are already bounded by the pending-frame pruning.
@@ -166,6 +165,17 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         )
         pending_frames: dict[FrameIndex, Frame[FrameContentT]] = {}
         last_sampled_index: FrameIndex | None = None
+        # At most one detection pass runs at a time, as a background task
+        # rather than an inline await: while it runs, this loop keeps draining
+        # the channel into `pending_frames`, so inference duration never
+        # backpressures the producer (and through it the render path). The
+        # backlog that accumulates meanwhile is what auto-adapts the sampling
+        # stride: the next pass spreads its fixed-size sample across however
+        # many frames arrived, so a faster source widens the stride instead of
+        # throttling the whole pipeline.
+        detection_task: asyncio.Task[list[list[Face[None]]]] | None = None
+        in_flight_frames: list[Frame[FrameContentT]] = []
+        detection_started_at = 0.0
 
         def buffer(frame: Frame[FrameContentT]) -> None:
             if frame.is_scene_start:
@@ -180,19 +190,52 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             if len(pending_frames) > _MAX_PENDING_FRAMES:
                 del pending_frames[min(pending_frames)]
 
+        async def finalize_detection(
+            task: asyncio.Task[list[list[Face[None]]]],
+            sampled_frames: list[Frame[FrameContentT]],
+            started_at: float,
+        ) -> None:
+            nonlocal last_sampled_index
+            faces_by_frame = await task
+            batch_gate.record_spend(self._clock.now() - started_at)
+            await frame_faces_channel.send(
+                list(zip(sampled_frames, faces_by_frame, strict=True))
+            )
+            last_sampled_index = sampled_frames[-1].index
+            # `available` only ever looks past the newest sampled index, so
+            # everything at or below it is already unreachable. Drop it now
+            # rather than leaving it for the _MAX_PENDING_FRAMES cap to
+            # evict much later: each entry pins a full raw frame (~2.8 MB at
+            # 720x1280), so sitting on 600 of them costs well over a GB.
+            for stale_index in [
+                index for index in pending_frames if index <= last_sampled_index
+            ]:
+                del pending_frames[stale_index]
+
         try:
             async for frame in detection_frame_channel:
                 buffer(frame)
-                # Detection is awaited inline below, so frames keep piling up on
-                # the channel while it runs. Take the whole backlog before
-                # deciding, rather than one frame per iteration: `_sample_evenly`
-                # is meant to spread its sample across the entire interval since
-                # the last pass, and consuming the backlog one frame at a time
-                # would instead walk it oldest-first — detecting on frames that
-                # are already stale and falling permanently further behind the
-                # source instead of skipping ahead to what it just read.
+                # Take the whole backlog per iteration, rather than one frame
+                # per `async for` step: `_sample_evenly` is meant to spread its
+                # sample across the entire interval since the last pass, and
+                # consuming the backlog one frame at a time would instead walk
+                # it oldest-first — detecting on frames that are already stale
+                # and falling permanently further behind the source instead of
+                # skipping ahead to what it just read.
                 while (queued := detection_frame_channel.try_recv()) is not None:
                     buffer(queued)
+
+                if detection_task is not None:
+                    if not detection_task.done():
+                        # A pass is still running: just keep absorbing frames.
+                        # Its results are collected on a later frame arrival —
+                        # at most one frame interval of extra latency while
+                        # frames flow — or after the loop at end of stream.
+                        continue
+                    await finalize_detection(
+                        detection_task, in_flight_frames, detection_started_at
+                    )
+                    detection_task = None
 
                 available = sorted(
                     index
@@ -205,25 +248,38 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 sample_indices = _sample_evenly(
                     available, self.config.batching.max_frames
                 )
-                sampled_frames = [pending_frames[index] for index in sample_indices]
+                in_flight_frames = [pending_frames[index] for index in sample_indices]
+                detection_started_at = self._clock.now()
+                detection_task = asyncio.ensure_future(
+                    self._face_detector.detect_faces(in_flight_frames)
+                )
 
-                started_at = self._clock.now()
-                faces_by_frame = await self._face_detector.detect_faces(sampled_frames)
-                batch_gate.record_spend(self._clock.now() - started_at)
-
-                frame_faces_batch = list(zip(sampled_frames, faces_by_frame, strict=True))
-                await frame_faces_channel.send(frame_faces_batch)
-                last_sampled_index = sample_indices[-1]
-                # `available` only ever looks past the newest sampled index, so
-                # everything at or below it is already unreachable. Drop it now
-                # rather than leaving it for the _MAX_PENDING_FRAMES cap to
-                # evict much later: each entry pins a full raw frame (~2.8 MB at
-                # 720x1280), so sitting on 600 of them costs well over a GB.
-                for stale_index in [
-                    index for index in pending_frames if index <= last_sampled_index
-                ]:
-                    del pending_frames[stale_index]
+            # Channel closed with a pass still running: its results must still
+            # be delivered — parity with the inline version, where a fired
+            # pass always completed before the stage could end.
+            if detection_task is not None:
+                await finalize_detection(
+                    detection_task, in_flight_frames, detection_started_at
+                )
+                detection_task = None
         finally:
+            # Failure/cancellation path only: the clean paths above always
+            # finalize the task and reset it to None before falling through.
+            if detection_task is not None:
+                if detection_task.done():
+                    # An exception is already propagating out of this stage —
+                    # retrieve the task's own result/error (without re-raising
+                    # it over the original) so asyncio doesn't log it as a
+                    # never-retrieved exception.
+                    with contextlib.suppress(asyncio.CancelledError):
+                        detection_task.exception()
+                else:
+                    # Awaiting the task bare could wedge teardown the same way
+                    # `interpolate_and_render`'s collector could — cancel it
+                    # first, mirroring that pattern.
+                    detection_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await detection_task
             frame_faces_channel.close()
 
     async def embed_faces(
@@ -387,20 +443,6 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             await self._frame_sink.write_frame(annotated_frame)
             await self._frame_broadcaster.broadcast_frame(annotated_frame)
 
-    def _detection_channel_capacity(self) -> int:
-        """Bound for the detection-frame channel, derived from the batching
-        knobs: room for one full batch, plus every frame the source can emit
-        while the gate deliberately waits out `max_lag_ms`, plus the shared
-        jitter headroom. A healthy detector never fills this; a stuck one hits
-        the bound and pushes back on the producer instead of banking an
-        unbounded backlog of raw frames."""
-        lag_frames = math.ceil(
-            self.config.frames_per_second * self.config.batching.max_lag_ms / 1000.0
-        )
-        return (
-            self.config.batching.max_frames + lag_frames + _FRAME_CHANNEL_CAPACITY
-        )
-
     async def run(
         self,
         frame_source: FrameSource[FrameContentT],
@@ -410,7 +452,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         logger.info("run: starting pipeline")
         stop_token = stop_token if stop_token is not None else StopToken()
         detection_frame_channel: Channel[Frame[FrameContentT]] = Channel(
-            self._detection_channel_capacity(), name="detection_frames"
+            _FRAME_CHANNEL_CAPACITY, name="detection_frames"
         )
         render_frame_channel: Channel[Frame[FrameContentT]] = Channel(
             _FRAME_CHANNEL_CAPACITY, name="render_frames"

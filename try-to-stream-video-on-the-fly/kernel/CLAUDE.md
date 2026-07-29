@@ -107,11 +107,15 @@ src/video_analyzer/kernel/
    teardown logic exists anywhere else in the pipeline for an early stop.
 2. **`sample_and_detect`** — buffers frames, uses `BatchGate.should_fire()` to decide when to
    fire (batch full or lag exceeded), samples up to `config.batching.max_frames` frames evenly
-   spread since the last fire (plain int/float math — no numpy), calls `FaceDetector.detect_faces`
-   once per fire. Because detection is awaited *inline*, each iteration first drains everything
-   already queued (`Channel.try_recv`) so the sample really does span the whole interval since the
-   last pass. A scene-start frame evicts the still-unsampled pre-cut frames from the buffer, so no
-   detection batch ever spans a cut.
+   spread since the last fire (plain int/float math — no numpy), and runs
+   `FaceDetector.detect_faces` as a **background task, at most one in flight**. While a pass runs,
+   the loop keeps draining the channel (`Channel.try_recv`) into its `pending_frames` buffer, so
+   inference duration never backpressures the producer — the backlog just widens and the next
+   sample spreads evenly across it, which is what makes the sampling stride auto-adapt to the
+   frame arrival rate (a source running faster than detection costs coverage, not throughput).
+   Results are collected on a later frame arrival, or after the loop for a pass still in flight at
+   end of stream. A scene-start frame evicts the still-unsampled pre-cut frames from the buffer,
+   so no detection batch ever spans a cut.
 3. **`embed_faces`** — flattens every sampled frame's faces in a batch into one
    `FaceEmbedder.embed_faces` call (real cross-frame batching), re-splits per frame into
    `Snapshot`s (carrying the frame's `is_scene_start` along).
@@ -154,15 +158,16 @@ for source exhaustion. Kernel exposes only the token: deciding *when* to call `r
 around an existing service (`FrameSource`, `Tracker`, `FrameBroadcaster`, `FrameSink`, ...) — not
 a new kernel service ABC.
 
-**Every** channel carrying whole frames is bounded, so a stage slower than the source pushes
-backpressure back to the decoder. `render_frames` and `annotated_frames` get
-`_FRAME_CHANNEL_CAPACITY`; `detection_frames` gets that plus headroom derived from the batching
-knobs (`_detection_channel_capacity`) since frames legitimately queue there while a detection
-pass is awaited inline — only a genuinely stuck detector should ever hit its bound. Unbounded, a
-slow sink silently banks gigabytes of raw frames and then looks like a hang at end of stream
-while the backlog drains. For the same reason every `pending_frames` buffer (one in
-`sample_and_detect`, one in `interpolate_and_render`) prunes everything the cursor has passed
-instead of waiting for the `_MAX_PENDING_FRAMES` cap.
+**Every** channel carrying whole frames is bounded to `_FRAME_CHANNEL_CAPACITY`, so a stage
+slower than the source pushes backpressure back to the decoder. The deliberate exception is
+detection: `sample_and_detect` drains its channel every iteration even while a pass is in flight,
+so a slow (or outright stuck) detector never fills `detection_frames` — its backlog lands in the
+stage's `pending_frames` buffer instead, bounded by the `_MAX_PENDING_FRAMES` drop-oldest cap,
+costing a wider sampling stride rather than a throttled pipeline. Unbounded, a slow sink silently
+banks gigabytes of raw frames and then looks like a hang at end of stream while the backlog
+drains. For the same reason every `pending_frames` buffer (one in `sample_and_detect`, one in
+`interpolate_and_render`) prunes everything the cursor has passed instead of waiting for the
+`_MAX_PENDING_FRAMES` cap.
 
 ## Working in this codebase
 

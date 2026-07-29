@@ -256,6 +256,136 @@ def test_scene_cut_resets_track_identities_and_loses_no_frames() -> None:
             )
 
 
+def test_detection_pass_does_not_backpressure_the_producer() -> None:
+    """A slow detection pass must not stall frame intake: while it runs in the
+    background, `sample_and_detect` keeps draining its channel, so a source
+    faster than detection just widens the sampling stride instead of
+    throttling the whole pipeline.
+
+    Regression test: detection used to be awaited inline, so a pass outlasting
+    the detection channel's bound blocked `produce_frames` (and with it the
+    render fan-out). This detector only returns once the source is fully
+    drained — under the inline design that's a deadlock, since the source
+    could never drain while the pass held the loop and the channel filled.
+    """
+
+    frame_source = FrameSource(
+        # Comfortably more frames than the detection channel's capacity, so
+        # the old inline design could not have absorbed them all.
+        [Frame(index=index, content=index * 10) for index in range(100)]
+    )
+
+    class SourceDrainGatedFaceDetector(FaceDetector):
+        async def detect_faces(self, frame_batch: Any) -> Any:
+            while frame_source.remaining_frames:
+                await asyncio.sleep(0)
+            return await super().detect_faces(frame_batch)
+
+    pipeline = Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(),
+        face_detector=SourceDrainGatedFaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=(frame_sink := FrameSink()),
+        frame_broadcaster=FrameBroadcaster(),
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+
+    raised = _run_until(lambda: pipeline.run(frame_source))
+
+    assert raised is None
+    assert [
+        annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
+    ] == list(range(100))
+
+
+def test_in_flight_detection_results_still_delivered_at_end_of_stream() -> None:
+    """A pass still running when the source ends must deliver its results: the
+    stage awaits it after the frame loop, so its snapshots still reach the
+    tracker and renderer instead of silently vanishing."""
+
+    class SlowFaceDetector(FaceDetector):
+        async def detect_faces(self, frame_batch: Any) -> Any:
+            # Long enough for the whole (short) source to drain and the frame
+            # channels to close while this pass is still in flight.
+            for _ in range(500):
+                await asyncio.sleep(0)
+            return await super().detect_faces(frame_batch)
+
+    pipeline = Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(),
+        face_detector=SlowFaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=(frame_sink := FrameSink()),
+        frame_broadcaster=FrameBroadcaster(),
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+    source_frames = [Frame(index=index, content=index * 10) for index in range(8)]
+
+    asyncio.run(pipeline.run(FrameSource(source_frames)))
+
+    assert [
+        annotated_frame.frame.index for annotated_frame in frame_sink.written_frames
+    ] == [frame.index for frame in source_frames]
+    # The in-flight pass's snapshots made it downstream: had they been
+    # dropped at end of stream, no rendered frame could be exact.
+    assert any(
+        annotated_frame.is_exact for annotated_frame in frame_sink.written_frames
+    )
+
+
+def test_failing_detection_pass_fails_the_run() -> None:
+    """A detector error raised inside the background pass must still crash the
+    stage (and through the TaskGroup, the whole run) — decoupling the pass
+    from the frame loop must not swallow its exception."""
+
+    class ExplodingFaceDetector(FaceDetector):
+        async def detect_faces(self, frame_batch: Any) -> Any:
+            raise RuntimeError("detector exploded")
+
+    pipeline = Pipeline(
+        clock=Clock(),
+        scene_detector=SceneDetector(),
+        face_detector=ExplodingFaceDetector(),
+        face_embedder=FaceEmbedder(),
+        tracker=Tracker(),
+        interpolator=Interpolator(),
+        frame_sink=FrameSink(),
+        frame_broadcaster=FrameBroadcaster(),
+        config=PipelineConfig(
+            frames_per_second=30.0,
+            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
+            rendering=RenderingConfig(lookahead_snapshots=1),
+        ),
+    )
+    # Endless source: the failure must end the run on its own.
+    frame_source = FrameSource(
+        [Frame(index=index, content=index * 10) for index in range(10_000)]
+    )
+
+    raised = _run_until(lambda: pipeline.run(frame_source))
+
+    assert isinstance(raised, BaseExceptionGroup)
+    assert [
+        str(exception)
+        for exception in raised.exceptions
+        if isinstance(exception, RuntimeError)
+    ] == ["detector exploded"]
+
+
 def test_all_frames_emitted_even_when_detection_stalls_mid_stream() -> None:
     """The render cursor must never drop frames while detections are late: it
     waits, then catches up in a burst once the next snapshots land."""
