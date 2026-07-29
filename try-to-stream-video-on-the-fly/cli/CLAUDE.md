@@ -166,8 +166,12 @@ the repo, but can point anywhere.
   channels are bounded (`_FRAME_CHANNEL_CAPACITY`), so a sink that can't keep up pushes backpressure
   through `produce_frames` into the decoder's pipe until `ffmpeg` blocks — the achieved multiplier
   silently caps at whatever the `.copy()` + cv2 draw + pipe write path sustains (~2.8 MB/frame at
-  720x1280). Likewise, `fps * N` above the monitor's refresh rate is left for SDL/ffplay's own
-  frame-drop path to absorb: no warning, no clamp, and no decimation in the sink.
+  720x1280). Detection is *not* part of that cap: `kernel`'s `sample_and_detect` runs each pass as
+  a background task and keeps draining its channel while the pass runs, so inference outlasting the
+  frame interval widens the sampling stride instead of backpressuring the decoder — the sink path
+  is the only thing that bounds the achieved speed. Likewise, `fps * N` above the monitor's
+  refresh rate is left for SDL/ffplay's own frame-drop path to absorb: no warning, no clamp, and
+  no decimation in the sink.
 - `OnnxFaceDetector`/`OnnxFaceEmbedder` are sync context managers (`OnnxModel.__enter__`/
   `__exit__` lazily load/release the ONNX session) — `_run` enters them on the same
   `AsyncExitStack` as the async ffmpeg/ffplay contexts (`enter_context` vs
