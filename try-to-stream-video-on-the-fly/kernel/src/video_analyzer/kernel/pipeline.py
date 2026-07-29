@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import math
 from asyncio import TaskGroup
 from dataclasses import replace
 
@@ -29,10 +30,10 @@ from .services import (
 # dropped first, matching the equivalent cap in the pre-kernel implementation.
 _MAX_PENDING_FRAMES = 600
 
-# The two channels that carry whole frames are bounded, so a sink slower than
+# Every channel that carries whole frames is bounded, so a stage slower than
 # the source applies backpressure all the way back to the decoder instead of
 # quietly accumulating decoded frames. Every queued frame is a full raw image
-# (~2.8 MB at 720x1280 BGR24), so an unbounded queue in front of a sink that
+# (~2.8 MB at 720x1280 BGR24), so an unbounded queue in front of a stage that
 # can't keep up reaches gigabytes within a minute and then looks like a hang at
 # end of stream, as the pipeline drains a backlog nobody knew was there.
 #
@@ -40,6 +41,13 @@ _MAX_PENDING_FRAMES = 600
 # small enough to keep in-flight frames to a couple of hundred MB. It doesn't
 # need to cover the interpolation lookahead — that buffering happens in
 # `pending_frames`, downstream of this channel.
+#
+# The detection-frame channel gets extra headroom on top of this (see
+# `_detection_channel_capacity`): frames legitimately pile up on it while a
+# detection pass is awaited inline, and its bound must not be what throttles a
+# normally-paced pass — only a genuinely stuck detector should ever push back
+# on the producer (and through it, the render path, since the producer fans
+# out to both).
 #
 # The snapshot/batch channels stay unbounded: they carry detection metadata, and
 # the frames they reference are already bounded by the pending-frame pruning.
@@ -380,6 +388,20 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             await self.frame_sink.write_frame(annotated_frame)
             await self.frame_broadcaster.broadcast_frame(annotated_frame)
 
+    def _detection_channel_capacity(self) -> int:
+        """Bound for the detection-frame channel, derived from the batching
+        knobs: room for one full batch, plus every frame the source can emit
+        while the gate deliberately waits out `max_lag_ms`, plus the shared
+        jitter headroom. A healthy detector never fills this; a stuck one hits
+        the bound and pushes back on the producer instead of banking an
+        unbounded backlog of raw frames."""
+        lag_frames = math.ceil(
+            self.config.frames_per_second * self.config.batching.max_lag_ms / 1000.0
+        )
+        return (
+            self.config.batching.max_frames + lag_frames + _FRAME_CHANNEL_CAPACITY
+        )
+
     async def run(
         self,
         frame_source: FrameSource[FrameContentT],
@@ -389,7 +411,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         logger.info("run: starting pipeline")
         stop_token = stop_token if stop_token is not None else StopToken()
         detection_frame_channel: Channel[Frame[FrameContentT]] = Channel(
-            name="detection_frames"
+            self._detection_channel_capacity(), name="detection_frames"
         )
         render_frame_channel: Channel[Frame[FrameContentT]] = Channel(
             _FRAME_CHANNEL_CAPACITY, name="render_frames"
