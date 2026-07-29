@@ -32,8 +32,15 @@ def _reject_unknown_keys(
         )
 
 
-def _read_float(mapping: dict[str, Any], key: str, default: float, context: str) -> float:
-    value = mapping.get(key, default)
+# The _read_* helpers return None when the key is absent, so `from_dict`
+# builders only pass keys that were actually present and the dataclass field
+# defaults stay the single source of truth (no duplicated default literals).
+
+
+def _read_float(mapping: dict[str, Any], key: str, context: str) -> float | None:
+    if key not in mapping:
+        return None
+    value = mapping[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PipelineConfigError(
             f"{context}.{key} must be a number, got {type(value).__name__}"
@@ -41,8 +48,10 @@ def _read_float(mapping: dict[str, Any], key: str, default: float, context: str)
     return float(value)
 
 
-def _read_int(mapping: dict[str, Any], key: str, default: int, context: str) -> int:
-    value = mapping.get(key, default)
+def _read_int(mapping: dict[str, Any], key: str, context: str) -> int | None:
+    if key not in mapping:
+        return None
+    value = mapping[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise PipelineConfigError(
             f"{context}.{key} must be an integer, got {type(value).__name__}"
@@ -71,10 +80,12 @@ class BatchingConfig:
     def from_dict(cls, data: Any) -> Self:
         mapping = _require_mapping(data, "batching")
         _reject_unknown_keys(mapping, {"max_frames", "max_lag_ms"}, "batching")
-        return cls(
-            max_frames=_read_int(mapping, "max_frames", 4, "batching"),
-            max_lag_ms=_read_float(mapping, "max_lag_ms", 0.0, "batching"),
-        )
+        kwargs: dict[str, Any] = {}
+        if (max_frames := _read_int(mapping, "max_frames", "batching")) is not None:
+            kwargs["max_frames"] = max_frames
+        if (max_lag_ms := _read_float(mapping, "max_lag_ms", "batching")) is not None:
+            kwargs["max_lag_ms"] = max_lag_ms
+        return cls(**kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,11 +105,12 @@ class RenderingConfig:
     def from_dict(cls, data: Any) -> Self:
         mapping = _require_mapping(data, "rendering")
         _reject_unknown_keys(mapping, {"lookahead_snapshots"}, "rendering")
-        return cls(
-            lookahead_snapshots=_read_int(
-                mapping, "lookahead_snapshots", 0, "rendering"
-            ),
-        )
+        kwargs: dict[str, Any] = {}
+        if (
+            lookahead := _read_int(mapping, "lookahead_snapshots", "rendering")
+        ) is not None:
+            kwargs["lookahead_snapshots"] = lookahead
+        return cls(**kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,13 +139,17 @@ class PipelineConfig:
             {"frames_per_second", "batching", "rendering"},
             "pipeline config",
         )
-        config = cls(
-            frames_per_second=_read_float(
-                mapping, "frames_per_second", 30.0, "pipeline config"
-            ),
-            batching=BatchingConfig.from_dict(mapping.get("batching")),
-            rendering=RenderingConfig.from_dict(mapping.get("rendering")),
-        )
+        kwargs: dict[str, Any] = {
+            "batching": BatchingConfig.from_dict(mapping.get("batching")),
+            "rendering": RenderingConfig.from_dict(mapping.get("rendering")),
+        }
+        if (
+            frames_per_second := _read_float(
+                mapping, "frames_per_second", "pipeline config"
+            )
+        ) is not None:
+            kwargs["frames_per_second"] = frames_per_second
+        config = cls(**kwargs)
         logger.debug("PipelineConfig loaded: {}", config)
         return config
 

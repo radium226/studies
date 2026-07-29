@@ -29,9 +29,12 @@ class Channel[ItemT]:
         except (QueueEmpty, QueueShutDown):
             return None
 
-    async def close(self) -> None:
-        # Idempotent, so every producer can close in a `finally` without
-        # having to know whether it already did.
+    def close(self) -> None:
+        """End the stream. Idempotent, so every producer can close in a
+        `finally` without having to know whether it already did. Items queued
+        before the close remain consumable (`Queue.shutdown` without
+        `immediate`): iteration only ends once the queue has drained — the
+        pipeline's clean end-of-stream flush relies on this."""
         self.queue.shutdown()
 
     async def __aiter__(self) -> AsyncIterator[ItemT]:

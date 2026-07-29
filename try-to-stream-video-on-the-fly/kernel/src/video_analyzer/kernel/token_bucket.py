@@ -4,6 +4,12 @@ from .services import Clock
 
 
 class TokenBucket:
+    """Continuous-refill rate limiter with a gate-then-spend protocol:
+    `can_spend` only checks the budget — it deducts nothing — the caller then
+    does the work and reports its *actual* cost via `record_spend`. That fits
+    work whose cost is unknown up front (an inference pass timed after the
+    fact) and adapts the effective rate to however long the work really takes
+    on this machine."""
 
     def __init__(self, capacity: float, refill_rate: float, clock: Clock) -> None:
         self.token_capacity = capacity
@@ -17,22 +23,22 @@ class TokenBucket:
             refill_rate,
         )
 
-    def try_acquire(self, tokens_needed: float) -> bool:
+    def can_spend(self, tokens_needed: float) -> bool:
         now = self.clock.now()
         self.available_tokens = min(
             self.token_capacity,
             self.available_tokens + (now - self.last_refill_time) * self.refill_rate,
         )
         self.last_refill_time = now
-        acquired = self.available_tokens >= tokens_needed
+        affordable = self.available_tokens >= tokens_needed
         logger.trace(
-            "TokenBucket: try_acquire({}) -> {} (tokens {:.3f} of {:.3f})",
+            "TokenBucket: can_spend({}) -> {} (tokens {:.3f} of {:.3f})",
             tokens_needed,
-            acquired,
+            affordable,
             self.available_tokens,
             self.token_capacity,
         )
-        return acquired
+        return affordable
 
     def record_spend(self, tokens_spent: float) -> None:
         self.available_tokens = max(0.0, self.available_tokens - tokens_spent)

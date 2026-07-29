@@ -69,15 +69,14 @@ def _sample_evenly(indices: list[FrameIndex], max_count: int) -> list[FrameIndex
 
 
 class Pipeline[FrameContentT, FaceEmbeddingT]:
+    """Wires the injected services into six concurrent stages over `Channel`s.
 
-    clock: Clock
-    scene_detector: SceneDetector[FrameContentT]
-    face_detector: FaceDetector[FrameContentT]
-    face_embedder: FaceEmbedder[FrameContentT, FaceEmbeddingT]
-    tracker: Tracker[FaceEmbeddingT]
-    interpolator: Interpolator[TrackedFace[FaceEmbeddingT]]
-    frame_sink: FrameSink[FrameContentT, TrackedFace[FaceEmbeddingT]]
-    frame_broadcaster: FrameBroadcaster[FrameContentT, TrackedFace[FaceEmbeddingT]]
+    Intended for a single `run()` per instance: stateful services (the
+    tracker's temporal state above all) carry over between runs, so reusing an
+    instance for a second stream would silently continue the first one's
+    tracks. Build a fresh `Pipeline` (with fresh services) per stream.
+    """
+
     config: PipelineConfig
 
     def __init__(
@@ -93,14 +92,14 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         *,
         config: PipelineConfig | None = None,
     ) -> None:
-        self.clock = clock
-        self.scene_detector = scene_detector
-        self.face_detector = face_detector
-        self.face_embedder = face_embedder
-        self.tracker = tracker
-        self.interpolator = interpolator
-        self.frame_sink = frame_sink
-        self.frame_broadcaster = frame_broadcaster
+        self._clock = clock
+        self._scene_detector = scene_detector
+        self._face_detector = face_detector
+        self._face_embedder = face_embedder
+        self._tracker = tracker
+        self._interpolator = interpolator
+        self._frame_sink = frame_sink
+        self._frame_broadcaster = frame_broadcaster
         self.config = config if config is not None else PipelineConfig()
         logger.debug("Pipeline configured: {}", self.config)
 
@@ -134,7 +133,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     )
                     break
                 logger.trace("produce_frames: read frame {}", frame.index)
-                if previous_frame is not None and await self.scene_detector.detect_scene_cut(
+                if previous_frame is not None and await self._scene_detector.detect_scene_cut(
                     previous_frame, frame
                 ):
                     logger.info(
@@ -150,8 +149,8 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             # fails or gets cancelled must still hand its consumers an end of
             # stream, or they sit on an open channel forever and the TaskGroup
             # can never finish shutting down.
-            await detection_frame_channel.close()
-            await render_frame_channel.close()
+            detection_frame_channel.close()
+            render_frame_channel.close()
         logger.debug("produce_frames: frame channels closed")
 
     async def sample_and_detect(
@@ -160,7 +159,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         frame_faces_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
     ) -> None:
         batch_gate = BatchGate(
-            self.clock,
+            self._clock,
             self.config.frames_per_second,
             self.config.batching.max_frames,
             self.config.batching.max_lag_ms,
@@ -208,9 +207,9 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 )
                 sampled_frames = [pending_frames[index] for index in sample_indices]
 
-                started_at = self.clock.now()
-                faces_by_frame = await self.face_detector.detect_faces(sampled_frames)
-                batch_gate.record_spend(self.clock.now() - started_at)
+                started_at = self._clock.now()
+                faces_by_frame = await self._face_detector.detect_faces(sampled_frames)
+                batch_gate.record_spend(self._clock.now() - started_at)
 
                 frame_faces_batch = list(zip(sampled_frames, faces_by_frame, strict=True))
                 await frame_faces_channel.send(frame_faces_batch)
@@ -225,7 +224,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 ]:
                     del pending_frames[stale_index]
         finally:
-            await frame_faces_channel.close()
+            frame_faces_channel.close()
 
     async def embed_faces(
         self,
@@ -242,7 +241,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 faces_with_frames = [
                     (frame, face) for frame, faces in frame_faces_batch for face in faces
                 ]
-                embedded = await self.face_embedder.embed_faces(faces_with_frames)
+                embedded = await self._face_embedder.embed_faces(faces_with_frames)
 
                 embedded_batch: list[Snapshot[Face[FaceEmbeddingT]]] = []
                 offset = 0
@@ -257,7 +256,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     offset += count
                 await embedded_snapshots_channel.send(embedded_batch)
         finally:
-            await embedded_snapshots_channel.close()
+            embedded_snapshots_channel.close()
 
     async def track_faces(
         self,
@@ -272,8 +271,8 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 for snapshot in snapshots:
                     if snapshot.is_scene_start:
                         # Identities never survive a scene cut.
-                        await self.tracker.reset()
-                    tracked_faces = await self.tracker.update(snapshot.faces)
+                        await self._tracker.reset()
+                    tracked_faces = await self._tracker.update(snapshot.faces)
                     await tracked_snapshot_channel.send(
                         Snapshot(
                             frame_index=snapshot.frame_index,
@@ -282,7 +281,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                         )
                     )
         finally:
-            await tracked_snapshot_channel.close()
+            tracked_snapshot_channel.close()
 
     async def interpolate_and_render(
         self,
@@ -293,7 +292,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         ],
     ) -> None:
         cursor: RenderCursor[FaceEmbeddingT] = RenderCursor(
-            self.config.rendering.lookahead_snapshots, self.interpolator
+            self.config.rendering.lookahead_snapshots, self._interpolator
         )
         pending_frames: dict[FrameIndex, Frame[FrameContentT]] = {}
         # The last faces actually emitted — held frames (ones the cursor cannot
@@ -376,7 +375,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             collector.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await collector
-            await annotated_frame_channel.close()
+            annotated_frame_channel.close()
 
     async def write_and_broadcast(
         self,
@@ -385,8 +384,8 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         ],
     ) -> None:
         async for annotated_frame in annotated_frame_channel:
-            await self.frame_sink.write_frame(annotated_frame)
-            await self.frame_broadcaster.broadcast_frame(annotated_frame)
+            await self._frame_sink.write_frame(annotated_frame)
+            await self._frame_broadcaster.broadcast_frame(annotated_frame)
 
     def _detection_channel_capacity(self) -> int:
         """Bound for the detection-frame channel, derived from the batching

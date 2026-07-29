@@ -5,6 +5,19 @@ from .token_bucket import TokenBucket
 
 
 class BatchGate:
+    """Decides when a detection batch fires: once the detection budget allows
+    it, fire when the batch is full (`max_frames` frames waiting) or has
+    waited long enough (`max_lag_ms`), whichever comes first.
+
+    Built on `TokenBucket`'s gate-then-spend protocol: `should_fire` only
+    *checks* the budget; after running the batch the caller reports its actual
+    duration via `record_spend`, which is what adapts detection frequency to
+    what inference really costs on this machine.
+
+    Subtlety: the epoch `max_lag_ms` is measured from (`eligible_since`)
+    resets whenever the token bucket is empty or no frames are waiting — the
+    lag clock starts when the gate becomes *able* to fire, not when frames
+    first started queuing."""
 
     def __init__(
         self,
@@ -33,7 +46,7 @@ class BatchGate:
         self.eligible_since = None
 
     def should_fire(self, available_frames: int) -> bool:
-        if not self.token_bucket.try_acquire(1.0):
+        if not self.token_bucket.can_spend(1.0):
             logger.trace(
                 "BatchGate: token bucket empty ({} frames available)",
                 available_frames,
