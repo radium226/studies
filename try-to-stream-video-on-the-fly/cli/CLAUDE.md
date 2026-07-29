@@ -53,9 +53,10 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
 - `--play-tracks` — after the main video's `ffplay` window closes, replay each discovered face
   track through its own `ffplay` window, one track at a time, in track-id order, via
   `TrackRecordingFrameBroadcaster` (a real `FrameBroadcaster` — `core` ships none, see
-  `core/CLAUDE.md`). Every rendered frame's faces are cropped and buffered in memory for the whole
-  run, so this trades RAM for the replay; `--track-crop-size` (default `160`) controls the
-  side length each crop is resized to.
+  `core/CLAUDE.md`). Rendered frames' faces are cropped and buffered in memory;
+  `--track-crop-size` (default `160`) controls the side length each crop is resized to, and
+  `--max-track-crops` (default `300`) caps how many crops each track keeps (its *first* N rendered
+  frames — ~10 s at 30 fps, ~22 MB per track at the defaults; `0` = unbounded, record everything).
 
 Or via `mise` from anywhere in the repo: `mise run cli -- <video>`. `uv run` here (and the mise
 task's own call into it) runs with `cli/` as the working directory (`uv --directory=cli`, matching
@@ -91,9 +92,10 @@ src/video_analyzer/cli/
 │                              write_raw_frame() shows plain pixels without an AnnotatedFrame —
 │                              _play_tracks() uses it for each track's replay window.
 ├── track_recording_frame_broadcaster.py  TrackRecordingFrameBroadcaster(kernel.FrameBroadcaster)
-│                              — a real (non-noop) FrameBroadcaster: crops+resizes every tracked
-│                              face out of each rendered frame and buffers it by track_id in
-│                              crops_by_track. Only wired in when --play-tracks is passed; still
+│                              — a real (non-noop) FrameBroadcaster: crops+resizes tracked faces
+│                              out of each rendered frame and buffers them by track_id in
+│                              crops_by_track (up to max_crops_per_track each — the track's first
+│                              N frames). Only wired in when --play-tracks is passed; still
 │                              composes with --stop-on-face-found (core.StopOnFirstAnnotation
 │                              wraps it, same "wrapped" decorator convention as stop_after_frame_count
 │                              in core).
@@ -152,10 +154,11 @@ the repo, but can point anywhere.
   `enter_async_context`), which is exactly what the stack is for.
 - No test suite here on purpose — it's a thin wiring example; `kernel`/`core` already unit-test
   every piece it composes.
-- `TrackRecordingFrameBroadcaster.crops_by_track` grows for the entire run — nothing prunes it,
-  unlike every bounded buffer in `kernel`/`core`. Deliberate for a study-project example (`--stop-
-  after-frames`/`--stop-on-face-found` are the practical way to bound a `--play-tracks` run today),
-  but a long, face-heavy video will use a lot of RAM.
+- `TrackRecordingFrameBroadcaster.crops_by_track` is bounded *per track* by `--max-track-crops`
+  (default `300` crops — a track's first N rendered frames; `0`/`None` restores the old
+  record-everything behavior). Note the bound is per track, not global: total memory still grows
+  with the number of *distinct* track ids a long video accumulates, so `--stop-after-frames`/
+  `--stop-on-face-found` remain the way to hard-bound a whole `--play-tracks` run.
 - `_play_tracks` is sequential, one `ffplay` window per track, closed before the next opens — not
   because concurrent windows can't work, but because it keeps the demo simple and avoids
   contending with the main video's own `ffplay` process for the Wayland/X11 session.

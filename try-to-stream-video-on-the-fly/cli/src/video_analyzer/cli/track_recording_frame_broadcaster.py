@@ -1,6 +1,10 @@
 """A real `FrameBroadcaster` (`core` deliberately ships none — see `core/CLAUDE.md`): buffers a
 fixed-size crop of each tracked face, per `track_id`, so the CLI can play each track back through
-its own `ffplay` window once the main video is done (see `main.py`'s `--play-tracks`)."""
+its own `ffplay` window once the main video is done (see `main.py`'s `--play-tracks`).
+
+`max_crops_per_track` bounds the buffer: recording keeps a track's *first* N crops and ignores
+the rest, capping memory at roughly `N * crop_size^2 * 3` bytes per track. `None` records
+everything — one crop per rendered frame the face appears in, for the whole run."""
 
 from __future__ import annotations
 
@@ -30,8 +34,11 @@ def _crop_face(
 class TrackRecordingFrameBroadcaster(
     kernel.FrameBroadcaster[NDArray[np.uint8], kernel.TrackedFace[NDArray[np.float32]]]
 ):
-    def __init__(self, crop_size: int = 160) -> None:
+    def __init__(
+        self, crop_size: int = 160, max_crops_per_track: int | None = None
+    ) -> None:
         self._crop_size = crop_size
+        self._max_crops_per_track = max_crops_per_track
         self.crops_by_track: dict[int, list[NDArray[np.uint8]]] = {}
 
     async def broadcast_frame(
@@ -42,7 +49,16 @@ class TrackRecordingFrameBroadcaster(
     ) -> None:
         frame_content = annotated_frame.frame.content
         for tracked_face in annotated_frame.faces:
-            crop = _crop_face(
-                frame_content, tracked_face.face.detection.bounding_box, self._crop_size
+            crops = self.crops_by_track.setdefault(tracked_face.track_id, [])
+            if (
+                self._max_crops_per_track is not None
+                and len(crops) >= self._max_crops_per_track
+            ):
+                continue
+            crops.append(
+                _crop_face(
+                    frame_content,
+                    tracked_face.face.detection.bounding_box,
+                    self._crop_size,
+                )
             )
-            self.crops_by_track.setdefault(tracked_face.track_id, []).append(crop)

@@ -73,6 +73,7 @@ async def _run(
     stop_on_face_found: bool,
     play_tracks: bool,
     track_crop_size: int,
+    max_track_crops: int | None,
 ) -> None:
     stop_token = kernel.StopToken()
     track_recorder: TrackRecordingFrameBroadcaster | None = None
@@ -105,7 +106,9 @@ async def _run(
 
         frame_broadcaster: kernel.FrameBroadcaster = NoopFrameBroadcaster()
         if play_tracks:
-            track_recorder = TrackRecordingFrameBroadcaster(crop_size=track_crop_size)
+            track_recorder = TrackRecordingFrameBroadcaster(
+                crop_size=track_crop_size, max_crops_per_track=max_track_crops
+            )
             frame_broadcaster = track_recorder
         if stop_on_face_found:
             frame_broadcaster = core.StopOnFirstAnnotation(frame_broadcaster, stop_token)
@@ -243,6 +246,16 @@ async def _run(
     show_default=True,
     help="Side length (pixels) each face crop is resized to for --play-tracks playback.",
 )
+@click.option(
+    "--max-track-crops",
+    type=click.IntRange(min=0),
+    default=300,
+    show_default=True,
+    help="Bound on buffered crops per track for --play-tracks: each track's replay keeps "
+    "only its first N rendered frames (~10 s at 30 fps by default), capping memory at "
+    "about N x crop_size^2 x 3 bytes per track (~22 MB at the defaults). 0 = unbounded, "
+    "record every frame of every track for the whole run.",
+)
 def main(
     video_path: Path,
     scrfd_model: Path,
@@ -256,6 +269,7 @@ def main(
     stop_on_face_found: bool,
     play_tracks: bool,
     track_crop_size: int,
+    max_track_crops: int,
 ) -> None:
     _configure_logging()
     asyncio.run(
@@ -273,6 +287,9 @@ def main(
             stop_on_face_found=stop_on_face_found,
             play_tracks=play_tracks,
             track_crop_size=track_crop_size,
+            # click can't express "int or unlimited" in one type, so 0 is the
+            # CLI spelling of the recorder's None.
+            max_track_crops=max_track_crops if max_track_crops > 0 else None,
         )
     )
 
