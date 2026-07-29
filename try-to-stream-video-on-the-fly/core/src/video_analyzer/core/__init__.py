@@ -16,6 +16,6 @@ from .overlay import draw_dashed_rect as draw_dashed_rect
 from .spline_interpolator import InterpolationMethod as InterpolationMethod
 from .spline_interpolator import SplineInterpolator as SplineInterpolator
 from .stop_after_frame_count import StopAfterFrameCount as StopAfterFrameCount
-from .stop_on_first_annotation import StopOnFirstAnnotation as StopOnFirstAnnotation
+from .stop_on_first_track import StopOnFirstTrack as StopOnFirstTrack
 
 logger.disable("video_analyzer.core")

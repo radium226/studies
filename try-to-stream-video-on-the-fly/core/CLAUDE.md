@@ -76,18 +76,17 @@ src/video_analyzer/core/
 │                           read (still returns that frame). Generic, no numpy — lives here only
 │                           because kernel exposes the StopToken primitive but no concrete
 │                           condition for what should set it
-├── stop_on_first_annotation.py StopOnFirstAnnotation(kernel.FrameBroadcaster) — decorates a
-│                           FrameBroadcaster, requests an early kernel.StopToken stop the first
-│                           time an AnnotatedFrame carries a face record. Also generic
+├── stop_on_first_track.py  StopOnFirstTrack(kernel.Tracker) — decorates a Tracker, requests an
+│                           early kernel.StopToken stop the first time update() comes back with
+│                           a confirmed track. Also generic
 ├── pipe_io.py              **public** asyncio subprocess-pipe helpers, shared by the two ffmpeg
     wrappers and reused downstream (cli's FfplayFrameSink): read_exact, drain_stderr,
     drain_and_discard, terminate_and_wait, shutdown_process — mind the drain-during-shutdown
     requirement documented inline, or Process.wait() hangs
 ```
 
-`FrameBroadcaster` has no concrete implementation here (`StopOnFirstAnnotation` decorates one,
-but doesn't implement transport) — it's meant to be supplied by whatever application wires the
-pipeline together (e.g. push `AnnotatedFrame` metadata over a websocket); `core` has no opinion
+`FrameBroadcaster` has no concrete implementation here — it's meant to be supplied by whatever
+application wires the pipeline together (e.g. push `AnnotatedFrame` metadata over a websocket); `core` has no opinion
 on transport.
 
 ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder` take a
@@ -113,11 +112,11 @@ ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder`
   injectable `Executor`, defaulting to the loop's default thread pool) — `ByteTrackTracker.update`
   deliberately does not, since ByteTrack's update is cheap bookkeeping, not inference; don't add
   executor offloading there without a reason.
-- `StopAfterFrameCount`/`StopOnFirstAnnotation` are the only generic classes in `core` — an
+- `StopAfterFrameCount`/`StopOnFirstTrack` are the only generic classes in `core` — an
   intentional exception to "everything that computes numbers belongs here, only `kernel`'s
   `Interpolator`/`Interpolable` stays generic": neither touches frame content at all (one counts
-  reads, the other inspects `faces`), so pinning them to `NDArray[np.uint8]` like every other
-  backend here would just be dishonest about what they depend on.
+  reads, the other inspects the tracker's output), so pinning them to `NDArray[np.uint8]` like
+  every other backend here would just be dishonest about what they depend on.
 - `app/` was not touched when this project was created and still has its own inline
   `engine.py`/`detection.py`/`tracking.py`/`interpolation.py`/`reader.py`/`writer.py` copies —
   migrating `app/` to depend on `core`+`kernel` instead is a separate, not-yet-done task.
