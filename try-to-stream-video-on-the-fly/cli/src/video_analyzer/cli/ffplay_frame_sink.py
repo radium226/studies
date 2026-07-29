@@ -21,9 +21,8 @@ from typing import Self
 
 import cv2
 import numpy as np
-from loguru import logger
 from numpy.typing import NDArray
-from video_analyzer.core import overlay
+from video_analyzer.core import overlay, pipe_io
 
 from video_analyzer import kernel
 
@@ -84,7 +83,9 @@ class FfplayFrameSink(
             env=self._ffplay_env(),
         )
         assert self._proc.stderr is not None
-        self._stderr_task = asyncio.create_task(self._drain_stderr(self._proc.stderr))
+        self._stderr_task = asyncio.create_task(
+            pipe_io.drain_stderr(self._proc.stderr, "ffplay")
+        )
         try:
             yield self
         finally:
@@ -96,7 +97,6 @@ class FfplayFrameSink(
             NDArray[np.uint8], kernel.TrackedFace[NDArray[np.float32]]
         ],
     ) -> None:
-        assert self._proc is not None and self._proc.stdin is not None
         # Single copy per emitted frame, matching app/'s own
         # `pending.frame.copy()`. Drawing into `frame.content` directly is not
         # ours to do: the pipeline hands the very same `Frame` object to the
@@ -105,8 +105,15 @@ class FfplayFrameSink(
         # decoder pipe's `bytes`, so OpenCV rejects them outright anyway.
         frame = annotated_frame.frame.content.copy()
         _draw_detections(frame, annotated_frame.faces, annotated_frame.is_exact)
+        await self.write_raw_frame(frame)
+
+    async def write_raw_frame(self, content: NDArray[np.uint8]) -> None:
+        """Show one frame exactly as given — no detection overlay. For callers
+        with plain pixels and no `AnnotatedFrame` (e.g. `--play-tracks` crop
+        playback)."""
+        assert self._proc is not None and self._proc.stdin is not None
         try:
-            self._proc.stdin.write(frame.tobytes())
+            self._proc.stdin.write(content.tobytes())
             await self._proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             # ffplay window was closed by the user — let the source drain out.
@@ -114,30 +121,18 @@ class FfplayFrameSink(
 
     async def _shutdown(self, timeout: float) -> None:
         assert self._proc is not None and self._stderr_task is not None
+        # Close stdin first so ffplay's -autoexit can end the process
+        # normally; only then terminate whatever is left. (core's
+        # shutdown_process isn't reusable as-is: it drains a stdout pipe this
+        # process doesn't have.)
         if self._proc.stdin is not None and not self._proc.stdin.is_closing():
             self._proc.stdin.close()
             with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                 await self._proc.stdin.wait_closed()
-        with contextlib.suppress(ProcessLookupError):
-            self._proc.terminate()
-        try:
-            async with asyncio.timeout(timeout):
-                await self._proc.wait()
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                self._proc.kill()
-            await self._proc.wait()
+        await pipe_io.terminate_and_wait(self._proc, timeout)
         self._stderr_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self._stderr_task
-
-    @staticmethod
-    async def _drain_stderr(stream: asyncio.StreamReader) -> None:
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            logger.info("ffplay: {}", line.decode(errors="replace").rstrip())
 
     @staticmethod
     def _ffplay_env() -> dict[str, str] | None:

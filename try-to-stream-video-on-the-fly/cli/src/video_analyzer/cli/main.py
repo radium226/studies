@@ -1,16 +1,18 @@
 """Play a local video file with detected/tracked faces drawn on it, via `ffplay`.
 
-Wires `core`'s real SCRFD/ArcFace/ByteTrack/spline backends into `kernel.Pipeline`, adding this
-package's own `FfplayFrameSink` plus `NoopSceneDetector`/`NoopFrameBroadcaster` stubs for the two
-service slots neither `kernel` nor `core` implements. `--play-tracks` swaps the no-op broadcaster
-for `TrackRecordingFrameBroadcaster`, which replays each discovered face track through its own
-`ffplay` window once the main video finishes.
+Wires `core`'s real SCRFD/ArcFace/ByteTrack/spline/histogram-scene-cut backends into
+`kernel.Pipeline`, adding this package's own `FfplayFrameSink` plus a `NoopFrameBroadcaster`
+stub for the one service slot neither `kernel` nor `core` implements. `--no-scene-detection`
+swaps the histogram scene detector for a never-cuts `NoopSceneDetector`; `--play-tracks` swaps
+the no-op broadcaster for `TrackRecordingFrameBroadcaster`, which replays each discovered face
+track through its own `ffplay` window once the main video finishes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 import click
@@ -52,17 +54,10 @@ async def _play_tracks(
         crops = crops_by_track[track_id]
         logger.info("play-tracks: playing track #{} ({} frames)", track_id, len(crops))
         async with FfplayFrameSink.start(crop_size, crop_size, fps) as track_sink:
-            for index, crop in enumerate(crops):
+            for crop in crops:
                 content = crop.copy()
                 draw_caption_text(content, f"track #{track_id}")
-                await track_sink.write_frame(
-                    kernel.AnnotatedFrame(
-                        frame=kernel.Frame(index=index, content=content),
-                        faces=[],
-                        interpolation_bracket=None,
-                        is_exact=True,
-                    )
-                )
+                await track_sink.write_raw_frame(content)
 
 
 async def _run(
@@ -73,78 +68,84 @@ async def _run(
     speed_factor_target: float,
     batching: kernel.BatchingConfig,
     rendering: kernel.RenderingConfig,
+    scene_detection: bool,
     stop_after_frames: int | None,
     stop_on_face_found: bool,
     play_tracks: bool,
     track_crop_size: int,
 ) -> None:
     stop_token = kernel.StopToken()
-    async with core.FfmpegFrameSource.start(
-        str(video_path), loop=False, read_rate=speed_factor_target
-    ) as raw_frame_source:
+    track_recorder: TrackRecordingFrameBroadcaster | None = None
+    async with AsyncExitStack() as stack:
+        raw_frame_source = await stack.enter_async_context(
+            core.FfmpegFrameSource.start(
+                str(video_path), loop=False, read_rate=speed_factor_target
+            )
+        )
         # Always the file's native fps — `read_rate` paces how fast frames come
         # out, it doesn't change what the video *is*.
         video_info = raw_frame_source.video_info
         width, height, fps = video_info.width, video_info.height, video_info.fps
+
         frame_source: kernel.FrameSource = raw_frame_source
         if stop_after_frames is not None:
             frame_source = core.StopAfterFrameCount(
                 frame_source, stop_token, stop_after_frames
             )
-        face_detector = core.OnnxFaceDetector(scrfd_model)
-        face_embedder = core.OnnxFaceEmbedder(arcface_model)
-        with face_detector, face_embedder:
-            # `-framerate` on the sink is the other half of the time compression:
-            # the decoder hands us frames N x faster, and ffplay shows them N x
-            # faster, so playback stays balanced instead of piling up behind a
-            # realtime-paced window.
-            async with FfplayFrameSink.start(
-                width, height, fps * speed_factor_target
-            ) as frame_sink:
-                frame_broadcaster: kernel.FrameBroadcaster = NoopFrameBroadcaster()
-                track_recorder: TrackRecordingFrameBroadcaster | None = None
-                if play_tracks:
-                    track_recorder = TrackRecordingFrameBroadcaster(
-                        crop_size=track_crop_size
-                    )
-                    frame_broadcaster = track_recorder
-                if stop_on_face_found:
-                    frame_broadcaster = core.StopOnFirstAnnotation(
-                        frame_broadcaster, stop_token
-                    )
-                pipeline = kernel.Pipeline(
-                    clock=SystemClock(),
-                    scene_detector=NoopSceneDetector(),
-                    face_detector=face_detector,
-                    face_embedder=face_embedder,
-                    # Native fps here too: the tracker is stepped once per
-                    # detection snapshot, not per video frame, so its wall-clock
-                    # update rate doesn't move with playback speed.
-                    tracker=core.ByteTrackTracker(fps),
-                    interpolator=core.SplineInterpolator(),
-                    frame_sink=frame_sink,
-                    frame_broadcaster=frame_broadcaster,
-                    config=kernel.PipelineConfig(
-                        # Deliberately *not* scaled by speed_factor_target. This
-                        # is the detection budget (BatchGate's token bucket
-                        # refill rate, in tokens per wall-clock second), and
-                        # holding it at native fps is exactly what makes a
-                        # faster playback cost detection coverage rather than
-                        # CPU: passes per wall-second stay put while N x more
-                        # frames flow past, so ~1/N of them get detected and
-                        # the interpolator fills the wider gaps.
-                        frames_per_second=fps,
-                        batching=batching,
-                        rendering=rendering,
-                    ),
-                )
-                await pipeline.run(frame_source, stop_token=stop_token)
-            if track_recorder is not None:
-                await _play_tracks(
-                    track_recorder.crops_by_track,
-                    crop_size=track_crop_size,
-                    fps=fps * speed_factor_target,
-                )
+
+        face_detector = stack.enter_context(core.OnnxFaceDetector(scrfd_model))
+        face_embedder = stack.enter_context(core.OnnxFaceEmbedder(arcface_model))
+        # `-framerate` on the sink is the other half of the time compression:
+        # the decoder hands us frames N x faster, and ffplay shows them N x
+        # faster, so playback stays balanced instead of piling up behind a
+        # realtime-paced window.
+        frame_sink = await stack.enter_async_context(
+            FfplayFrameSink.start(width, height, fps * speed_factor_target)
+        )
+
+        frame_broadcaster: kernel.FrameBroadcaster = NoopFrameBroadcaster()
+        if play_tracks:
+            track_recorder = TrackRecordingFrameBroadcaster(crop_size=track_crop_size)
+            frame_broadcaster = track_recorder
+        if stop_on_face_found:
+            frame_broadcaster = core.StopOnFirstAnnotation(frame_broadcaster, stop_token)
+
+        pipeline = kernel.Pipeline(
+            clock=SystemClock(),
+            scene_detector=(
+                core.HistogramSceneDetector() if scene_detection else NoopSceneDetector()
+            ),
+            face_detector=face_detector,
+            face_embedder=face_embedder,
+            # Native fps here too: the tracker is stepped once per
+            # detection snapshot, not per video frame, so its wall-clock
+            # update rate doesn't move with playback speed.
+            tracker=core.ByteTrackTracker(fps),
+            interpolator=core.SplineInterpolator(),
+            frame_sink=frame_sink,
+            frame_broadcaster=frame_broadcaster,
+            config=kernel.PipelineConfig(
+                # Deliberately *not* scaled by speed_factor_target. This
+                # is the detection budget (BatchGate's token bucket
+                # refill rate, in tokens per wall-clock second), and
+                # holding it at native fps is exactly what makes a
+                # faster playback cost detection coverage rather than
+                # CPU: passes per wall-second stay put while N x more
+                # frames flow past, so ~1/N of them get detected and
+                # the interpolator fills the wider gaps.
+                frames_per_second=fps,
+                batching=batching,
+                rendering=rendering,
+            ),
+        )
+        await pipeline.run(frame_source, stop_token=stop_token)
+
+    if track_recorder is not None:
+        await _play_tracks(
+            track_recorder.crops_by_track,
+            crop_size=track_crop_size,
+            fps=video_info.fps * speed_factor_target,
+        )
 
 
 @click.command()
@@ -202,6 +203,14 @@ async def _run(
     "more lag.",
 )
 @click.option(
+    "--scene-detection/--no-scene-detection",
+    default=True,
+    show_default=True,
+    help="Detect hard cuts (histogram correlation of consecutive frames) and reset face "
+    "tracking at each cut, so identities and interpolation never bridge scenes. Disable "
+    "to track straight through cuts.",
+)
+@click.option(
     "--stop-after-frames",
     type=click.IntRange(min=1),
     default=None,
@@ -242,6 +251,7 @@ def main(
     max_batch_frames: int,
     max_batch_lag_ms: float,
     lookahead: int,
+    scene_detection: bool,
     stop_after_frames: int | None,
     stop_on_face_found: bool,
     play_tracks: bool,
@@ -258,6 +268,7 @@ def main(
                 max_frames=max_batch_frames, max_lag_ms=max_batch_lag_ms
             ),
             rendering=kernel.RenderingConfig(lookahead_snapshots=lookahead),
+            scene_detection=scene_detection,
             stop_after_frames=stop_after_frames,
             stop_on_face_found=stop_on_face_found,
             play_tracks=play_tracks,

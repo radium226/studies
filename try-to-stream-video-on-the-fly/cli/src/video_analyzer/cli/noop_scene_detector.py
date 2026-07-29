@@ -1,6 +1,7 @@
-"""`kernel.Pipeline` requires a `SceneDetector`, but nothing calls `detect_scene_cut` in `drain()`
-today (see `kernel/CLAUDE.md`) and `core` implements no scene-cut algorithm to back one — this
-stub only satisfies the constructor."""
+"""A `SceneDetector` that never reports a cut — the `--no-scene-detection`
+backend. The pipeline calls `detect_scene_cut` on every consecutive frame
+pair; answering False throughout means tracking and interpolation run
+straight through hard cuts, exactly the pre-wiring behavior."""
 
 from __future__ import annotations
 
