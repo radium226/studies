@@ -1,10 +1,11 @@
 # video-analyzer-cli
 
 A small runnable example that plays a local video file with detected and tracked faces drawn
-on it, via `ffplay`. Wires [`video-analyzer-core`](../core)'s real SCRFD/ArcFace/ByteTrack/PCHIP
-backends into [`video-analyzer-kernel`](../kernel)'s `Pipeline`, and adds its own `ffplay`-piping
-`FrameSink` plus a couple of no-op stubs (`SceneDetector`, `FrameBroadcaster`) that neither
-`kernel` nor `core` implement.
+on it, via `ffplay`. Wires [`video-analyzer-core`](../core)'s real
+SCRFD/ArcFace/ByteTrack/PCHIP/histogram-scene-cut backends into
+[`video-analyzer-kernel`](../kernel)'s `Pipeline`, and adds its own `ffplay`-piping `FrameSink`
+plus a no-op `FrameBroadcaster` stub for the one slot neither `kernel` nor `core` implement
+(scene detection is real and on by default; `--no-scene-detection` swaps in a no-op).
 
 ```bash
 uv run video-analyzer-cli ../app/assets/sample.mp4

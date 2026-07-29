@@ -7,9 +7,10 @@ subproject. See the repo root `CLAUDE.md` for how this fits alongside `app/` and
 
 `video-analyzer-core` (importable as `video_analyzer.core`) — concrete, real-backend
 implementations of [`kernel`](../kernel)'s service ABCs: SCRFD face detection, ArcFace face
-embedding, ByteTrack multi-object tracking, PCHIP/cubic/linear spline interpolation, and
-ffmpeg-backed frame I/O. Everything here was ported from `app/src/video_streamer/*` and adapted
-to satisfy `kernel`'s (async) contracts and richer `Detection`/`Face`/`TrackedFace` models.
+embedding, ByteTrack multi-object tracking, PCHIP/cubic/linear spline interpolation,
+histogram-correlation scene-cut detection, and ffmpeg-backed frame I/O. Most of it was ported
+from `app/src/video_streamer/*` and adapted to satisfy `kernel`'s (async) contracts and richer
+`Detection`/`Face`/`TrackedFace` models.
 
 `kernel` stays dependency-free by design (see its own `CLAUDE.md`) — every numpy/scipy/opencv/
 onnxruntime-touching algorithm lives here instead, even when the algorithm itself is pure math
@@ -44,12 +45,20 @@ src/video_analyzer/core/
 ├── bytetrack_tracker.py    ByteTrackTracker(kernel.Tracker) — wraps trackers.ByteTrackTracker
 │                           (buffered IoU, since detection cadence << video fps); re-associates
 │                           ByteTrack's Kalman-smoothed box back to the matched input detection
-│                           via hand-rolled IoU (_best_iou_match) so drawn boxes/landmarks stay
-│                           consistent — cheap bookkeeping, no executor offload needed
-├── spline_interpolator.py  SplineInterpolator(kernel.Interpolator) — the pure numeric half of
-│                           the pre-kernel LookaheadTrackBuffer: pchip/cubic/linear dispatch via
-│                           scipy, generic over anything implementing kernel.Interpolable
-│                           (to_vector/with_vector) — knows nothing about faces or tracks
+│                           via hand-rolled IoU (_best_iou_match, each face claimed at most once)
+│                           so drawn boxes/landmarks stay consistent — cheap bookkeeping, no
+│                           executor offload needed. Implements reset() (scene cuts) by
+│                           delegating to the vendored tracker's own reset; exposes the ByteTrack
+│                           knobs as ctor kwargs. NB: `fps` is bookkeeping only — lost_track_buffer
+│                           counts *updates* (detection passes), not video frames
+├── spline_interpolator.py  SplineInterpolator(kernel.Interpolator) — pchip/cubic/linear *point
+│                           query* via scipy (evaluate one position of the window, per the
+│                           kernel contract), generic over anything implementing
+│                           kernel.Interpolable (to_vector/with_vector) — knows nothing about
+│                           faces or tracks
+├── histogram_scene_detector.py HistogramSceneDetector(kernel.SceneDetector) — per-channel
+│                           histogram correlation of consecutive frames; a cut is a correlation
+│                           below the ctor threshold. Cheap enough to run inline per frame pair
 ├── ffmpeg_frame_source.py  FfmpegFrameSource(kernel.FrameSource) — spawns the decoder ffmpeg
 │                           subprocess, probes video info, reshapes raw BGR24 bytes to
 │                           (H, W, 3) numpy frames
@@ -70,16 +79,16 @@ src/video_analyzer/core/
 ├── stop_on_first_annotation.py StopOnFirstAnnotation(kernel.FrameBroadcaster) — decorates a
 │                           FrameBroadcaster, requests an early kernel.StopToken stop the first
 │                           time an AnnotatedFrame carries a face record. Also generic
-├── _pipe_io.py             shared asyncio subprocess-pipe helpers for the two ffmpeg wrappers
-    (read_exact, drain_stderr, drain_and_discard, shutdown_process — mind the drain-during-
-    shutdown requirement documented inline, or Process.wait() hangs)
+├── pipe_io.py              **public** asyncio subprocess-pipe helpers, shared by the two ffmpeg
+    wrappers and reused downstream (cli's FfplayFrameSink): read_exact, drain_stderr,
+    drain_and_discard, terminate_and_wait, shutdown_process — mind the drain-during-shutdown
+    requirement documented inline, or Process.wait() hangs
 ```
 
-Not implemented here (no source algorithm exists anywhere to port, so nothing was invented):
-`SceneDetector`. `FrameBroadcaster` has no concrete implementation either (`StopOnFirstAnnotation`
-decorates one, but doesn't implement transport) — it's meant to be supplied by whatever
-application wires the pipeline together (e.g. push `AnnotatedFrame` metadata over a websocket);
-`core` has no opinion on transport.
+`FrameBroadcaster` has no concrete implementation here (`StopOnFirstAnnotation` decorates one,
+but doesn't implement transport) — it's meant to be supplied by whatever application wires the
+pipeline together (e.g. push `AnnotatedFrame` metadata over a websocket); `core` has no opinion
+on transport.
 
 ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder` take a
 `model_path: Path` constructor argument; point it at `app/models/scrfd_10g_kps_dynamic.onnx` /

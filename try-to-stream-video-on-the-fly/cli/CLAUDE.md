@@ -39,6 +39,9 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
   (`batching.max_lag_ms`, default `0` = fire immediately).
 - `--lookahead K` — interpolation lookahead in detection snapshots (`rendering.lookahead_snapshots`,
   default `3`).
+- `--scene-detection/--no-scene-detection` — on by default: `core.HistogramSceneDetector` flags
+  hard cuts, and the pipeline resets face tracking at each one (identities and interpolation
+  never bridge scenes). `--no-scene-detection` swaps in the never-cuts `NoopSceneDetector`.
 - `--stop-after-frames N` — stop early after N frames are read, via `core.StopAfterFrameCount`
   wrapping the `FrameSource`. Graceful: frames already read still drain all the way through the
   pipeline, same as natural end-of-stream (see `kernel.StopToken`).
@@ -72,19 +75,21 @@ the right anchor here).
 ```
 src/video_analyzer/cli/
 ├── main.py                   click entry point: wires FfmpegFrameSource + OnnxFaceDetector +
-│                              OnnxFaceEmbedder + ByteTrackTracker + SplineInterpolator (all from
-│                              core) + this package's own FfplayFrameSink/stubs into
-│                              kernel.Pipeline, then calls pipeline.run(frame_source); if
-│                              --play-tracks, follows up with _play_tracks() once the main
-│                              FfplayFrameSink has closed
+│                              OnnxFaceEmbedder + ByteTrackTracker + SplineInterpolator +
+│                              HistogramSceneDetector (all from core) + this package's own
+│                              FfplayFrameSink/stubs into kernel.Pipeline (everything composed on
+│                              one AsyncExitStack), then calls pipeline.run(frame_source); if
+│                              --play-tracks, follows up with _play_tracks() once the whole stack
+│                              (including the decoder) has closed
 ├── ffplay_frame_sink.py       FfplayFrameSink(kernel.FrameSink) — spawns `ffplay`, draws each
 │                              frame's detections onto a *copy* (solid box = exact detection,
 │                              dashed via core.overlay.draw_dashed_rect = interpolated), pipes raw
 │                              BGR24 bytes to its stdin. No encoding step — ffplay reads rawvideo
 │                              directly. Owned here, not in core: core has no opinion on
-│                              transport (see core/CLAUDE.md), and this is one. Reused as-is by
-│                              _play_tracks() for each track's replay window (faces=[], so no
-│                              boxes are drawn — the crop itself is tight enough already).
+│                              transport (see core/CLAUDE.md), and this is one; the subprocess
+│                              plumbing reuses core.pipe_io (drain_stderr, terminate_and_wait).
+│                              write_raw_frame() shows plain pixels without an AnnotatedFrame —
+│                              _play_tracks() uses it for each track's replay window.
 ├── track_recording_frame_broadcaster.py  TrackRecordingFrameBroadcaster(kernel.FrameBroadcaster)
 │                              — a real (non-noop) FrameBroadcaster: crops+resizes every tracked
 │                              face out of each rendered frame and buffers it by track_id in
@@ -93,8 +98,9 @@ src/video_analyzer/cli/
 │                              wraps it, same "wrapped" decorator convention as stop_after_frame_count
 │                              in core).
 ├── noop_scene_detector.py     NoopSceneDetector(kernel.SceneDetector) — always returns False;
-│                              satisfies Pipeline's constructor even though nothing calls
-│                              detect_scene_cut yet and core has no scene-cut algorithm to port
+│                              the --no-scene-detection backend (the pipeline calls
+│                              detect_scene_cut on every frame pair; answering False means
+│                              tracking runs straight through hard cuts)
 ├── noop_frame_broadcaster.py  NoopFrameBroadcaster(kernel.FrameBroadcaster) — no-op; used whenever
 │                              --play-tracks isn't passed and nothing else consumes detection
 │                              metadata
@@ -130,7 +136,7 @@ the repo, but can point anywhere.
   `TokenBucket(capacity=1.0, refill_rate=fps)` is a **wall-clock** budget charged
   `elapsed_seconds * fps` per pass. Pinned to native fps, detection passes per wall-second stay put
   while `N`× more frames stream by, so ~`1/N` of frames get detected, `_sample_evenly` spreads its
-  sample over an `N`× wider index range, and `_RenderCursor` interpolates the wider gaps. Scaling it
+  sample over an `N`× wider index range, and `RenderCursor` interpolates the wider gaps. Scaling it
   to `fps * N` instead would just push the inference duty cycle toward 100% for a marginal coverage
   gain. `app/` makes the same choice ("the CV `Engine` keeps native fps"). Everything downstream is
   **frame-index** based, not time based, so nothing else needs rescaling.
@@ -141,8 +147,9 @@ the repo, but can point anywhere.
   720x1280). Likewise, `fps * N` above the monitor's refresh rate is left for SDL/ffplay's own
   frame-drop path to absorb: no warning, no clamp, and no decimation in the sink.
 - `OnnxFaceDetector`/`OnnxFaceEmbedder` are sync context managers (`OnnxModel.__enter__`/
-  `__exit__` lazily load/release the ONNX session) — open both with a `with` block before calling
-  `pipeline.run()`, same as any other `core` consumer would.
+  `__exit__` lazily load/release the ONNX session) — `_run` enters them on the same
+  `AsyncExitStack` as the async ffmpeg/ffplay contexts (`enter_context` vs
+  `enter_async_context`), which is exactly what the stack is for.
 - No test suite here on purpose — it's a thin wiring example; `kernel`/`core` already unit-test
   every piece it composes.
 - `TrackRecordingFrameBroadcaster.crops_by_track` grows for the entire run — nothing prunes it,
