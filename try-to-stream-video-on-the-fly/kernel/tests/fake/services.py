@@ -1,5 +1,4 @@
 import asyncio
-from typing import cast
 
 from video_analyzer import kernel
 
@@ -93,28 +92,26 @@ class Tracker(kernel.Tracker[FaceEmbedding]):
 
 
 class Interpolator(kernel.Interpolator[TrackedFace]):
-    """Nearest-neighbor gap fill — no real spline math, just enough to
+    """Nearest-neighbor point query — no real spline math, just enough to
     exercise the pipeline's windowing/gap-fill wiring in tests."""
 
     async def interpolate(
         self,
         interpolables: list[TrackedFace | None],
-    ) -> list[TrackedFace]:
-        filled: list[TrackedFace | None] = list(interpolables)
-        last: TrackedFace | None = None
-        for index, value in enumerate(filled):
-            if value is not None:
-                last = value
-            elif last is not None:
-                filled[index] = last
-        next_value: TrackedFace | None = None
-        for index in range(len(filled) - 1, -1, -1):
-            if filled[index] is not None:
-                next_value = filled[index]
-            elif next_value is not None:
-                filled[index] = next_value
-        assert all(value is not None for value in filled)
-        return cast("list[TrackedFace]", filled)
+        at: int,
+    ) -> TrackedFace:
+        if (known := interpolables[at]) is not None:
+            return known
+        best: TrackedFace | None = None
+        best_distance: int | None = None
+        for index, value in enumerate(interpolables):
+            if value is None:
+                continue
+            distance = abs(index - at)
+            if best_distance is None or distance < best_distance:
+                best, best_distance = value, distance
+        assert best is not None, "caller guarantees at least 2 known points"
+        return best
 
 
 class FrameSource(kernel.FrameSource[FrameContent]):

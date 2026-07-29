@@ -209,6 +209,7 @@ class RenderCursor[FaceEmbeddingT]:
                 # rather than dropping or extrapolating it.
                 results.append(tracked_face)
                 continue
-            filled = await self._interpolator.interpolate(slots)
-            results.append(filled[frame_index - span_start])
+            results.append(
+                await self._interpolator.interpolate(slots, frame_index - span_start)
+            )
         return results
