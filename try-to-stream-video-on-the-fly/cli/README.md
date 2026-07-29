@@ -1,7 +1,7 @@
 # video-analyzer-cli
 
-A small runnable example that plays a local video file with detected and tracked faces drawn
-on it, via `ffplay`. Wires [`video-analyzer-core`](../core)'s real
+A small runnable example that plays a local video file — or an http(s) URL, resolved to a
+direct media URL via `yt-dlp` — with detected and tracked faces drawn on it, via `ffplay`. Wires [`video-analyzer-core`](../core)'s real
 SCRFD/ArcFace/ByteTrack/PCHIP/histogram-scene-cut backends into
 [`video-analyzer-kernel`](../kernel)'s `Pipeline`, and adds its own `ffplay`-piping `FrameSink`
 plus a no-op `FrameBroadcaster` stub for the one slot neither `kernel` nor `core` implement
@@ -9,6 +9,10 @@ plus a no-op `FrameBroadcaster` stub for the one slot neither `kernel` nor `core
 
 ```bash
 uv run video-analyzer-cli ../app/assets/sample.mp4
+
+# Or hand it a page URL — yt-dlp (a binary on PATH, like ffmpeg) resolves it to a
+# direct media URL first.
+uv run video-analyzer-cli https://www.youtube.com/watch?v=aqz-KE-bpKQ
 
 # Watch it 4x faster. Every frame is still decoded and drawn; the speed-up is paid for
 # with detection coverage (~1/4 of frames detected, interpolation fills the rest).

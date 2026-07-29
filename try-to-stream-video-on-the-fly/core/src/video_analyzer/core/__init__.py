@@ -17,5 +17,6 @@ from .spline_interpolator import InterpolationMethod as InterpolationMethod
 from .spline_interpolator import SplineInterpolator as SplineInterpolator
 from .stop_after_frame_count import StopAfterFrameCount as StopAfterFrameCount
 from .stop_on_first_track import StopOnFirstTrack as StopOnFirstTrack
+from .yt_dlp_url_resolver import resolve_direct_media_url as resolve_direct_media_url
 
 logger.disable("video_analyzer.core")

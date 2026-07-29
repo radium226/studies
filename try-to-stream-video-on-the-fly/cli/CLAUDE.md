@@ -7,7 +7,8 @@ subproject. See the repo root `CLAUDE.md` for how this fits alongside `app/`, `k
 ## What this is
 
 `video-analyzer-cli` (importable as `video_analyzer.cli`) — a small runnable example that plays a
-local video file with detected/tracked faces drawn on it, via `ffplay`, and can optionally replay
+local video file or an http(s) page URL (resolved to a direct media URL via `core`'s `yt-dlp`
+resolver) with detected/tracked faces drawn on it, via `ffplay`, and can optionally replay
 each discovered face track afterward (`--play-tracks`). It's the first real end-to-end consumer of
 [`kernel`](../kernel)'s `Pipeline` wired to [`core`](../core)'s SCRFD/ArcFace/ByteTrack/spline/
 ffmpeg backends, outside their own unit tests.
@@ -23,8 +24,10 @@ All commands run from this directory (a `uv`-managed Python project).
 ```bash
 uv sync                             # install/update dependencies (resolves ../core, ../kernel)
 uv run video-analyzer-cli <video>   # play a local video file, faces drawn, via ffplay
-uv run ruff check src               # lint
-uv run ty check src                 # type check
+uv run video-analyzer-cli <url>     # same for an http(s) page URL (yt-dlp resolves it first)
+uv run pytest                       # unit tests (tests/ — SOURCE argument handling only)
+uv run ruff check src tests         # lint
+uv run ty check src tests           # type check
 ```
 
 Tuning flags (all optional; the defaults reproduce plain native-speed playback):
@@ -57,6 +60,12 @@ Tuning flags (all optional; the defaults reproduce plain native-speed playback):
   `--max-track-crops` (default `300`) caps how many crops each track keeps (its *first* N rendered
   frames — ~10 s at 30 fps, ~22 MB per track at the defaults; `0` = unbounded, record everything).
 
+The positional `SOURCE` is either a local video file or an `http://`/`https://` URL — a URL is
+first resolved to a direct media URL via `core.resolve_direct_media_url` (the `yt-dlp` binary
+must be on PATH, same subprocess convention as ffmpeg/ffprobe), then fed to `FfmpegFrameSource`
+exactly like a file path. Anything that is neither an existing file nor an http(s) URL is
+rejected up front with a `click.BadParameter`.
+
 Or via `mise` from anywhere in the repo: `mise run cli -- <video>`. `uv run` here (and the mise
 task's own call into it) runs with `cli/` as the working directory (`uv --directory=cli`, matching
 `mise/tasks/webapp`'s own convention for `app/`) — so a relative `<video>` path passed directly to
@@ -64,7 +73,8 @@ task's own call into it) runs with `cli/` as the working directory (`uv --direct
 shell's cwd; use `../app/assets/sample.mp4`-style relative paths or an absolute path in that case.
 The `mise run cli` path doesn't have this problem: `mise/tasks/cli` resolves its first non-flag
 argument to an absolute path (via `realpath`, explicitly anchored at `${MISE_PROJECT_ROOT}`)
-*before* handing it to `uv --directory=cli`, so a `<video>` path relative to the repo root
+*before* handing it to `uv --directory=cli` (URLs are exempted and passed through untouched —
+`realpath` would mangle them), so a `<video>` path relative to the repo root
 survives that later directory change unchanged — regardless of which directory you actually ran
 `mise run cli` from (mise itself always starts the task with `$MISE_PROJECT_ROOT` as `cwd`, not
 your shell's cwd, which is exactly why the repo root — not "wherever you typed the command" — is
@@ -74,7 +84,9 @@ the right anchor here).
 
 ```
 src/video_analyzer/cli/
-├── main.py                   click entry point: wires FfmpegFrameSource + OnnxFaceDetector +
+├── main.py                   click entry point: resolves an http(s) SOURCE to a direct media
+│                              URL via core.resolve_direct_media_url (yt-dlp), then wires
+│                              FfmpegFrameSource + OnnxFaceDetector +
 │                              OnnxFaceEmbedder + ByteTrackTracker + SplineInterpolator +
 │                              HistogramSceneDetector (all from core) + this package's own
 │                              FfplayFrameSink/stubs into kernel.Pipeline (everything composed on
@@ -150,8 +162,10 @@ the repo, but can point anywhere.
   `__exit__` lazily load/release the ONNX session) — `_run` enters them on the same
   `AsyncExitStack` as the async ffmpeg/ffplay contexts (`enter_context` vs
   `enter_async_context`), which is exactly what the stack is for.
-- No test suite here on purpose — it's a thin wiring example; `kernel`/`core` already unit-test
-  every piece it composes.
+- The test suite (`tests/`) is deliberately minimal — it's a thin wiring example; `kernel`/`core`
+  already unit-test every piece it composes. The only tests here cover `main()`'s own logic: the
+  SOURCE argument's file-or-URL validation and pass-through (`_run` is stubbed out, so no
+  pipeline, ffmpeg, or yt-dlp runs). Don't grow it beyond glue this package itself owns.
 - `TrackRecordingFrameBroadcaster.crops_by_track` is bounded *per track* by `--max-track-crops`
   (default `300` crops — a track's first N rendered frames; `0`/`None` restores the old
   record-everything behavior). Note the bound is per track, not global: total memory still grows

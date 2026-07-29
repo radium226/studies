@@ -79,6 +79,11 @@ src/video_analyzer/core/
 ├── stop_on_first_track.py  StopOnFirstTrack(kernel.Tracker) — decorates a Tracker, requests an
 │                           early kernel.StopToken stop the first time update() comes back with
 │                           a confirmed track. Also generic
+├── yt_dlp_url_resolver.py  resolve_direct_media_url — resolves a page URL (YouTube, etc.) to a
+│                           direct media URL via the `yt-dlp` CLI (a subprocess on PATH, like
+│                           ffmpeg/ffprobe — not a Python package), so it can be handed to
+│                           FfmpegFrameSource like any other source string. Ported from
+│                           app/input_video.py's _resolve_direct_media_url
 ├── pipe_io.py              **public** asyncio subprocess-pipe helpers, shared by the two ffmpeg
     wrappers and reused downstream (cli's FfplayFrameSink): read_exact, drain_stderr,
     drain_and_discard, terminate_and_wait, shutdown_process — mind the drain-during-shutdown
@@ -107,7 +112,9 @@ ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder`
   `FfmpegFrameSource`/`FfmpegFrameSink` have no unit tests for the same reason `app/detection.py`,
   `engine.py`, `reader.py`, `writer.py` don't — they need real model weights / an `ffmpeg` binary.
   If you add coverage for those, gate it behind the weights/binary actually being present rather
-  than making it a hard requirement to run `pytest`.
+  than making it a hard requirement to run `pytest`. `resolve_direct_media_url` *is* tested
+  (`tests/test_yt_dlp_url_resolver.py`) despite spawning yt-dlp in production — the tests swap
+  `asyncio.create_subprocess_exec` for a fake, so no binary or network is ever needed.
 - `OnnxFaceDetector`/`OnnxFaceEmbedder` offload `session.run()` via `run_in_executor` (an
   injectable `Executor`, defaulting to the loop's default thread pool) — `ByteTrackTracker.update`
   deliberately does not, since ByteTrack's update is cheap bookkeeping, not inference; don't add

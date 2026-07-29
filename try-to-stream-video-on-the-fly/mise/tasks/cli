@@ -7,7 +7,9 @@ set -euxo pipefail
 # to be interpreted from. Resolve it (if present and not itself an option
 # flag) to an absolute path against MISE_PROJECT_ROOT before that directory
 # change happens, so it survives unchanged either way.
-if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+# URLs (handed to yt-dlp by the CLI) are passed through untouched — realpath
+# would mangle them.
+if [ $# -gt 0 ] && [[ "$1" != -* ]] && [[ "$1" != http://* ]] && [[ "$1" != https://* ]]; then
     video_path="$(cd "${MISE_PROJECT_ROOT}" && realpath -- "$1")"
     shift
     set -- "${video_path}" "$@"

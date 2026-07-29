@@ -25,13 +25,17 @@ module-name = "video_analyzer.cli"
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0",
     "ruff>=0.15.21",
     "ty>=0.0.58",
 ]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
-src = ["src"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

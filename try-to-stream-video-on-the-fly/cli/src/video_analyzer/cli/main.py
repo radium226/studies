@@ -1,4 +1,5 @@
-"""Play a local video file with detected/tracked faces drawn on it, via `ffplay`.
+"""Play a local video file or an http(s) URL (resolved via `yt-dlp`) with detected/tracked
+faces drawn on it, via `ffplay`.
 
 Wires `core`'s real SCRFD/ArcFace/ByteTrack/spline/histogram-scene-cut backends into
 `kernel.Pipeline`, adding this package's own `FfplayFrameSink` plus a `NoopFrameBroadcaster`
@@ -60,8 +61,12 @@ async def _play_tracks(
                 await track_sink.write_raw_frame(content)
 
 
+def _is_url(source: str) -> bool:
+    return source.startswith(("http://", "https://"))
+
+
 async def _run(
-    video_path: Path,
+    source: str,
     scrfd_model: Path,
     arcface_model: Path,
     *,
@@ -77,10 +82,13 @@ async def _run(
 ) -> None:
     stop_token = kernel.StopToken()
     track_recorder: TrackRecordingFrameBroadcaster | None = None
+    if _is_url(source):
+        logger.info("resolving direct media URL via yt-dlp: {}", source)
+        source = await core.resolve_direct_media_url(source)
     async with AsyncExitStack() as stack:
         raw_frame_source = await stack.enter_async_context(
             core.FfmpegFrameSource.start(
-                str(video_path), loop=False, read_rate=speed_factor_target
+                source, loop=False, read_rate=speed_factor_target
             )
         )
         # Always the file's native fps — `read_rate` paces how fast frames come
@@ -154,9 +162,7 @@ async def _run(
 
 
 @click.command()
-@click.argument(
-    "video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path)
-)
+@click.argument("source")
 @click.option(
     "--scrfd-model",
     default="../app/models/scrfd_10g_kps_dynamic.onnx",
@@ -258,7 +264,7 @@ async def _run(
     "record every frame of every track for the whole run.",
 )
 def main(
-    video_path: Path,
+    source: str,
     scrfd_model: Path,
     arcface_model: Path,
     speed_factor_target: float,
@@ -273,9 +279,17 @@ def main(
     max_track_crops: int,
 ) -> None:
     _configure_logging()
+    # SOURCE is either a local video file or an http(s) page URL (resolved to a
+    # direct media URL via yt-dlp). click.Path can't express that union, so the
+    # file-existence check moves here.
+    if not _is_url(source) and not Path(source).is_file():
+        raise click.BadParameter(
+            f"{source!r} is neither an existing video file nor an http(s) URL.",
+            param_hint="SOURCE",
+        )
     asyncio.run(
         _run(
-            video_path,
+            source,
             scrfd_model,
             arcface_model,
             speed_factor_target=speed_factor_target,
