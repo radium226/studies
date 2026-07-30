@@ -95,9 +95,11 @@ async def _run(source: str, config: CliConfig) -> None:
         width, height, fps = video_info.width, video_info.height, video_info.fps
 
         frame_source: kernel.FrameSource = raw_frame_source
-        if config.stop_after_frame_count is not None:
+        if config.stop_strategy.after_frame_count.enabled:
             frame_source = core.StopAfterFrameCount(
-                frame_source, stop_token, config=config.stop_after_frame_count
+                frame_source,
+                stop_token,
+                config=config.stop_strategy.after_frame_count,
             )
 
         face_detector = stack.enter_context(
@@ -129,14 +131,16 @@ async def _run(source: str, config: CliConfig) -> None:
                 config=config.track_recording
             )
             frame_broadcaster = track_recorder
-        if config.stop_on_first_track is not None:
+        if config.stop_strategy.on_first_track.enabled:
             # The stop condition sits at the broadcast stage — the only place
             # interpolated frames exist — so "a track" really means a face on
             # screen for at least `min_track_frames` rendered frames, exact
             # and interpolated alike. A tracker-level condition could only
             # count sparse detection snapshots.
             frame_broadcaster = core.StopOnFirstTrack(
-                frame_broadcaster, stop_token, config=config.stop_on_first_track
+                frame_broadcaster,
+                stop_token,
+                config=config.stop_strategy.on_first_track,
             )
 
         # Native fps here too: the tracker is stepped once per detection

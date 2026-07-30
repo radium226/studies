@@ -44,11 +44,19 @@ def test_a_partial_section_does_not_reset_the_rest_of_that_section() -> None:
 
 def test_optional_sections_are_off_by_default() -> None:
     config = CliConfig()
-    assert config.stop_after_frame_count is None
-    assert config.stop_on_first_track is None
     assert config.track_recording is None
     # ...but scene detection is on, matching the old --scene-detection default.
     assert config.scene_detector == core.HistogramSceneDetectorConfig()
+
+
+def test_no_stop_strategy_is_armed_by_default() -> None:
+    """`stop_strategy` is always present — it's the flags that are off, so
+    --dump-config shows each strategy's knobs instead of a bare null."""
+    config = CliConfig()
+
+    assert config.stop_strategy == core.StopStrategyConfig()
+    assert config.stop_strategy.after_frame_count.enabled is False
+    assert config.stop_strategy.on_first_track.enabled is False
 
 
 def test_a_present_section_switches_its_feature_on() -> None:
@@ -59,8 +67,10 @@ def test_a_present_section_switches_its_feature_on() -> None:
         pipeline:
           batch_gate:
             max_frames: 16
-        stop_on_first_track:
-          min_track_frames: 30
+        stop_strategy:
+          on_first_track:
+            enabled: true
+            min_track_frames: 30
         track_recording:
           crop_size: 64
           max_crops_per_track: 60
@@ -68,8 +78,8 @@ def test_a_present_section_switches_its_feature_on() -> None:
     )
     assert config.frame_source.read_rate == 4.0
     assert config.pipeline.batch_gate.max_frames == 16
-    assert config.stop_on_first_track == core.StopOnFirstTrackConfig(
-        min_track_frames=30
+    assert config.stop_strategy.on_first_track == core.StopOnFirstTrackConfig(
+        enabled=True, min_track_frames=30
     )
     assert config.track_recording == TrackRecordingFrameBroadcasterConfig(
         crop_size=64, max_crops_per_track=60
@@ -77,6 +87,19 @@ def test_a_present_section_switches_its_feature_on() -> None:
     # Untouched sections keep their defaults.
     assert config.pipeline.render_cursor.lookahead_snapshots == 3
     assert config.scene_detector == core.HistogramSceneDetectorConfig()
+
+
+def test_arming_one_stop_strategy_leaves_the_other_at_its_defaults() -> None:
+    """The partial-section trap, one level deeper than the one above: naming a
+    strategy must not blank its sibling, and must not blank the rest of its own
+    keys either."""
+    config = CliConfig.from_yaml(
+        "stop_strategy:\n  after_frame_count:\n    enabled: true\n"
+    )
+
+    assert config.stop_strategy.after_frame_count.enabled is True
+    assert config.stop_strategy.after_frame_count.max_frames == 300
+    assert config.stop_strategy.on_first_track == core.StopOnFirstTrackConfig()
 
 
 def test_an_empty_section_still_switches_its_feature_on() -> None:

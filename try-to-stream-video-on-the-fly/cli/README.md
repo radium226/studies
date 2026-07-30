@@ -49,15 +49,20 @@ pipeline:
 
 # Stop once a face has been on screen for 30 rendered frames, then replay each
 # discovered track through its own ffplay window.
-stop_on_first_track:
-  min_track_frames: 30
+stop_strategy:
+  on_first_track:
+    enabled: true
+    min_track_frames: 30
 track_recording:
   crop_size: 160
   max_crops_per_track: 60
 ```
 
-A section that is `null` (or simply absent, for `stop_after_frame_count` / `stop_on_first_track` /
-`track_recording`) means that feature is off; giving it any mapping — even `{}` — turns it on.
+A section that is `null` (or simply absent, for `track_recording`) means that feature is off;
+giving it any mapping — even `{}` — turns it on. The early-stop strategies under `stop_strategy:`
+are the exception: they are always present, so a dumped config shows what each one can be told,
+and each is armed with its own `enabled: true` instead. Arm as many as you like — the first to
+fire ends the run.
 Unknown keys are a hard error rather than a silent no-op, and the message names the full path
 (`pipeline.batch_gate has unknown keys: max_framez`). `CLAUDE.md` walks the schema section by
 section and explains why the detection budget deliberately does *not* scale with `read_rate`.

@@ -9,9 +9,12 @@ Two conventions worth knowing before editing:
 
 * **An optional section is a feature switch.** `X | None = None` means "this
   stage is off"; giving the section any mapping (even `{}`) turns it on with
-  its own defaults. `scene_detector`, `stop_after_frame_count`,
-  `stop_on_first_track` and `track_recording` all work this way — between them
-  they replace six of the old flags.
+  its own defaults. `scene_detector` and `track_recording` work this way.
+  The early-stop strategies deliberately do **not**: they live together under
+  `stop_strategy`, always present, each armed by its own `enabled:` flag — so
+  `--dump-config` shows what every strategy can be told rather than a `null`
+  you have to read `core`'s source to decode. Between them these replace six of
+  the old flags.
 * **This document never overrides a library default.** It can't: a default set
   in a `default_factory` here only applies when the whole section is absent, so
   `frame_source: {read_rate: 4.0}` would silently drop back to the library's
@@ -117,7 +120,12 @@ class CliConfig(kernel.Config):
     scene_detector: core.HistogramSceneDetectorConfig | None = dataclass_field(
         default_factory=core.HistogramSceneDetectorConfig
     )
-    # The three below are off unless the section is present.
-    stop_after_frame_count: core.StopAfterFrameCountConfig | None = None
-    stop_on_first_track: core.StopOnFirstTrackConfig | None = None
+    # Always present, every strategy at its defaults, each off until its own
+    # `enabled: true`. Not alternatives — any combination may be armed, and the
+    # first to set the shared StopToken (including the closed ffplay window,
+    # which is this package's own unconfigurable one) ends the run.
+    stop_strategy: core.StopStrategyConfig = dataclass_field(
+        default_factory=core.StopStrategyConfig
+    )
+    # Off unless the section is present.
     track_recording: TrackRecordingFrameBroadcasterConfig | None = None

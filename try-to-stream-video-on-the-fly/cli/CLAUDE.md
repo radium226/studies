@@ -56,19 +56,26 @@ The schema, section by section:
 - `scene_detector:` — `core.HistogramSceneDetectorConfig`, or `null` to swap in the never-cuts
   `NoopSceneDetector` (the old `--no-scene-detection`). The pipeline calls `detect_scene_cut` on
   every frame pair either way; answering False means tracking runs straight through hard cuts.
-- `stop_after_frame_count:` — `{max_frames: N}` stops early after N frames are read, via
-  `core.StopAfterFrameCount` wrapping the `FrameSource`. Graceful: frames already read still
-  drain all the way through the pipeline, same as natural end-of-stream (see `kernel.StopToken`).
-  Absent/`null` = off.
-- `stop_on_first_track:` — `{min_track_frames: N}` stops early once the first face track reaches
-  N rendered frames, via `core.StopOnFirstTrack` wrapping the `FrameBroadcaster`. N is *the
-  definition of a track* here, measured in video frames — exact detections and the interpolated
-  frames between them count alike, which is exactly why the condition sits at the broadcast
-  stage: interpolated frames only exist downstream of the render cursor, so a tracker-level
-  condition could only ever count sparse detection snapshots. The stop is still graceful (same
-  `kernel.StopToken` contract), so playback continues briefly past the trigger and the track
-  keeps growing while the tail drains. Absent/`null` = off. Note `{}` gives `core`'s default of
-  1, not the 30 the old `--stop-on-first-track` flag implied — spell the number you want.
+- `stop_strategy:` — `core.StopStrategyConfig`: every way the run can end early, all of them
+  always present at their defaults, each armed by its own `enabled: true`. **Unlike the other
+  optional features, absence is not how you turn one off** — that's the point of the section:
+  `--dump-config` shows you `max_frames: 300` and `min_track_frames: 1` rather than a `null` you
+  have to read `core`'s source to decode. Spell the number you want; the defaults are there to be
+  edited, not inherited. They are not alternatives either — arm both if you like, and whichever
+  fires first ends the run. Every stop is graceful (`kernel.StopToken`): frames already read
+  drain all the way through the pipeline, exactly as at natural end of stream, so playback
+  continues briefly past the trigger.
+  - `after_frame_count:` — `{enabled: true, max_frames: N}` stops after N frames are read, via
+    `core.StopAfterFrameCount` wrapping the `FrameSource`.
+  - `on_first_track:` — `{enabled: true, min_track_frames: N}` stops once the first face track
+    reaches N rendered frames, via `core.StopOnFirstTrack` wrapping the `FrameBroadcaster`. N is
+    *the definition of a track* here, measured in video frames — exact detections and the
+    interpolated frames between them count alike, which is exactly why the condition sits at the
+    broadcast stage: interpolated frames only exist downstream of the render cursor, so a
+    tracker-level condition could only ever count sparse detection snapshots. The track keeps
+    growing while the tail drains.
+  Note the run has a third stop this section can't describe, since it isn't a tunable: closing
+  the `ffplay` window (see the bullet below). It shares the same token.
 - `track_recording:` — present means the old `--play-tracks`: after the main `ffplay` window
   closes, replay each discovered face track through its own window, one at a time, in track-id
   order, via `TrackRecordingFrameBroadcaster` (a real `FrameBroadcaster` — `core` ships none, see
@@ -142,7 +149,7 @@ src/video_analyzer/cli/
 │                              cropped at that frame's own (possibly interpolated) box
 │                              (tests/test_track_recording_frame_broadcaster.py pins this). Only
 │                              wired in when track_recording is configured; composes with
-│                              stop_on_first_track (core.StopOnFirstTrack wraps *around* this
+│                              stop_strategy.on_first_track (core.StopOnFirstTrack wraps *around* this
 │                              recorder, delegating every frame before counting it), still
 │                              recording whatever drains after the stop.
 ├── noop_scene_detector.py     NoopSceneDetector(kernel.SceneDetector) — always returns False;
@@ -236,8 +243,8 @@ the weights already in the repo, but can point anywhere.
 - `TrackRecordingFrameBroadcaster.crops_by_track` is bounded *per track* by
   `track_recording.max_crops_per_track` (default `300` crops — a track's first N rendered frames;
   `null` records everything). Note the bound is per track, not global: total memory still grows
-  with the number of *distinct* track ids a long video accumulates, so `stop_after_frame_count`/
-  `stop_on_first_track` remain the way to hard-bound a whole `track_recording` run.
+  with the number of *distinct* track ids a long video accumulates, so `stop_strategy`'s
+  `after_frame_count`/`on_first_track` remain the way to hard-bound a whole `track_recording` run.
 - `_play_tracks` is sequential, one `ffplay` window per track, closed before the next opens — not
   because concurrent windows can't work, but because it keeps the demo simple and avoids
   contending with the main video's own `ffplay` process for the Wayland/X11 session.
