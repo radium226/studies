@@ -8,6 +8,10 @@ handed a rawvideo stream and shows it in a window, so no encoder process is invo
 This sink is CLI-owned rather than living in `core`: `core.FrameBroadcaster` and any playback
 transport are explicitly not `core`'s concern (see `core/CLAUDE.md`) — an application wiring the
 pipeline together decides where the bytes go, and here that's `ffplay`.
+
+Closing the window ends the run: given a `StopToken`, the sink requests a stop as soon as
+`ffplay` exits, since a pipeline whose only output is a window nobody is looking at has nothing
+left to do.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from typing import Self
 
 import cv2
 import numpy as np
+from loguru import logger
 from numpy.typing import NDArray
 from video_analyzer.core import overlay, pipe_io
 
@@ -65,6 +70,7 @@ class FfplayFrameSink(
         width: int,
         height: int,
         fps: float,
+        stop_token: kernel.StopToken | None = None,
         *,
         config: FfplayFrameSinkConfig | None = None,
     ) -> None:
@@ -74,9 +80,12 @@ class FfplayFrameSink(
         self._width = width
         self._height = height
         self._fps = fps
+        self._stop_token = stop_token
         self.config = config if config is not None else FfplayFrameSinkConfig()
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
+        self._exit_task: asyncio.Task | None = None
+        self._has_exited = False
 
     @classmethod
     @asynccontextmanager
@@ -85,10 +94,11 @@ class FfplayFrameSink(
         width: int,
         height: int,
         fps: float,
+        stop_token: kernel.StopToken | None = None,
         *,
         config: FfplayFrameSinkConfig | None = None,
     ) -> AsyncIterator[Self]:
-        self = cls(width, height, fps, config=config)
+        self = cls(width, height, fps, stop_token, config=config)
         self._proc = await asyncio.create_subprocess_exec(
             *self._ffplay_cmd(),
             stdin=asyncio.subprocess.PIPE,
@@ -99,10 +109,40 @@ class FfplayFrameSink(
         self._stderr_task = asyncio.create_task(
             pipe_io.drain_stderr(self._proc.stderr, "ffplay")
         )
+        self._exit_task = asyncio.create_task(self._watch_for_exit())
         try:
             yield self
         finally:
             await self._shutdown(self.config.stop_timeout)
+
+    @property
+    def has_exited(self) -> bool:
+        """True once `ffplay` has gone away *on its own* — the user closed the
+        window, or it crashed — as opposed to us shutting it down at end of
+        stream. Callers driving several windows in sequence (`_play_tracks`)
+        read this to stop opening more."""
+        return self._has_exited
+
+    async def _watch_for_exit(self) -> None:
+        """Turn `ffplay` exiting into a pipeline stop request.
+
+        Watching the process is what makes the stop *prompt*: writes to a dead
+        pipe are not reliably an error (asyncio's transport notices the EPIPE
+        on its own and then silently discards everything written afterwards),
+        so `write_raw_frame` alone could keep feeding a corpse for the rest of
+        the video. `_shutdown` cancels this task before touching the process,
+        so a normal end of stream never comes through here.
+        """
+        assert self._proc is not None
+        return_code = await self._proc.wait()
+        self._has_exited = True
+        logger.info("ffplay exited on its own (code {}), stopping", return_code)
+        if self._stop_token is not None:
+            # Cooperative: the pipeline stops reading new frames and drains
+            # whatever it already holds. Those frames still reach
+            # `write_raw_frame`, which now returns immediately, so the drain
+            # costs nothing.
+            self._stop_token.request_stop()
 
     async def write_frame(
         self,
@@ -125,15 +165,34 @@ class FfplayFrameSink(
         with plain pixels and no `AnnotatedFrame` (e.g. `--play-tracks` crop
         playback)."""
         assert self._proc is not None and self._proc.stdin is not None
+        if self._has_exited:
+            # Nothing is watching any more; drop the frame instead of writing
+            # into a dead pipe, so the pipeline's tail drains at memory speed.
+            return
         try:
             self._proc.stdin.write(content.tobytes())
             await self._proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
-            # ffplay window was closed by the user — let the source drain out.
-            pass
+            # ffplay window was closed by the user. `_watch_for_exit` reaches
+            # the same conclusion (and requests the stop) the moment the
+            # process is reaped; this branch just gets there first when the
+            # write is what notices.
+            self._has_exited = True
 
     async def _shutdown(self, timeout: float) -> None:
         assert self._proc is not None and self._stderr_task is not None
+        # Anything that exited before we got here exited on its own — settle
+        # that from the process itself rather than trusting `_watch_for_exit`
+        # to have been scheduled before the cancel below reaches it.
+        if self._proc.returncode is not None:
+            self._has_exited = True
+        # Stop watching before we terminate anything: from here on, ffplay
+        # exiting is us ending it, not the user closing the window, and
+        # requesting a stop for that would be noise at best.
+        if self._exit_task is not None:
+            self._exit_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._exit_task
         # Close stdin first so ffplay's -autoexit can end the process
         # normally; only then terminate whatever is left. (core's
         # shutdown_process isn't reusable as-is: it drains a stdout pipe this

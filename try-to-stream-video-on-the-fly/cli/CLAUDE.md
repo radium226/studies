@@ -72,7 +72,9 @@ The schema, section by section:
 - `track_recording:` — present means the old `--play-tracks`: after the main `ffplay` window
   closes, replay each discovered face track through its own window, one at a time, in track-id
   order, via `TrackRecordingFrameBroadcaster` (a real `FrameBroadcaster` — `core` ships none, see
-  `core/CLAUDE.md`). `crop_size` (default `160`) is the side length each crop is resized to;
+  `core/CLAUDE.md`). Skipped entirely when the main window was *closed* rather than played to
+  the end, and a closed track window ends the replay (see the closing-the-window bullet below).
+  `crop_size` (default `160`) is the side length each crop is resized to;
   `max_crops_per_track` (default `300`) caps how many crops each track keeps — its *first* N
   rendered frames, ~10 s at 30 fps, ~22 MB per track at the defaults; `null` = unbounded.
   Absent/`null` = off.
@@ -127,7 +129,10 @@ src/video_analyzer/cli/
 │                              transport (see core/CLAUDE.md), and this is one; the subprocess
 │                              plumbing reuses core.pipe_io (drain_stderr, terminate_and_wait).
 │                              write_raw_frame() shows plain pixels without an AnnotatedFrame —
-│                              _play_tracks() uses it for each track's replay window.
+│                              _play_tracks() uses it for each track's replay window. Given a
+│                              kernel.StopToken, a `_watch_for_exit` task ends the whole run when
+│                              ffplay exits on its own (window closed / crash) and flips
+│                              `has_exited`, which _play_tracks/_run read to stop opening windows.
 ├── track_recording_frame_broadcaster.py  TrackRecordingFrameBroadcaster(kernel.FrameBroadcaster)
 │                              — a real (non-noop) FrameBroadcaster: crops+resizes tracked faces
 │                              out of each rendered frame and buffers them by track_id in
@@ -166,6 +171,21 @@ the weights already in the repo, but can point anywhere.
   returns read-only views over the decoder pipe's `bytes` — so drawing in place both corrupts the
   other consumers (the detector would see burned-in boxes) and fails outright, `cv2` refusing a
   readonly output array. `FfplayFrameSink.write_frame` copies first; so does `app/engine.py`.
+- **Closing the `ffplay` window stops the whole run.** The window is the only thing this CLI
+  produces, so `FfplayFrameSink` is handed the same `kernel.StopToken` the early-stop wrappers
+  get, and a `_watch_for_exit` task calls `request_stop()` the moment `ffplay` is reaped. It
+  watches the *process* rather than relying on the write path failing, because a write to a dead
+  pipe isn't reliably an error: asyncio's transport notices the `EPIPE` itself and then silently
+  discards everything written afterwards, so `write_raw_frame` alone could feed a corpse for the
+  rest of the video. The stop is the usual graceful one (frames already read drain through), and
+  writes short-circuit on `has_exited`, so the tail costs nothing. `_shutdown` cancels the
+  watcher before terminating anything — from there on, ffplay exiting is *us* ending it, not the
+  user — and settles `has_exited` from `proc.returncode` first so a process that had already
+  exited isn't misread as a normal teardown. At a natural end of stream ffplay is still parked on
+  its stdin (`-autoexit` only fires at input EOF), so that check can't false-positive. `_run`
+  reads `has_exited` to skip the track replay after a closed window, and `_play_tracks` reads it
+  between tracks — otherwise the next track's window pops straight back up in place of the one
+  just closed.
 - `FfplayFrameSink` defaults `SDL_VIDEODRIVER=wayland` on a Wayland session (overridable — an
   explicit value always wins). Left to itself SDL picks its x11 driver and runs through XWayland,
   which measured **~6 fps** on a 720x1280 rawvideo stream versus exact realtime natively. Since this

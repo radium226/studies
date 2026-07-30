@@ -53,7 +53,10 @@ async def _play_tracks(
     frame_sink_config: FfplayFrameSinkConfig,
 ) -> None:
     """Play each recorded track's face crops back through its own `ffplay` window, one track
-    at a time, in track-id order — after the main video's own window has already closed."""
+    at a time, in track-id order — after the main video's own window has already closed.
+
+    Closing a track's window stops the replay entirely, same as closing the main one stops the
+    pipeline: the next track would otherwise pop straight back up in its place."""
     if not crops_by_track:
         logger.info("play-tracks: no tracks were found")
         return
@@ -67,6 +70,9 @@ async def _play_tracks(
                 content = crop.copy()
                 draw_caption_text(content, f"track #{track_id}")
                 await track_sink.write_raw_frame(content)
+        if track_sink.has_exited:
+            logger.info("play-tracks: window closed, stopping replay")
+            return
 
 
 def _is_url(source: str) -> bool:
@@ -104,11 +110,15 @@ async def _run(source: str, config: CliConfig) -> None:
         # the decoder hands us frames N x faster (`frame_source.read_rate`), and
         # ffplay shows them N x faster, so playback stays balanced instead of
         # piling up behind a realtime-paced window.
+        # The stop token also runs the other way here: closing the ffplay
+        # window ends the run, since the window is the only thing this CLI
+        # produces.
         frame_sink = await stack.enter_async_context(
             FfplayFrameSink.start(
                 width,
                 height,
                 fps * config.frame_source.read_rate,
+                stop_token,
                 config=config.frame_sink,
             )
         )
@@ -160,6 +170,12 @@ async def _run(source: str, config: CliConfig) -> None:
         await pipeline.run(frame_source, stop_token=stop_token)
 
     if track_recorder is not None:
+        if frame_sink.has_exited:
+            # The window was closed rather than played to the end: "stop" means
+            # the whole run, not just the main video, so don't now open one
+            # window per discovered track.
+            logger.info("playback window was closed, skipping track replay")
+            return
         await _play_tracks(
             track_recorder.crops_by_track,
             crop_size=track_recorder.config.crop_size,

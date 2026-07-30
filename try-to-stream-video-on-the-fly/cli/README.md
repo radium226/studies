@@ -15,6 +15,10 @@ uv run video-analyzer-cli ../app/assets/sample.mp4
 uv run video-analyzer-cli https://www.youtube.com/watch?v=aqz-KE-bpKQ
 ```
 
+Closing the `ffplay` window ends the run: the pipeline stops reading, drains the frames it
+already holds, and exits — including the per-track replay below, which is skipped rather than
+opening a new window in place of the one you just closed.
+
 There are exactly two command-line options: `--config`, and `--dump-config`. Every tuning knob in
 the stack — playback speed, detection batching, interpolation lookahead, the model paths, the
 detector/tracker/interpolator settings, the early-stop and track-replay features — lives in a YAML
