@@ -23,6 +23,18 @@ def test_defaults_match_the_backends_documented_values() -> None:
     assert core.FfmpegFrameSourceConfig().loop is False
     assert core.FfmpegFrameSinkConfig().frag_duration_ms == 200
     assert core.StopOnFirstTrackConfig().min_track_frames == 1
+    assert core.StopAfterFrameCountConfig().max_frames == 300
+
+
+def test_every_stop_strategy_is_present_and_off_by_default() -> None:
+    """The point of grouping them: a dumped document shows each strategy's
+    knobs at their real defaults, and none of them is armed."""
+    strategy = core.StopStrategyConfig()
+
+    assert strategy.after_frame_count == core.StopAfterFrameCountConfig()
+    assert strategy.on_first_track == core.StopOnFirstTrackConfig()
+    assert strategy.after_frame_count.enabled is False
+    assert strategy.on_first_track.enabled is False
 
 
 def test_thresholds_outside_zero_to_one_are_rejected() -> None:
@@ -72,6 +84,21 @@ def test_frame_source_round_trips_through_yaml_including_the_resize_pair() -> No
         loop=False, resize=(640, -1), read_rate=4.0, stop_timeout=2.5
     )
     assert core.FfmpegFrameSourceConfig.from_yaml(config.to_yaml()) == config
+
+
+def test_stop_strategy_round_trips_and_reports_a_nested_path() -> None:
+    config = core.StopStrategyConfig(
+        after_frame_count=core.StopAfterFrameCountConfig(enabled=True, max_frames=60),
+        on_first_track=core.StopOnFirstTrackConfig(enabled=True, min_track_frames=30),
+    )
+    assert core.StopStrategyConfig.from_yaml(config.to_yaml()) == config
+
+    # The nesting is new, so pin that a strategy's own validator still reports
+    # where in the document the bad value came from.
+    with pytest.raises(
+        ConfigError, match=r"after_frame_count\.max_frames must be >= 1"
+    ):
+        core.StopStrategyConfig.from_yaml("after_frame_count:\n  max_frames: 0\n")
 
 
 def test_a_typo_in_a_document_is_a_hard_error() -> None:

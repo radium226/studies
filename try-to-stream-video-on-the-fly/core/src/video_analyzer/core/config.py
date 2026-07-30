@@ -18,6 +18,7 @@ the clearest case: it is also baked into the literal in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Literal
 
 from video_analyzer.kernel import Config, ConfigError
@@ -151,10 +152,19 @@ class FfmpegFrameSinkConfig(Config):
 
 @dataclass(frozen=True, slots=True)
 class StopAfterFrameCountConfig(Config):
-    """After how many frames read the stop token is set. No default — the
-    whole point of wrapping a source in this is to pick a number."""
+    """After how many frames read the stop token is set.
 
-    max_frames: int
+    `enabled` is composition metadata: it tells whoever wires the pipeline
+    whether to wrap the source at all, and `StopAfterFrameCount` itself never
+    reads it — constructing one is already the decision to use it. It lives
+    here so `StopStrategyConfig` can show every strategy's knobs at their
+    defaults instead of a bare `null`.
+    """
+
+    enabled: bool = False
+    # ~10 s at 30 fps. Only meaningful once `enabled`, so the number is a
+    # starting point to edit rather than a behaviour anyone inherits silently.
+    max_frames: int = 300
 
     def __post_init__(self) -> None:
         if self.max_frames < 1:
@@ -163,8 +173,12 @@ class StopAfterFrameCountConfig(Config):
 
 @dataclass(frozen=True, slots=True)
 class StopOnFirstTrackConfig(Config):
-    """What counts as a track worth stopping for, in rendered video frames."""
+    """What counts as a track worth stopping for, in rendered video frames.
 
+    `enabled` works exactly as in `StopAfterFrameCountConfig`.
+    """
+
+    enabled: bool = False
     min_track_frames: int = 1
 
     def __post_init__(self) -> None:
@@ -172,3 +186,26 @@ class StopOnFirstTrackConfig(Config):
             raise ConfigError(
                 f"min_track_frames must be >= 1, got {self.min_track_frames}"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class StopStrategyConfig(Config):
+    """Every way a run can end early, each one always present at its defaults.
+
+    Not a choice between alternatives: any combination may be enabled, and the
+    first one to set the `kernel.StopToken` ends the run — they all share the
+    one token, alongside whatever the composing application adds (`cli`'s
+    ffplay window, say). All off, which is the default, means the run lasts
+    until the source is exhausted.
+
+    Grouped rather than left as two independent optional sections so the
+    document names the axis, and so a dumped config shows what each strategy
+    can be told instead of `null`.
+    """
+
+    after_frame_count: StopAfterFrameCountConfig = dataclass_field(
+        default_factory=StopAfterFrameCountConfig
+    )
+    on_first_track: StopOnFirstTrackConfig = dataclass_field(
+        default_factory=StopOnFirstTrackConfig
+    )

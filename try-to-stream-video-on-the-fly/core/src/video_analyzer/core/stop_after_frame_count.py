@@ -17,13 +17,13 @@ class StopAfterFrameCount[FrameContentT](kernel.FrameSource[FrameContentT]):
         wrapped: kernel.FrameSource[FrameContentT],
         stop_token: kernel.StopToken,
         *,
-        config: StopAfterFrameCountConfig,
+        config: StopAfterFrameCountConfig | None = None,
     ) -> None:
         self._wrapped = wrapped
         self._stop_token = stop_token
-        # Required, not defaulted: picking the number is the whole point of
-        # wrapping a source in this.
-        self.config = config
+        # `config.enabled` is deliberately not consulted: it tells composing
+        # code whether to build this wrapper, and building it is the decision.
+        self.config = config if config is not None else StopAfterFrameCountConfig()
         self._read_count = 0
 
     async def read_frame(self) -> kernel.Frame[FrameContentT] | None:

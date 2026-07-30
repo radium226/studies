@@ -13,6 +13,7 @@ from .config import OnnxFaceEmbedderConfig as OnnxFaceEmbedderConfig
 from .config import SplineInterpolatorConfig as SplineInterpolatorConfig
 from .config import StopAfterFrameCountConfig as StopAfterFrameCountConfig
 from .config import StopOnFirstTrackConfig as StopOnFirstTrackConfig
+from .config import StopStrategyConfig as StopStrategyConfig
 from .ffmpeg_frame_sink import FfmpegFrameSink as FfmpegFrameSink
 from .ffmpeg_frame_source import FfmpegFrameSource as FfmpegFrameSource
 from .ffmpeg_frame_source import VideoInfo as VideoInfo

@@ -60,6 +60,8 @@ src/video_analyzer/core/
 ├── config.py               every core class's <ClassName>Config, on kernel's `Config` base
 │                           (so they parse/serialize the same strict way, and compose into a
 │                           bigger document — see cli/). Also owns the InterpolationMethod alias
+│                           and StopStrategyConfig, which groups every early-stop strategy's
+│                           config into one always-present section (see the bullet below)
 ├── histogram_scene_detector.py HistogramSceneDetector(kernel.SceneDetector) — per-channel
 │                           histogram correlation of consecutive frames; a cut is a correlation
 │                           below the configured threshold. Cheap enough to run inline per pair
@@ -79,7 +81,8 @@ src/video_analyzer/core/
 │                           requests an early kernel.StopToken stop once the Nth frame has been
 │                           read (still returns that frame). Generic, no numpy — lives here only
 │                           because kernel exposes the StopToken primitive but no concrete
-│                           condition for what should set it
+│                           condition for what should set it. Reachable from a config document
+│                           as StopStrategyConfig.after_frame_count
 ├── stop_on_first_track.py  StopOnFirstTrack(kernel.FrameBroadcaster) — decorates a
 │                           FrameBroadcaster, requests an early kernel.StopToken stop once one
 │                           same track id has appeared in `config.min_track_frames` *rendered*
@@ -87,7 +90,8 @@ src/video_analyzer/core/
 │                           interpolated, and held appearances all count, which is why it sits
 │                           on the output side: interpolated frames only exist downstream of
 │                           the render cursor. Per-track counts reset at scene-start frames
-│                           (ByteTrack may reuse ids after its own reset). Also generic
+│                           (ByteTrack may reuse ids after its own reset). Also generic.
+│                           Reachable as StopStrategyConfig.on_first_track
 ├── yt_dlp_url_resolver.py  resolve_direct_media_url — resolves a page URL (YouTube, etc.) to a
 │                           direct media URL via the `yt-dlp` CLI (a subprocess on PATH, like
 │                           ffmpeg/ffprobe — not a Python package), so it can be handed to
@@ -114,8 +118,24 @@ config); point it at `app/models/scrfd_10g_kps_dynamic.onnx` /
   `Config` base — see `kernel/CLAUDE.md` for the rule that decides what goes in one. Frame rates
   and model paths stay constructor arguments: `ByteTrackTracker(fps, config=...)`,
   `FfmpegFrameSink(width, height, fps, config=...)`, `OnnxFaceDetector(model_path, config=...)`.
-  `StopAfterFrameCount`'s config is **required**, not defaulted — `max_frames` has no sensible
-  default, since picking a number is the entire reason to wrap a source in it.
+- **`StopStrategyConfig` groups every early-stop strategy into one always-present section**, each
+  strategy carrying its own `enabled: bool = False` rather than the `X | None` "absent means off"
+  idiom used elsewhere. The point is visibility: dumping a config document then shows what each
+  strategy can be told (`max_frames: 300`, `min_track_frames: 1`) instead of a bare `null` you
+  have to read the source to decode. Two consequences worth knowing:
+  - `enabled` is **composition metadata** — the decorators never read it. `StopAfterFrameCount`/
+    `StopOnFirstTrack` are told what to do by being constructed at all, so it's whoever wires the
+    pipeline (`cli/main.py`) that branches on the flag. A config field its own class ignores is
+    the price of showing every strategy's defaults; don't "fix" it by making the decorators
+    self-disable.
+  - The strategies are **not** alternatives: any combination may be enabled, they share the one
+    `kernel.StopToken`, and the first to set it ends the run — including stops the composing
+    application adds of its own (`cli`'s closed ffplay window). Adding a strategy means a new
+    decorator here plus a new field on `StopStrategyConfig`.
+  `StopAfterFrameCountConfig.max_frames` used to have no default at all, on the grounds that
+  picking the number is the whole reason to use it; it now defaults to `300` (~10 s at 30 fps)
+  because a section that shows every strategy's knobs has to have a number to show. It only
+  means anything once `enabled`, so nothing inherits it silently.
 - What deliberately did **not** become configuration: the SCRFD/ArcFace geometry constants (input
   sizes, strides, normalization mean/std, the canonical reference landmarks) and the encoder's
   codec/profile/movflags settings including `_KEYFRAME_INTERVAL_SECONDS`. Those are model and
