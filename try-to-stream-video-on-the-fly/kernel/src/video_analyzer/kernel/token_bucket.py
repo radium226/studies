@@ -1,5 +1,6 @@
 from loguru import logger
 
+from .config import TokenBucketConfig
 from .services import Clock
 
 
@@ -11,22 +12,30 @@ class TokenBucket:
     fact) and adapts the effective rate to however long the work really takes
     on this machine."""
 
-    def __init__(self, capacity: float, refill_rate: float, clock: Clock) -> None:
-        self.token_capacity = capacity
-        self.refill_rate = refill_rate
+    def __init__(
+        self,
+        clock: Clock,
+        refill_rate: float,
+        *,
+        config: TokenBucketConfig | None = None,
+    ) -> None:
         self.clock = clock
-        self.available_tokens = capacity
+        # Not configuration: the refill rate is derived from the stream being
+        # processed (its frame rate), not chosen ahead of time.
+        self.refill_rate = refill_rate
+        self.config = config if config is not None else TokenBucketConfig()
+        self.available_tokens = self.config.capacity
         self.last_refill_time = clock.now()
         logger.debug(
-            "TokenBucket configured: capacity={}, refill_rate={}",
-            capacity,
+            "TokenBucket configured: refill_rate={}, {}",
             refill_rate,
+            self.config,
         )
 
     def can_spend(self, tokens_needed: float) -> bool:
         now = self.clock.now()
         self.available_tokens = min(
-            self.token_capacity,
+            self.config.capacity,
             self.available_tokens + (now - self.last_refill_time) * self.refill_rate,
         )
         self.last_refill_time = now
@@ -36,7 +45,7 @@ class TokenBucket:
             tokens_needed,
             affordable,
             self.available_tokens,
-            self.token_capacity,
+            self.config.capacity,
         )
         return affordable
 

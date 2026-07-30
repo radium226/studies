@@ -1,4 +1,4 @@
-from video_analyzer.kernel import Clock, TokenBucket
+from video_analyzer.kernel import Clock, TokenBucket, TokenBucketConfig
 
 
 class ManualClock(Clock):
@@ -11,13 +11,13 @@ class ManualClock(Clock):
 
 def test_initial_budget_is_full() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(capacity=2.0, refill_rate=1.0, clock=clock)
+    bucket = TokenBucket(clock, 1.0, config=TokenBucketConfig(capacity=2.0))
     assert bucket.can_spend(2.0)
 
 
 def test_spend_depletes_budget() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(capacity=1.0, refill_rate=1.0, clock=clock)
+    bucket = TokenBucket(clock, 1.0, config=TokenBucketConfig(capacity=1.0))
     assert bucket.can_spend(1.0)
     bucket.record_spend(1.0)
     assert not bucket.can_spend(1.0)
@@ -25,7 +25,7 @@ def test_spend_depletes_budget() -> None:
 
 def test_refill_over_time() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(capacity=1.0, refill_rate=1.0, clock=clock)
+    bucket = TokenBucket(clock, 1.0, config=TokenBucketConfig(capacity=1.0))
     bucket.record_spend(1.0)
     assert not bucket.can_spend(1.0)
     clock.time += 1.0
@@ -34,7 +34,7 @@ def test_refill_over_time() -> None:
 
 def test_refill_caps_at_capacity() -> None:
     clock = ManualClock()
-    bucket = TokenBucket(capacity=1.0, refill_rate=10.0, clock=clock)
+    bucket = TokenBucket(clock, 10.0, config=TokenBucketConfig(capacity=1.0))
     clock.time += 100.0
     bucket.can_spend(0.0)  # trigger a refill computation
     bucket.record_spend(1.0)

@@ -7,7 +7,7 @@ from loguru import logger
 
 from .batch_gate import BatchGate
 from .channel import Channel
-from .config import PipelineConfig
+from .config import ChannelConfig, PipelineConfig
 from .render_cursor import RenderCursor
 from .stop_token import StopToken
 from .models import AnnotatedFrame, Face, Frame, FrameIndex, Snapshot, TrackedFace
@@ -22,36 +22,6 @@ from .services import (
     SceneDetector,
     Tracker,
 )
-
-# Raw frames are buffered while waiting for their matching detection snapshot to
-# land (detection runs sparsely, at far below video frame rate). Capped so a
-# stalled detector can't grow this buffer without bound; oldest frames are
-# dropped first, matching the equivalent cap in the pre-kernel implementation.
-_MAX_PENDING_FRAMES = 600
-
-# Every channel that carries whole frames is bounded, so a stage slower than
-# the source applies backpressure all the way back to the decoder instead of
-# quietly accumulating decoded frames. Every queued frame is a full raw image
-# (~2.8 MB at 720x1280 BGR24), so an unbounded queue in front of a stage that
-# can't keep up reaches gigabytes within a minute and then looks like a hang at
-# end of stream, as the pipeline drains a backlog nobody knew was there.
-#
-# Roughly a second of video at 30 fps: enough to absorb scheduling jitter,
-# small enough to keep in-flight frames to a couple of hundred MB. It doesn't
-# need to cover the interpolation lookahead — that buffering happens in
-# `pending_frames`, downstream of this channel.
-#
-# The detection-frame channel gets the same bound: `sample_and_detect` drains
-# it every iteration even while a detection pass is running in the background,
-# so frames never accumulate on the channel itself — the backlog lives in that
-# stage's `pending_frames` buffer, whose `_MAX_PENDING_FRAMES` drop-oldest cap
-# is the real bound. A stuck detector therefore costs bounded memory and a
-# widening sampling stride, never backpressure on the producer.
-#
-# The snapshot/batch channels stay unbounded: they carry detection metadata, and
-# the frames they reference are already bounded by the pending-frame pruning.
-_FRAME_CHANNEL_CAPACITY = 30
-
 
 def _sample_evenly(indices: list[FrameIndex], max_count: int) -> list[FrameIndex]:
     """Pick up to `max_count` indices, evenly spread across `indices`.
@@ -89,6 +59,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         frame_sink: FrameSink[FrameContentT, TrackedFace[FaceEmbeddingT]],
         frame_broadcaster: FrameBroadcaster[FrameContentT, TrackedFace[FaceEmbeddingT]],
         *,
+        frames_per_second: float,
         config: PipelineConfig | None = None,
     ) -> None:
         self._clock = clock
@@ -99,8 +70,16 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         self._interpolator = interpolator
         self._frame_sink = frame_sink
         self._frame_broadcaster = frame_broadcaster
+        # Not configuration: the source's own frame rate, probed at runtime.
+        # It is the detection budget `BatchGate` charges against, in tokens per
+        # wall-clock second.
+        self._frames_per_second = frames_per_second
         self.config = config if config is not None else PipelineConfig()
-        logger.debug("Pipeline configured: {}", self.config)
+        logger.debug(
+            "Pipeline configured: frames_per_second={}, {}",
+            frames_per_second,
+            self.config,
+        )
 
     async def produce_frames(
         self,
@@ -158,11 +137,9 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         frame_faces_channel: Channel[list[tuple[Frame[FrameContentT], list[Face[None]]]]],
     ) -> None:
         batch_gate = BatchGate(
-            self._clock,
-            self.config.frames_per_second,
-            self.config.batching.max_frames,
-            self.config.batching.max_lag_ms,
+            self._clock, self._frames_per_second, config=self.config.batch_gate
         )
+        max_pending_frames = self.config.buffering.max_pending_frames
         pending_frames: dict[FrameIndex, Frame[FrameContentT]] = {}
         last_sampled_index: FrameIndex | None = None
         # At most one detection pass runs at a time, as a background task
@@ -187,7 +164,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                 ]:
                     del pending_frames[pre_cut_index]
             pending_frames[frame.index] = frame
-            if len(pending_frames) > _MAX_PENDING_FRAMES:
+            if len(pending_frames) > max_pending_frames:
                 del pending_frames[min(pending_frames)]
 
         async def finalize_detection(
@@ -204,7 +181,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
             last_sampled_index = sampled_frames[-1].index
             # `available` only ever looks past the newest sampled index, so
             # everything at or below it is already unreachable. Drop it now
-            # rather than leaving it for the _MAX_PENDING_FRAMES cap to
+            # rather than leaving it for the max_pending_frames cap to
             # evict much later: each entry pins a full raw frame (~2.8 MB at
             # 720x1280), so sitting on 600 of them costs well over a GB.
             for stale_index in [
@@ -246,7 +223,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
                     continue
 
                 sample_indices = _sample_evenly(
-                    available, self.config.batching.max_frames
+                    available, self.config.batch_gate.max_frames
                 )
                 in_flight_frames = [pending_frames[index] for index in sample_indices]
                 detection_started_at = self._clock.now()
@@ -348,8 +325,9 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         ],
     ) -> None:
         cursor: RenderCursor[FaceEmbeddingT] = RenderCursor(
-            self.config.rendering.lookahead_snapshots, self._interpolator
+            self._interpolator, config=self.config.render_cursor
         )
+        max_pending_frames = self.config.buffering.max_pending_frames
         pending_frames: dict[FrameIndex, Frame[FrameContentT]] = {}
         # The last faces actually emitted — held frames (ones the cursor cannot
         # interpolate: the tail past the final snapshot, or a frame the cursor
@@ -369,7 +347,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         async def drain_cursor() -> None:
             """Emit every frame the cursor can currently reach — nothing while
             detections stall, a catch-up burst once they land. Every input
-            frame comes out exactly once (short of the `_MAX_PENDING_FRAMES`
+            frame comes out exactly once (short of the `max_pending_frames`
             eviction): the cursor walks indices sequentially without duplicates
             or gaps, and any pending frame it somehow got ahead of is emitted
             as held rather than dropped."""
@@ -401,7 +379,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         try:
             async for frame in render_frame_channel:
                 pending_frames[frame.index] = frame
-                if len(pending_frames) > _MAX_PENDING_FRAMES:
+                if len(pending_frames) > max_pending_frames:
                     del pending_frames[min(pending_frames)]
                 await drain_cursor()
 
@@ -451,11 +429,16 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
     ) -> None:
         logger.info("run: starting pipeline")
         stop_token = stop_token if stop_token is not None else StopToken()
+        # One frozen config shared by the three frame-carrying channels; the
+        # metadata channels stay on the default unbounded one.
+        frame_channel_config = ChannelConfig(
+            max_size=self.config.buffering.frame_channel_capacity
+        )
         detection_frame_channel: Channel[Frame[FrameContentT]] = Channel(
-            _FRAME_CHANNEL_CAPACITY, name="detection_frames"
+            name="detection_frames", config=frame_channel_config
         )
         render_frame_channel: Channel[Frame[FrameContentT]] = Channel(
-            _FRAME_CHANNEL_CAPACITY, name="render_frames"
+            name="render_frames", config=frame_channel_config
         )
         frame_faces_channel: Channel[
             list[tuple[Frame[FrameContentT], list[Face[None]]]]
@@ -468,7 +451,7 @@ class Pipeline[FrameContentT, FaceEmbeddingT]:
         )
         annotated_frame_channel: Channel[
             AnnotatedFrame[FrameContentT, TrackedFace[FaceEmbeddingT]]
-        ] = Channel(_FRAME_CHANNEL_CAPACITY, name="annotated_frames")
+        ] = Channel(name="annotated_frames", config=frame_channel_config)
         try:
             async with TaskGroup() as task_group:
                 task_group.create_task(

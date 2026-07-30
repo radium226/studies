@@ -3,7 +3,12 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-from video_analyzer.kernel import BatchingConfig, PipelineConfig, RenderingConfig, StopToken
+from video_analyzer.kernel import (
+    BatchGateConfig,
+    PipelineConfig,
+    RenderCursorConfig,
+    StopToken,
+)
 
 from .fake import (
     Clock,
@@ -56,10 +61,10 @@ def test_pipeline() -> None:
         interpolator=Interpolator(),
         frame_sink=(frame_sink := FrameSink()),
         frame_broadcaster=(frame_broadcaster := FrameBroadcaster()),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
     source_frames = [Frame(index=index, content=index * 10) for index in range(20)]
@@ -109,10 +114,10 @@ def test_pipeline_reports_a_failing_stage_instead_of_hanging() -> None:
         interpolator=Interpolator(),
         frame_sink=ExplodingFrameSink(),
         frame_broadcaster=FrameBroadcaster(),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
     # Endless source: the failure must end the run on its own, not merely
@@ -144,10 +149,10 @@ def _make_pipeline(
         interpolator=Interpolator(),
         frame_sink=frame_sink,
         frame_broadcaster=frame_broadcaster,
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
 
@@ -230,10 +235,10 @@ def test_scene_cut_resets_track_identities_and_loses_no_frames() -> None:
         interpolator=Interpolator(),
         frame_sink=(frame_sink := FrameSink()),
         frame_broadcaster=FrameBroadcaster(),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
     source_frames = [Frame(index=index, content=index * 10) for index in range(40)]
@@ -290,10 +295,10 @@ def test_detection_pass_does_not_backpressure_the_producer() -> None:
         interpolator=Interpolator(),
         frame_sink=(frame_sink := FrameSink()),
         frame_broadcaster=FrameBroadcaster(),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
 
@@ -327,10 +332,10 @@ def test_in_flight_detection_results_still_delivered_at_end_of_stream() -> None:
         interpolator=Interpolator(),
         frame_sink=(frame_sink := FrameSink()),
         frame_broadcaster=FrameBroadcaster(),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
     source_frames = [Frame(index=index, content=index * 10) for index in range(8)]
@@ -365,10 +370,10 @@ def test_failing_detection_pass_fails_the_run() -> None:
         interpolator=Interpolator(),
         frame_sink=FrameSink(),
         frame_broadcaster=FrameBroadcaster(),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
     # Endless source: the failure must end the run on its own.
@@ -412,10 +417,10 @@ def test_all_frames_emitted_even_when_detection_stalls_mid_stream() -> None:
         interpolator=Interpolator(),
         frame_sink=(frame_sink := FrameSink()),
         frame_broadcaster=FrameBroadcaster(),
+        frames_per_second=30.0,
         config=PipelineConfig(
-            frames_per_second=30.0,
-            batching=BatchingConfig(max_frames=4, max_lag_ms=0.0),
-            rendering=RenderingConfig(lookahead_snapshots=1),
+            batch_gate=BatchGateConfig(max_frames=4, max_lag_ms=0.0),
+            render_cursor=RenderCursorConfig(lookahead_snapshots=1),
         ),
     )
     source_frames = [Frame(index=index, content=index * 10) for index in range(60)]

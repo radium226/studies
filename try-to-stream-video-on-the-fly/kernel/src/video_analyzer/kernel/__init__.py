@@ -2,10 +2,14 @@ from loguru import logger
 
 from .batch_gate import BatchGate as BatchGate
 from .channel import Channel as Channel
-from .config import BatchingConfig as BatchingConfig
+from .config import BatchGateConfig as BatchGateConfig
+from .config import BufferingConfig as BufferingConfig
+from .config import ChannelConfig as ChannelConfig
+from .config import Config as Config
+from .config import ConfigError as ConfigError
 from .config import PipelineConfig as PipelineConfig
-from .config import PipelineConfigError as PipelineConfigError
-from .config import RenderingConfig as RenderingConfig
+from .config import RenderCursorConfig as RenderCursorConfig
+from .config import TokenBucketConfig as TokenBucketConfig
 from .models import AnnotatedFrame as AnnotatedFrame
 from .models import BoundingBox as BoundingBox
 from .models import Detection as Detection

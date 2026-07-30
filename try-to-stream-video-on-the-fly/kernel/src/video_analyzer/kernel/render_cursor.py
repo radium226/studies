@@ -1,6 +1,7 @@
 from collections import deque
 from typing import NamedTuple
 
+from .config import RenderCursorConfig
 from .models import FrameIndex, Snapshot, TrackedFace
 from .services import Interpolator
 
@@ -48,11 +49,13 @@ class RenderCursor[FaceEmbeddingT]:
 
     def __init__(
         self,
-        lookahead_snapshots: int,
         interpolator: Interpolator[TrackedFace[FaceEmbeddingT]],
+        *,
+        config: RenderCursorConfig | None = None,
     ) -> None:
-        self._lookahead_snapshots = lookahead_snapshots
         self._interpolator = interpolator
+        self.config = config if config is not None else RenderCursorConfig()
+        self._lookahead_snapshots = self.config.lookahead_snapshots
         # Snapshots partitioned by scene, oldest scene first. Only the oldest
         # is ever rendered from; later ones queue up behind their cut.
         self._scenes: deque[list[Snapshot[TrackedFace[FaceEmbeddingT]]]] = deque()

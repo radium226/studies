@@ -3,12 +3,18 @@ from typing import AsyncIterator
 
 from loguru import logger
 
+from .config import ChannelConfig
+
 
 class Channel[ItemT]:
 
-    def __init__(self, max_size: int = 0, name: str = "channel"):
-        self.queue: Queue[ItemT] = Queue(max_size)
+    def __init__(
+        self, *, name: str = "channel", config: ChannelConfig | None = None
+    ) -> None:
+        # `name` is diagnostics, not behaviour — it only ever reaches log lines.
         self.name = name
+        self.config = config if config is not None else ChannelConfig()
+        self.queue: Queue[ItemT] = Queue(self.config.max_size)
 
     async def send(self, item: ItemT) -> None:
         await self.queue.put(item)

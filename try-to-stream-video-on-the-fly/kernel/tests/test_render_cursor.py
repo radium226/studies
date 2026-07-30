@@ -3,6 +3,7 @@ from collections.abc import Coroutine
 from typing import Any
 
 from video_analyzer import kernel
+from video_analyzer.kernel import RenderCursorConfig
 from video_analyzer.kernel.render_cursor import AdvanceResult, RenderCursor
 
 from .fake import Interpolator, TrackedFace
@@ -40,7 +41,9 @@ def _snapshot(frame_index: int, x: float | None = None) -> kernel.Snapshot[Track
 
 
 def _cursor(lookahead: int) -> RenderCursor[int]:
-    return RenderCursor(lookahead, Interpolator())
+    return RenderCursor(
+        Interpolator(), config=RenderCursorConfig(lookahead_snapshots=lookahead)
+    )
 
 
 async def _drain(cursor: RenderCursor[int]) -> list[AdvanceResult[int]]:

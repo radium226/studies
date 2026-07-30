@@ -84,14 +84,18 @@ src/video_analyzer/kernel/
 │                       (`can_spend` checks the budget without deducting, `record_spend` charges
 │                       the actual cost afterwards)
 ├── batch_gate.py       BatchGate — fires a detection batch when full or lag exceeded, built
-│                       on TokenBucket; `max_frames`/`max_lag_ms` match `BatchingConfig` 1:1.
-│                       Note: the `max_lag_ms` epoch resets whenever the bucket is empty
+│                       on TokenBucket (BatchGateConfig). Note: the `max_lag_ms` epoch resets
+│                       whenever the bucket is empty
 ├── render_cursor.py    RenderCursor — sequential no-duplicate walk of frame indices through the
 │                       interpolation window (see stage 5 below); scene-aware; finish() flushes
 │                       the end-of-stream tail. Internal (not exported), but directly unit-tested
-├── config.py           PipelineConfig/BatchingConfig/RenderingConfig — YAML-backed, strict
-│                       (unknown keys are hard errors); defaults live only on the dataclass
-│                       fields — from_dict passes just the keys present
+├── config.py           the `Config` base (field-driven dict/YAML (de)serialization, strict:
+│                       unknown keys are hard errors; defaults live only on the dataclass
+│                       fields — absent keys are simply not passed to the constructor) plus one
+│                       config per tunable class: TokenBucketConfig, ChannelConfig,
+│                       BatchGateConfig, RenderCursorConfig, BufferingConfig, and the
+│                       PipelineConfig that groups the last three. `core` and `cli` build their
+│                       own trees on the same base
 └── pipeline.py         Pipeline[FrameContentT, FaceEmbeddingT] — the orchestrator; injected
                         services are private attributes; one `run()` per instance (stateful
                         services would silently carry over otherwise)
@@ -106,7 +110,7 @@ src/video_analyzer/kernel/
    `StopToken`; once set, it takes the exact same exit path as source exhaustion — no separate
    teardown logic exists anywhere else in the pipeline for an early stop.
 2. **`sample_and_detect`** — buffers frames, uses `BatchGate.should_fire()` to decide when to
-   fire (batch full or lag exceeded), samples up to `config.batching.max_frames` frames evenly
+   fire (batch full or lag exceeded), samples up to `config.batch_gate.max_frames` frames evenly
    spread since the last fire (plain int/float math — no numpy), and runs
    `FaceDetector.detect_faces` as a **background task, at most one in flight**. While a pass runs,
    the loop keeps draining the channel (`Channel.try_recv`) into its `pending_frames` buffer, so
@@ -123,8 +127,8 @@ src/video_analyzer/kernel/
    stateful/temporal, frames within a batch cannot be reordered or parallelized); calls
    `Tracker.reset()` first on a scene-start snapshot — identities never survive a cut.
 5. **`interpolate_and_render`** — `RenderCursor` (in `render_cursor.py`) lags
-   `config.rendering.lookahead_snapshots` snapshots behind the newest tracked snapshot so every
-   emitted frame lies strictly between two real detections (never extrapolated); the actual
+   `config.render_cursor.lookahead_snapshots` snapshots behind the newest tracked snapshot so
+   every emitted frame lies strictly between two real detections (never extrapolated); the actual
    numeric fill is delegated to the injected `Interpolator` (a point query). The cursor walks
    frame indices **sequentially, no duplicates, no gaps**: the stage loops `advance()` until it
    returns None — nothing while detections stall, a catch-up burst once they land. Snapshots are
@@ -133,7 +137,7 @@ src/video_analyzer/kernel/
    stage awaits the trailing snapshots, calls `cursor.finish()` (drops the lookahead margin), and
    flushes every remaining pending frame — the tail past the last snapshot goes out held
    (`interpolation_bracket=None`). **Net guarantee: every input frame is emitted exactly once**
-   (short of the `_MAX_PENDING_FRAMES` eviction under an extreme stall).
+   (short of the `buffering.max_pending_frames` eviction under an extreme stall).
 6. **`write_and_broadcast`** — hands the resulting `AnnotatedFrame` to both `FrameSink` (video
    bytes) and `FrameBroadcaster` (detection metadata, for other consumers). The kernel doesn't
    draw: if you want overlays burned in, the sink does it — onto a **copy**, since both consumers
@@ -158,19 +162,36 @@ for source exhaustion. Kernel exposes only the token: deciding *when* to call `r
 around an existing service (`FrameSource`, `Tracker`, `FrameBroadcaster`, `FrameSink`, ...) — not
 a new kernel service ABC.
 
-**Every** channel carrying whole frames is bounded to `_FRAME_CHANNEL_CAPACITY`, so a stage
-slower than the source pushes backpressure back to the decoder. The deliberate exception is
+**Every** channel carrying whole frames is bounded to `buffering.frame_channel_capacity`, so a
+stage slower than the source pushes backpressure back to the decoder. The deliberate exception is
 detection: `sample_and_detect` drains its channel every iteration even while a pass is in flight,
 so a slow (or outright stuck) detector never fills `detection_frames` — its backlog lands in the
-stage's `pending_frames` buffer instead, bounded by the `_MAX_PENDING_FRAMES` drop-oldest cap,
-costing a wider sampling stride rather than a throttled pipeline. Unbounded, a slow sink silently
-banks gigabytes of raw frames and then looks like a hang at end of stream while the backlog
-drains. For the same reason every `pending_frames` buffer (one in `sample_and_detect`, one in
+stage's `pending_frames` buffer instead, bounded by the `buffering.max_pending_frames`
+drop-oldest cap, costing a wider sampling stride rather than a throttled pipeline. Unbounded, a
+slow sink silently banks gigabytes of raw frames and then looks like a hang at end of stream while
+the backlog drains. For the same reason every `pending_frames` buffer (one in `sample_and_detect`, one in
 `interpolate_and_render`) prunes everything the cursor has passed instead of waiting for the
-`_MAX_PENDING_FRAMES` cap.
+`buffering.max_pending_frames` cap.
 
 ## Working in this codebase
 
+- **Every tunable class owns a `<ClassName>Config`, and the split is load-bearing.** A parameter
+  that *describes the data or a collaborator* — a clock, a wrapped service, a model path, and
+  **any frame rate** (probed from the source at runtime) — stays a constructor argument. A
+  parameter that *tunes behaviour* and has a sensible static default goes in the Config. That is
+  what makes a config tree safe to write to a YAML file: everything in the document is a real,
+  static choice, and nothing in it is silently overwritten at startup by a probed value. Hence
+  `Pipeline(..., frames_per_second=..., config=...)` and `BatchGate(clock, frames_per_second,
+  config=...)` — the fps is *not* in `BatchGateConfig`.
+- **Config is a dataclass and nothing more.** `Config.from_dict` is driven by
+  `dataclasses.fields` + `typing.get_type_hints`, so adding a field is the whole change — there is
+  no parser to update in lockstep. Adding a new *field type* does mean teaching `_parse_value`
+  about it; the supported set is closed on purpose so an unrecognised annotation fails loudly
+  instead of skipping validation. An `X | None` nested config is the "this stage is disabled"
+  idiom (`null` in YAML), which `cli/` leans on heavily.
+- `__post_init__` validators raise `ConfigError` with a **bare field name**
+  (`"max_frames must be >= 1"`) — `from_dict` prefixes the document path onto it, since only it
+  knows where in a tree the value was nested.
 - **Dependency-free is the whole point.** Before adding an import, ask whether it's a genuine new
   *contract* or *data shape* — those belong here. Algorithm code that needs numpy/scipy/opencv/
   onnxruntime to run belongs in `core/`, even if the algorithm itself is pure/deterministic (e.g.
