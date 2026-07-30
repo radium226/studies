@@ -17,19 +17,16 @@ from numpy.typing import NDArray
 
 from video_analyzer import kernel
 
-_DEFAULT_CORRELATION_THRESHOLD = 0.5
+from .config import HistogramSceneDetectorConfig
+
 _HISTOGRAM_BINS = 32
 
 
 class HistogramSceneDetector(kernel.SceneDetector[NDArray[np.uint8]]):
     def __init__(
-        self, correlation_threshold: float = _DEFAULT_CORRELATION_THRESHOLD
+        self, *, config: HistogramSceneDetectorConfig | None = None
     ) -> None:
-        if not 0.0 <= correlation_threshold <= 1.0:
-            raise ValueError(
-                f"correlation_threshold must be within [0, 1], got {correlation_threshold}"
-            )
-        self._correlation_threshold = correlation_threshold
+        self.config = config if config is not None else HistogramSceneDetectorConfig()
 
     async def detect_scene_cut(
         self,
@@ -37,7 +34,7 @@ class HistogramSceneDetector(kernel.SceneDetector[NDArray[np.uint8]]):
         current_frame: kernel.Frame[NDArray[np.uint8]],
     ) -> bool:
         correlation = self._correlation(previous_frame.content, current_frame.content)
-        return correlation < self._correlation_threshold
+        return correlation < self.config.correlation_threshold
 
     @staticmethod
     def _correlation(

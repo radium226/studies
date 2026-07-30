@@ -48,17 +48,21 @@ src/video_analyzer/core/
 │                           via hand-rolled IoU (_best_iou_match, each face claimed at most once)
 │                           so drawn boxes/landmarks stay consistent — cheap bookkeeping, no
 │                           executor offload needed. Implements reset() (scene cuts) by
-│                           delegating to the vendored tracker's own reset; exposes the ByteTrack
-│                           knobs as ctor kwargs. NB: `fps` is bookkeeping only — lost_track_buffer
-│                           counts *updates* (detection passes), not video frames
+│                           delegating to the vendored tracker's own reset; the ByteTrack knobs
+│                           live in ByteTrackTrackerConfig. NB: `fps` is a ctor arg and
+│                           bookkeeping only — lost_track_buffer counts *updates* (detection
+│                           passes), not video frames
 ├── spline_interpolator.py  SplineInterpolator(kernel.Interpolator) — pchip/cubic/linear *point
 │                           query* via scipy (evaluate one position of the window, per the
 │                           kernel contract), generic over anything implementing
 │                           kernel.Interpolable (to_vector/with_vector) — knows nothing about
 │                           faces or tracks
+├── config.py               every core class's <ClassName>Config, on kernel's `Config` base
+│                           (so they parse/serialize the same strict way, and compose into a
+│                           bigger document — see cli/). Also owns the InterpolationMethod alias
 ├── histogram_scene_detector.py HistogramSceneDetector(kernel.SceneDetector) — per-channel
 │                           histogram correlation of consecutive frames; a cut is a correlation
-│                           below the ctor threshold. Cheap enough to run inline per frame pair
+│                           below the configured threshold. Cheap enough to run inline per pair
 ├── ffmpeg_frame_source.py  FfmpegFrameSource(kernel.FrameSource) — spawns the decoder ffmpeg
 │                           subprocess, probes video info, reshapes raw BGR24 bytes to
 │                           (H, W, 3) numpy frames
@@ -78,8 +82,8 @@ src/video_analyzer/core/
 │                           condition for what should set it
 ├── stop_on_first_track.py  StopOnFirstTrack(kernel.FrameBroadcaster) — decorates a
 │                           FrameBroadcaster, requests an early kernel.StopToken stop once one
-│                           same track id has appeared in `min_track_frames` *rendered* frames
-│                           (default 1). The definition of a track in video frames — exact,
+│                           same track id has appeared in `config.min_track_frames` *rendered*
+│                           frames (default 1). The definition of a track in video frames — exact,
 │                           interpolated, and held appearances all count, which is why it sits
 │                           on the output side: interpolated frames only exist downstream of
 │                           the render cursor. Per-track counts reset at scene-start frames
@@ -100,11 +104,24 @@ application wires the pipeline together (e.g. push `AnnotatedFrame` metadata ove
 on transport.
 
 ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder` take a
-`model_path: Path` constructor argument; point it at `app/models/scrfd_10g_kps_dynamic.onnx` /
+`model_path: Path` constructor argument (a resource, not a tunable, so it stays out of the
+config); point it at `app/models/scrfd_10g_kps_dynamic.onnx` /
 `app/models/arcface_w600k_r50_batch.onnx` (or your own weights) when wiring up a real pipeline.
 
 ## Working in this codebase
 
+- **Every tunable class here owns a `<ClassName>Config`** in `config.py`, on `kernel`'s
+  `Config` base — see `kernel/CLAUDE.md` for the rule that decides what goes in one. Frame rates
+  and model paths stay constructor arguments: `ByteTrackTracker(fps, config=...)`,
+  `FfmpegFrameSink(width, height, fps, config=...)`, `OnnxFaceDetector(model_path, config=...)`.
+  `StopAfterFrameCount`'s config is **required**, not defaulted — `max_frames` has no sensible
+  default, since picking a number is the entire reason to wrap a source in it.
+- What deliberately did **not** become configuration: the SCRFD/ArcFace geometry constants (input
+  sizes, strides, normalization mean/std, the canonical reference landmarks) and the encoder's
+  codec/profile/movflags settings including `_KEYFRAME_INTERVAL_SECONDS`. Those are model and
+  container-format invariants — changing them doesn't tune the pipeline, it breaks it (and the
+  keyframe interval is additionally baked into the literal in
+  `-force_key_frames expr:gte(t,n_forced*2)`). If you promote one, promote its twin too.
 - This is where new algorithm **backends** go — a different detector model, a different
   tracker, a GPU execution provider, etc. — as long as they implement one of `kernel`'s ABCs.
   New *contracts* (a new kind of service, a new data shape) belong in `kernel` instead.

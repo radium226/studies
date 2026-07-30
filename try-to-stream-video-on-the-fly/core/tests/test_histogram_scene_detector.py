@@ -6,7 +6,7 @@ import pytest
 from numpy.typing import NDArray
 
 from video_analyzer import kernel
-from video_analyzer.core import HistogramSceneDetector
+from video_analyzer.core import HistogramSceneDetector, HistogramSceneDetectorConfig
 
 
 def _frame(index: int, content: NDArray[np.uint8]) -> kernel.Frame[NDArray[np.uint8]]:
@@ -39,4 +39,4 @@ async def test_abrupt_content_change_is_a_cut() -> None:
 
 def test_rejects_out_of_range_threshold() -> None:
     with pytest.raises(ValueError):
-        HistogramSceneDetector(correlation_threshold=1.5)
+        HistogramSceneDetectorConfig(correlation_threshold=1.5)

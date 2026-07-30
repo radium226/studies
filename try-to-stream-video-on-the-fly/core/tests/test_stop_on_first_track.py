@@ -70,7 +70,7 @@ async def test_default_stops_on_the_first_frame_with_a_track() -> None:
 async def test_min_track_frames_counts_rendered_frames_of_one_track() -> None:
     stop_token = kernel.StopToken()
     broadcaster = core.StopOnFirstTrack(
-        _RecordingBroadcaster(), stop_token, min_track_frames=3
+        _RecordingBroadcaster(), stop_token, config=core.StopOnFirstTrackConfig(min_track_frames=3)
     )
 
     await broadcaster.broadcast_frame(_annotated_frame(0, [1]))
@@ -84,7 +84,7 @@ async def test_min_track_frames_counts_rendered_frames_of_one_track() -> None:
 async def test_counts_do_not_pool_across_track_ids() -> None:
     stop_token = kernel.StopToken()
     broadcaster = core.StopOnFirstTrack(
-        _RecordingBroadcaster(), stop_token, min_track_frames=2
+        _RecordingBroadcaster(), stop_token, config=core.StopOnFirstTrackConfig(min_track_frames=2)
     )
 
     await broadcaster.broadcast_frame(_annotated_frame(0, [1]))
@@ -96,7 +96,7 @@ async def test_counts_do_not_pool_across_track_ids() -> None:
 async def test_a_scene_cut_resets_the_counts() -> None:
     stop_token = kernel.StopToken()
     broadcaster = core.StopOnFirstTrack(
-        _RecordingBroadcaster(), stop_token, min_track_frames=2
+        _RecordingBroadcaster(), stop_token, config=core.StopOnFirstTrackConfig(min_track_frames=2)
     )
 
     await broadcaster.broadcast_frame(_annotated_frame(0, [1]))
@@ -112,7 +112,9 @@ async def test_a_scene_cut_resets_the_counts() -> None:
 async def test_every_frame_still_reaches_the_wrapped_broadcaster() -> None:
     wrapped = _RecordingBroadcaster()
     stop_token = kernel.StopToken()
-    broadcaster = core.StopOnFirstTrack(wrapped, stop_token, min_track_frames=1)
+    broadcaster = core.StopOnFirstTrack(
+        wrapped, stop_token, config=core.StopOnFirstTrackConfig(min_track_frames=1)
+    )
 
     frames = [_annotated_frame(0, [1]), _annotated_frame(1, [1])]
     for frame in frames:

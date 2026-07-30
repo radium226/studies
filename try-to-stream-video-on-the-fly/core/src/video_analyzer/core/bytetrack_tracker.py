@@ -10,6 +10,8 @@ from trackers.utils.iou import BIoU
 
 from video_analyzer import kernel
 
+from .config import ByteTrackTrackerConfig
+
 
 def _xyxy(bounding_box: kernel.BoundingBox) -> tuple[float, float, float, float]:
     return (
@@ -35,22 +37,20 @@ class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
         self,
         fps: float,
         *,
-        lost_track_buffer: int = 30,
-        track_activation_threshold: float = 0.25,
-        minimum_consecutive_frames: int = 1,
-        iou_buffer_ratio: float = 0.5,
+        config: ByteTrackTrackerConfig | None = None,
     ) -> None:
+        self.config = config if config is not None else ByteTrackTrackerConfig()
         self._bytetrack = _VendoredByteTrackTracker(
             frame_rate=fps,
-            lost_track_buffer=lost_track_buffer,
-            minimum_consecutive_frames=minimum_consecutive_frames,
-            track_activation_threshold=track_activation_threshold,
+            lost_track_buffer=self.config.lost_track_buffer,
+            minimum_consecutive_frames=self.config.minimum_consecutive_frames,
+            track_activation_threshold=self.config.track_activation_threshold,
             # The tracker is updated at detection cadence (a few Hz), not video
             # frame rate, so a fast face can move nearly its own width between
             # updates — plain IoU association sees zero overlap and churns
             # track ids. Buffered IoU expands boxes before matching to bridge
             # that gap.
-            iou=BIoU(buffer_ratio=iou_buffer_ratio),
+            iou=BIoU(buffer_ratio=self.config.iou_buffer_ratio),
         )
 
     async def update(

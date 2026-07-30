@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from video_analyzer import kernel
 
+from .config import StopOnFirstTrackConfig
+
 
 class StopOnFirstTrack[FrameContentT, FaceEmbeddingT](
     kernel.FrameBroadcaster[FrameContentT, kernel.TrackedFace[FaceEmbeddingT]]
@@ -27,11 +29,12 @@ class StopOnFirstTrack[FrameContentT, FaceEmbeddingT](
             FrameContentT, kernel.TrackedFace[FaceEmbeddingT]
         ],
         stop_token: kernel.StopToken,
-        min_track_frames: int = 1,
+        *,
+        config: StopOnFirstTrackConfig | None = None,
     ) -> None:
         self._wrapped = wrapped
         self._stop_token = stop_token
-        self._min_track_frames = min_track_frames
+        self.config = config if config is not None else StopOnFirstTrackConfig()
         self._frames_by_track: dict[int, int] = {}
 
     async def broadcast_frame(
@@ -46,5 +49,5 @@ class StopOnFirstTrack[FrameContentT, FaceEmbeddingT](
         for tracked_face in annotated_frame.faces:
             count = self._frames_by_track.get(tracked_face.track_id, 0) + 1
             self._frames_by_track[tracked_face.track_id] = count
-            if count >= self._min_track_frames:
+            if count >= self.config.min_track_frames:
                 self._stop_token.request_stop()

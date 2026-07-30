@@ -7,7 +7,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Self
 
@@ -16,6 +16,7 @@ from numpy.typing import NDArray
 
 from video_analyzer import kernel
 
+from .config import FfmpegFrameSourceConfig
 from .pipe_io import drain_stderr, read_exact, shutdown_process
 
 
@@ -82,15 +83,11 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
         source: str,
         video_info: VideoInfo,
         *,
-        loop: bool = True,
-        resize: tuple[int, int] | None = None,
-        read_rate: float = 1.0,
+        config: FfmpegFrameSourceConfig | None = None,
     ) -> None:
         self._source = source
         self.video_info = video_info
-        self._loop = loop
-        self._resize = resize
-        self._read_rate = read_rate
+        self.config = config if config is not None else FfmpegFrameSourceConfig()
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
         self._next_index = 0
@@ -101,14 +98,12 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
         cls,
         source: str,
         *,
-        loop: bool = True,
-        resize: tuple[int, int] | None = None,
-        read_rate: float = 1.0,
-        stop_timeout: float = 5.0,
+        config: FfmpegFrameSourceConfig | None = None,
     ) -> AsyncIterator[Self]:
+        config = config if config is not None else FfmpegFrameSourceConfig()
         source_video_info = await probe_video_info(source)
         output_width, output_height = resolve_resize(
-            source_video_info.width, source_video_info.height, resize or (-1, -1)
+            source_video_info.width, source_video_info.height, config.resize or (-1, -1)
         )
         decoder_resize = (
             (output_width, output_height)
@@ -119,9 +114,10 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
         self = cls(
             source,
             VideoInfo(output_width, output_height, source_video_info.fps),
-            loop=loop,
-            resize=decoder_resize,
-            read_rate=read_rate,
+            # The instance's resize is the *resolved* one — ffmpeg-style -1
+            # placeholders are gone by here, and a resize that turned out to be
+            # a no-op is dropped so no scale filter is added at all.
+            config=replace(config, resize=decoder_resize),
         )
         self._proc = await asyncio.create_subprocess_exec(
             *self._decoder_cmd(),
@@ -134,7 +130,9 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
             yield self
         finally:
             assert self._proc is not None and self._stderr_task is not None
-            await shutdown_process(self._proc, self._stderr_task, stop_timeout)
+            await shutdown_process(
+                self._proc, self._stderr_task, self.config.stop_timeout
+            )
 
     async def read_frame(self) -> kernel.Frame[NDArray[np.uint8]] | None:
         assert self._proc is not None and self._proc.stdout is not None
@@ -150,13 +148,13 @@ class FfmpegFrameSource(kernel.FrameSource[NDArray[np.uint8]]):
 
     def _decoder_cmd(self) -> list[str]:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning"]
-        if self._loop:
+        if self.config.loop:
             cmd += ["-stream_loop", "-1"]
         # -readrate paces how fast ffmpeg emits decoded frames (every frame is
         # still decoded); -readrate 1 is equivalent to -re.
-        cmd += ["-readrate", str(self._read_rate)]
+        cmd += ["-readrate", str(self.config.read_rate)]
         cmd += ["-i", self._source, "-an"]
-        if self._resize:
-            cmd += ["-vf", f"scale={self._resize[0]}:{self._resize[1]}"]
+        if self.config.resize:
+            cmd += ["-vf", f"scale={self.config.resize[0]}:{self.config.resize[1]}"]
         cmd += ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
         return cmd

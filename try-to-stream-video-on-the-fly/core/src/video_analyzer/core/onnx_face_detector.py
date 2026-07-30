@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from video_analyzer import kernel
 
 from ._onnx_model import OnnxModel
+from .config import OnnxFaceDetectorConfig
 
 # SCRFD input is square today, but width and height are kept as separate
 # constants so every use site is explicit about which axis it means.
@@ -36,13 +37,12 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
     def __init__(
         self,
         model_path: Path,
-        score_threshold: float = 0.5,
-        iou_threshold: float = 0.4,
         executor: Executor | None = None,
+        *,
+        config: OnnxFaceDetectorConfig | None = None,
     ) -> None:
         super().__init__(model_path)
-        self.score_threshold = score_threshold
-        self.iou_threshold = iou_threshold
+        self.config = config if config is not None else OnnxFaceDetectorConfig()
         self._executor = executor
         self._anchor_cache: dict[int, NDArray[np.float32]] = {}
 
@@ -185,7 +185,7 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
             iy2 = np.minimum(y2[top], y2[rest])
             inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
             iou = inter / (areas[top] + areas[rest] - inter)
-            order = rest[iou <= self.iou_threshold]
+            order = rest[iou <= self.config.iou_threshold]
         return np.array(kept, dtype=np.int64)
 
     def _decode_detections(
@@ -205,7 +205,7 @@ class OnnxFaceDetector(OnnxModel, kernel.FaceDetector[NDArray[np.uint8]]):
             bboxes = self._dist_to_bbox(centers, bbox_dists)
             landmarks = self._dist_to_landmarks(centers, lm_dists)
 
-            mask = scores >= self.score_threshold
+            mask = scores >= self.config.score_threshold
             all_scores.append(scores[mask])
             all_bboxes.append(bboxes[mask])
             all_landmarks.append(landmarks[mask])

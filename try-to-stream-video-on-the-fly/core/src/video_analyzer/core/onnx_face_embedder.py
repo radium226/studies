@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from video_analyzer import kernel
 
 from ._onnx_model import OnnxModel
+from .config import OnnxFaceEmbedderConfig
 
 _ARCFACE_OUTPUT_SIZE: int = 112
 _ARCFACE_MEAN: float = 127.5
@@ -35,11 +36,12 @@ class OnnxFaceEmbedder(OnnxModel, kernel.FaceEmbedder[NDArray[np.uint8], NDArray
     def __init__(
         self,
         model_path: Path,
-        max_batch: int = 8,
         executor: Executor | None = None,
+        *,
+        config: OnnxFaceEmbedderConfig | None = None,
     ) -> None:
         super().__init__(model_path)
-        self.max_batch = max_batch
+        self.config = config if config is not None else OnnxFaceEmbedderConfig()
         self._executor = executor
 
     async def embed_faces(
@@ -70,7 +72,7 @@ class OnnxFaceEmbedder(OnnxModel, kernel.FaceEmbedder[NDArray[np.uint8], NDArray
             for frame, face in items
         ]
         input_name: str = session.get_inputs()[0].name
-        chunk_size = max(1, self.max_batch)
+        chunk_size = self.config.max_batch
 
         embeddings: list[NDArray[np.float32]] = []
         for start in range(0, len(prepared), chunk_size):

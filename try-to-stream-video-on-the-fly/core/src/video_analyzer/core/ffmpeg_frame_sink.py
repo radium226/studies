@@ -23,10 +23,13 @@ from numpy.typing import NDArray
 
 from video_analyzer import kernel
 
+from .config import FfmpegFrameSinkConfig
 from .pipe_io import drain_stderr, shutdown_process
 
+# Not configuration: a format invariant, and additionally baked into the
+# `-force_key_frames` expression below. MSE needs fragment boundaries to land
+# on keyframes.
 _KEYFRAME_INTERVAL_SECONDS = 2
-_DEFAULT_FRAG_DURATION_MS = 200
 
 
 class FfmpegFrameSink[FaceRecordT](kernel.FrameSink[NDArray[np.uint8], FaceRecordT]):
@@ -36,12 +39,14 @@ class FfmpegFrameSink[FaceRecordT](kernel.FrameSink[NDArray[np.uint8], FaceRecor
         height: int,
         fps: float,
         *,
-        frag_duration_ms: int = _DEFAULT_FRAG_DURATION_MS,
+        config: FfmpegFrameSinkConfig | None = None,
     ) -> None:
+        # Width/height/fps describe the raw byte stream in the pipe — they must
+        # match the frames actually written, so they are arguments, not config.
         self._width = width
         self._height = height
         self._fps = fps
-        self._frag_duration_ms = frag_duration_ms
+        self.config = config if config is not None else FfmpegFrameSinkConfig()
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
 
@@ -53,10 +58,9 @@ class FfmpegFrameSink[FaceRecordT](kernel.FrameSink[NDArray[np.uint8], FaceRecor
         height: int,
         fps: float,
         *,
-        frag_duration_ms: int = _DEFAULT_FRAG_DURATION_MS,
-        stop_timeout: float = 5.0,
+        config: FfmpegFrameSinkConfig | None = None,
     ) -> AsyncIterator[Self]:
-        self = cls(width, height, fps, frag_duration_ms=frag_duration_ms)
+        self = cls(width, height, fps, config=config)
         self._proc = await asyncio.create_subprocess_exec(
             *self._encoder_cmd(),
             stdin=asyncio.subprocess.PIPE,
@@ -69,7 +73,9 @@ class FfmpegFrameSink[FaceRecordT](kernel.FrameSink[NDArray[np.uint8], FaceRecor
             yield self
         finally:
             assert self._proc is not None and self._stderr_task is not None
-            await shutdown_process(self._proc, self._stderr_task, stop_timeout)
+            await shutdown_process(
+                self._proc, self._stderr_task, self.config.stop_timeout
+            )
 
     async def write_frame(
         self,
@@ -135,7 +141,7 @@ class FfmpegFrameSink[FaceRecordT](kernel.FrameSink[NDArray[np.uint8], FaceRecor
             "-movflags",
             "frag_keyframe+empty_moov+default_base_moof",
             "-frag_duration",
-            str(self._frag_duration_ms * 1000),
+            str(self.config.frag_duration_ms * 1000),
             "-flush_packets",
             "1",
             "-f",

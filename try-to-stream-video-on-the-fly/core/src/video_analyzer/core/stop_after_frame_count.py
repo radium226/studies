@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from video_analyzer import kernel
 
+from .config import StopAfterFrameCountConfig
+
 
 class StopAfterFrameCount[FrameContentT](kernel.FrameSource[FrameContentT]):
 
@@ -14,17 +16,20 @@ class StopAfterFrameCount[FrameContentT](kernel.FrameSource[FrameContentT]):
         self,
         wrapped: kernel.FrameSource[FrameContentT],
         stop_token: kernel.StopToken,
-        max_frames: int,
+        *,
+        config: StopAfterFrameCountConfig,
     ) -> None:
         self._wrapped = wrapped
         self._stop_token = stop_token
-        self._max_frames = max_frames
+        # Required, not defaulted: picking the number is the whole point of
+        # wrapping a source in this.
+        self.config = config
         self._read_count = 0
 
     async def read_frame(self) -> kernel.Frame[FrameContentT] | None:
         frame = await self._wrapped.read_frame()
         if frame is not None:
             self._read_count += 1
-            if self._read_count >= self._max_frames:
+            if self._read_count >= self.config.max_frames:
                 self._stop_token.request_stop()
         return frame

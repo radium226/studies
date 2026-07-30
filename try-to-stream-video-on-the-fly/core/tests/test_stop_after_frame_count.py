@@ -18,7 +18,9 @@ class _ListFrameSource(kernel.FrameSource[int]):
 async def test_requests_stop_once_max_frames_read() -> None:
     stop_token = kernel.StopToken()
     source = core.StopAfterFrameCount(
-        _ListFrameSource([10, 20, 30]), stop_token, max_frames=2
+        _ListFrameSource([10, 20, 30]),
+        stop_token,
+        config=core.StopAfterFrameCountConfig(max_frames=2),
     )
 
     assert (await source.read_frame()) is not None
@@ -31,7 +33,9 @@ async def test_requests_stop_once_max_frames_read() -> None:
 async def test_nth_frame_is_still_returned_not_swallowed() -> None:
     stop_token = kernel.StopToken()
     source = core.StopAfterFrameCount(
-        _ListFrameSource([10, 20]), stop_token, max_frames=1
+        _ListFrameSource([10, 20]),
+        stop_token,
+        config=core.StopAfterFrameCountConfig(max_frames=1),
     )
 
     frame = await source.read_frame()
@@ -43,7 +47,11 @@ async def test_nth_frame_is_still_returned_not_swallowed() -> None:
 
 async def test_source_exhausted_before_max_frames_never_triggers_stop() -> None:
     stop_token = kernel.StopToken()
-    source = core.StopAfterFrameCount(_ListFrameSource([10]), stop_token, max_frames=5)
+    source = core.StopAfterFrameCount(
+        _ListFrameSource([10]),
+        stop_token,
+        config=core.StopAfterFrameCountConfig(max_frames=5),
+    )
 
     assert (await source.read_frame()) is not None
     assert (await source.read_frame()) is None

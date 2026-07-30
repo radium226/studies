@@ -47,7 +47,7 @@ async def test_update_assigns_stable_track_id_across_calls() -> None:
     # a track (the first is tentative and comes back with tracker_id < 0,
     # which ByteTrackTracker.update filters out) — feed it several identical
     # detections and check the id stays put once a track is confirmed.
-    tracker = ByteTrackTracker(fps=30.0)
+    tracker = ByteTrackTracker(30.0)
     face = _face(0, 0, 10, 10)
 
     results = [await tracker.update([face]) for _ in range(5)]
@@ -58,7 +58,7 @@ async def test_update_assigns_stable_track_id_across_calls() -> None:
 
 
 async def test_update_empty_input() -> None:
-    tracker = ByteTrackTracker(fps=30.0)
+    tracker = ByteTrackTracker(30.0)
     assert await tracker.update([]) == []
 
 
@@ -71,7 +71,7 @@ def test_best_match_skips_excluded_faces() -> None:
 async def test_each_face_is_claimed_by_at_most_one_track() -> None:
     # Two well-separated faces tracked long enough to confirm both, then a
     # single face left: only one track may claim it.
-    tracker = ByteTrackTracker(fps=30.0)
+    tracker = ByteTrackTracker(30.0)
     left, right = _face(0, 0, 10, 10), _face(100, 0, 10, 10)
     for _ in range(5):
         await tracker.update([left, right])
@@ -82,7 +82,7 @@ async def test_each_face_is_claimed_by_at_most_one_track() -> None:
 
 
 async def test_reset_forgets_confirmed_tracks() -> None:
-    tracker = ByteTrackTracker(fps=30.0)
+    tracker = ByteTrackTracker(30.0)
     face = _face(0, 0, 10, 10)
     for _ in range(5):
         await tracker.update([face])

@@ -10,8 +10,6 @@ frames.
 
 from __future__ import annotations
 
-from typing import Literal
-
 import numpy as np
 from numpy.typing import NDArray
 from scipy.interpolate import CubicSpline
@@ -19,7 +17,7 @@ from scipy.interpolate import PchipInterpolator as _ScipyPchipInterpolator
 
 from video_analyzer import kernel
 
-InterpolationMethod = Literal["cubic", "pchip", "linear"]
+from .config import InterpolationMethod, SplineInterpolatorConfig
 
 
 def _interpolate_1d(
@@ -43,8 +41,8 @@ def _interpolate_1d(
 class SplineInterpolator[InterpolableT: kernel.Interpolable](
     kernel.Interpolator[InterpolableT]
 ):
-    def __init__(self, method: InterpolationMethod = "pchip") -> None:
-        self._method = method
+    def __init__(self, *, config: SplineInterpolatorConfig | None = None) -> None:
+        self.config = config if config is not None else SplineInterpolatorConfig()
 
     async def interpolate(
         self,
@@ -64,5 +62,5 @@ class SplineInterpolator[InterpolableT: kernel.Interpolable](
         template = known[0][1]
         known_indices = np.array([index for index, _ in known], dtype=np.float64)
         known_values = np.array([value.to_vector() for _, value in known], dtype=np.float64)
-        vector = _interpolate_1d(known_indices, known_values, float(at), self._method)
+        vector = _interpolate_1d(known_indices, known_values, float(at), self.config.method)
         return template.with_vector(list(vector))
