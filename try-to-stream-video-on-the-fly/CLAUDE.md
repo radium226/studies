@@ -18,7 +18,8 @@ Everything below describes `app/`, the original monolithic implementation. Along
 `kernel`/`core`/`cli` split is in progress: `kernel/` (dependency-free service contracts +
 orchestration, see `kernel/CLAUDE.md`), `core/` (real SCRFD/ArcFace/ByteTrack/PCHIP/
 histogram-scene-cut/ffmpeg backends for those contracts, see `core/CLAUDE.md`), and `cli/` (a small `ffplay`-based example
-composing `kernel`+`core`, see `cli/CLAUDE.md`) — three standalone `uv` projects, `core` and `cli`
+composing `kernel`+`core`, driven entirely by a YAML config file rather than flags, see
+`cli/CLAUDE.md`) — three standalone `uv` projects, `core` and `cli`
 each depending on the previous via a `uv` path source. `app/` has not been migrated to depend on
 them yet (see `core/CLAUDE.md`).
 

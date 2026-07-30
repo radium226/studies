@@ -1,4 +1,6 @@
-"""Tests for the SOURCE argument's file-or-URL handling in main().
+"""Tests for main()'s command-line surface: the SOURCE argument's file-or-URL
+handling, and how it interacts with --dump-config (the one flag that runs
+without a SOURCE).
 
 The pipeline itself is out of scope (kernel/core already test every piece it
 composes): `_run` is replaced with a recording stub, so these tests only cover
@@ -69,3 +71,38 @@ def test_url_skips_the_existence_check(recorded_sources: list[str]) -> None:
 
     assert result.exit_code == 0
     assert recorded_sources == ["https://example.com/watch?v=abc"]
+
+
+def test_missing_source_is_rejected(recorded_sources: list[str]) -> None:
+    result = CliRunner().invoke(main, [])
+
+    assert result.exit_code != 0
+    assert "Missing argument 'SOURCE'" in result.output
+    assert recorded_sources == []
+
+
+def test_dump_config_needs_no_source_and_runs_nothing(
+    recorded_sources: list[str],
+) -> None:
+    # SOURCE is `required=False` purely so this works; that's why main() has to
+    # re-check it by hand.
+    result = CliRunner().invoke(main, ["--dump-config"])
+
+    assert result.exit_code == 0
+    assert "batch_gate:" in result.output
+    assert recorded_sources == []
+
+
+def test_a_bad_config_file_is_a_usage_error_not_a_traceback(
+    recorded_sources: list[str], tmp_path: Path
+) -> None:
+    video = tmp_path / "video.mp4"
+    video.touch()
+    config = tmp_path / "run.yaml"
+    config.write_text("pipeline:\n  batch_gate:\n    max_framez: 4\n")
+
+    result = CliRunner().invoke(main, [str(video), "--config", str(config)])
+
+    assert result.exit_code != 0
+    assert "pipeline.batch_gate has unknown keys: max_framez" in result.output
+    assert recorded_sources == []

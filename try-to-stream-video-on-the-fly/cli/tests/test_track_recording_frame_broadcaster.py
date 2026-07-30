@@ -11,11 +11,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from video_analyzer import kernel
+from video_analyzer.cli.config import TrackRecordingFrameBroadcasterConfig
 from video_analyzer.cli.track_recording_frame_broadcaster import (
     TrackRecordingFrameBroadcaster,
 )
 
-_CROP_SIZE = 8
+_CROP_SIZE = 16
 
 
 def _tracked_face(
@@ -56,7 +57,9 @@ def _frame_with_patch(index: int, x: int, y: int) -> kernel.Frame[NDArray[np.uin
 
 
 async def test_records_interpolated_frames_at_their_interpolated_box() -> None:
-    recorder = TrackRecordingFrameBroadcaster(crop_size=_CROP_SIZE)
+    recorder = TrackRecordingFrameBroadcaster(
+        config=TrackRecordingFrameBroadcasterConfig(crop_size=_CROP_SIZE)
+    )
     start = _tracked_face(1, x=10.0, y=20.0)
     end = _tracked_face(1, x=30.0, y=20.0)
     interpolated = _tracked_face(1, x=20.0, y=20.0)
@@ -77,7 +80,9 @@ async def test_records_interpolated_frames_at_their_interpolated_box() -> None:
 
 
 async def test_records_held_frames_too() -> None:
-    recorder = TrackRecordingFrameBroadcaster(crop_size=_CROP_SIZE)
+    recorder = TrackRecordingFrameBroadcaster(
+        config=TrackRecordingFrameBroadcasterConfig(crop_size=_CROP_SIZE)
+    )
     held = _tracked_face(1, x=10.0, y=20.0)
 
     await recorder.broadcast_frame(

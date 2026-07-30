@@ -264,9 +264,14 @@ class BatchGateConfig(Config):
 
 @dataclass(frozen=True, slots=True)
 class RenderCursorConfig(Config):
-    """How far the render cursor trails the newest detection snapshot."""
+    """How far the render cursor trails the newest detection snapshot.
 
-    lookahead_snapshots: int = 0
+    Higher means smoother splines and more lag. 3 is what the pipeline has
+    been tuned around everywhere it runs; 0 still works (a closed segment
+    interpolates fine) but kinks visibly at every detection.
+    """
+
+    lookahead_snapshots: int = 3
 
     def __post_init__(self) -> None:
         if self.lookahead_snapshots < 0:

@@ -5,7 +5,7 @@ direct media URL via `yt-dlp` — with detected and tracked faces drawn on it, v
 SCRFD/ArcFace/ByteTrack/PCHIP/histogram-scene-cut backends into
 [`video-analyzer-kernel`](../kernel)'s `Pipeline`, and adds its own `ffplay`-piping `FrameSink`
 plus a no-op `FrameBroadcaster` stub for the one slot neither `kernel` nor `core` implement
-(scene detection is real and on by default; `--no-scene-detection` swaps in a no-op).
+(scene detection is real and on by default; `scene_detector: null` swaps in a no-op).
 
 ```bash
 uv run video-analyzer-cli ../app/assets/sample.mp4
@@ -13,19 +13,51 @@ uv run video-analyzer-cli ../app/assets/sample.mp4
 # Or hand it a page URL — yt-dlp (a binary on PATH, like ffmpeg) resolves it to a
 # direct media URL first.
 uv run video-analyzer-cli https://www.youtube.com/watch?v=aqz-KE-bpKQ
-
-# Watch it 4x faster. Every frame is still decoded and drawn; the speed-up is paid for
-# with detection coverage (~1/4 of frames detected, interpolation fills the rest).
-uv run video-analyzer-cli ../app/assets/sample.mp4 --speed-factor-target 4
-
-# ...and spend a bigger detection batch per pass to buy some of that coverage back.
-uv run video-analyzer-cli ../app/assets/sample.mp4 --speed-factor-target 4 --max-batch-frames 16
 ```
 
-`--speed-factor-target`, `--max-batch-frames`, `--max-batch-lag-ms` and `--lookahead` are the
-tuning flags; `--help` documents them all, and `CLAUDE.md` explains why the detection budget
-deliberately does *not* scale with the speed factor.
+There are exactly two command-line options: `--config`, and `--dump-config`. Every tuning knob in
+the stack — playback speed, detection batching, interpolation lookahead, the model paths, the
+detector/tracker/interpolator settings, the early-stop and track-replay features — lives in a YAML
+document instead of a flag. Start one from the built-in defaults:
 
-Relative paths (video, `--scrfd-model`, `--arcface-model`) passed directly to `uv run` resolve
-against this directory, since that's where it executes from. `mise run cli -- <video>` resolves
-the video path against the repo root instead — see `CLAUDE.md` for details.
+```bash
+uv run video-analyzer-cli --dump-config > run.yaml
+```
+
+That prints every section and key filled in with exactly what a bare run uses, so it doubles as
+the schema reference. Edit it down to just what you want to change — anything you leave out keeps
+its default — and pass it back:
+
+```bash
+uv run video-analyzer-cli ../app/assets/sample.mp4 --config run.yaml
+```
+
+```yaml
+# Watch it 4x faster. Every frame is still decoded and drawn; the speed-up is paid for
+# with detection coverage (~1/4 of frames detected, interpolation fills the rest).
+frame_source:
+  read_rate: 4.0
+
+# ...and spend a bigger detection batch per pass to buy some of that coverage back.
+pipeline:
+  batch_gate:
+    max_frames: 16
+
+# Stop once a face has been on screen for 30 rendered frames, then replay each
+# discovered track through its own ffplay window.
+stop_on_first_track:
+  min_track_frames: 30
+track_recording:
+  crop_size: 160
+  max_crops_per_track: 60
+```
+
+A section that is `null` (or simply absent, for `stop_after_frame_count` / `stop_on_first_track` /
+`track_recording`) means that feature is off; giving it any mapping — even `{}` — turns it on.
+Unknown keys are a hard error rather than a silent no-op, and the message names the full path
+(`pipeline.batch_gate has unknown keys: max_framez`). `CLAUDE.md` walks the schema section by
+section and explains why the detection budget deliberately does *not* scale with `read_rate`.
+
+Relative paths (the video, `--config`, and the `models:` entries) passed directly to `uv run`
+resolve against this directory, since that's where it executes from. `mise run cli -- <video>`
+resolves the video path against the repo root instead — see `CLAUDE.md` for details.

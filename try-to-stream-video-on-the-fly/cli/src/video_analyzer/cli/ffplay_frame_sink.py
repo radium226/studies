@@ -26,6 +26,8 @@ from video_analyzer.core import overlay, pipe_io
 
 from video_analyzer import kernel
 
+from .config import FfplayFrameSinkConfig
+
 _BOX_COLOR = (0, 255, 0)
 _LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -58,10 +60,21 @@ def _draw_detections(
 class FfplayFrameSink(
     kernel.FrameSink[NDArray[np.uint8], kernel.TrackedFace[NDArray[np.float32]]]
 ):
-    def __init__(self, width: int, height: int, fps: float) -> None:
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        fps: float,
+        *,
+        config: FfplayFrameSinkConfig | None = None,
+    ) -> None:
+        # Width/height/fps describe the raw byte stream on ffplay's stdin —
+        # they must match the frames actually written, so they are arguments,
+        # not config.
         self._width = width
         self._height = height
         self._fps = fps
+        self.config = config if config is not None else FfplayFrameSinkConfig()
         self._proc: asyncio.subprocess.Process | None = None
         self._stderr_task: asyncio.Task | None = None
 
@@ -73,9 +86,9 @@ class FfplayFrameSink(
         height: int,
         fps: float,
         *,
-        stop_timeout: float = 5.0,
+        config: FfplayFrameSinkConfig | None = None,
     ) -> AsyncIterator[Self]:
-        self = cls(width, height, fps)
+        self = cls(width, height, fps, config=config)
         self._proc = await asyncio.create_subprocess_exec(
             *self._ffplay_cmd(),
             stdin=asyncio.subprocess.PIPE,
@@ -89,7 +102,7 @@ class FfplayFrameSink(
         try:
             yield self
         finally:
-            await self._shutdown(stop_timeout)
+            await self._shutdown(self.config.stop_timeout)
 
     async def write_frame(
         self,

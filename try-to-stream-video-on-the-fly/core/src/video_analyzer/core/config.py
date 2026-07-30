@@ -116,7 +116,9 @@ class HistogramSceneDetectorConfig(Config):
 class FfmpegFrameSourceConfig(Config):
     """How the decoder subprocess reads its source."""
 
-    loop: bool = True
+    # Play the source once. A consumer that needs a stream which never runs dry
+    # (`app/`'s live re-encode, say) asks for looping explicitly.
+    loop: bool = False
     # ffmpeg-style, so -1 on one axis preserves the aspect ratio.
     resize: tuple[int, int] | None = None
     # Paces how fast ffmpeg emits decoded frames; every frame is still decoded,

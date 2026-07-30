@@ -14,7 +14,7 @@ from video_analyzer.kernel import (
 def test_defaults() -> None:
     config = PipelineConfig()
     assert config.batch_gate == BatchGateConfig(max_frames=4, max_lag_ms=0.0)
-    assert config.render_cursor == RenderCursorConfig(lookahead_snapshots=0)
+    assert config.render_cursor == RenderCursorConfig(lookahead_snapshots=3)
     assert config.buffering == BufferingConfig(
         max_pending_frames=600, frame_channel_capacity=30
     )

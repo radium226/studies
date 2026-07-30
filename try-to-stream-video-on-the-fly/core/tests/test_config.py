@@ -20,6 +20,7 @@ def test_defaults_match_the_backends_documented_values() -> None:
     assert core.SplineInterpolatorConfig().method == "pchip"
     assert core.HistogramSceneDetectorConfig().correlation_threshold == 0.5
     assert core.FfmpegFrameSourceConfig().read_rate == 1.0
+    assert core.FfmpegFrameSourceConfig().loop is False
     assert core.FfmpegFrameSinkConfig().frag_duration_ms == 200
     assert core.StopOnFirstTrackConfig().min_track_frames == 1
 
