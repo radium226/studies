@@ -46,7 +46,7 @@ def _configure_logging() -> None:
 
 
 async def _play_tracks(
-    crops_by_track: dict[int, list[NDArray[np.uint8]]],
+    crops_by_track: dict[str, list[NDArray[np.uint8]]],
     *,
     crop_size: int,
     fps: float,

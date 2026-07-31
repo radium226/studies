@@ -13,7 +13,7 @@ def _run[T](coroutine: Coroutine[Any, Any, T]) -> T:
     return asyncio.run(coroutine)
 
 
-def _tracked_face(x: float, track_id: int = 0) -> TrackedFace:
+def _tracked_face(x: float, track_id: str = "0") -> TrackedFace:
     return kernel.TrackedFace(
         track_id=track_id,
         face=kernel.Face(
@@ -128,7 +128,7 @@ def test_finish_with_a_single_snapshot_emits_that_frame_held() -> None:
     assert [result.frame_index for result in results] == [3]
     assert results[0].is_exact is True
     assert results[0].bracket is None
-    assert [face.track_id for face in results[0].faces] == [0]
+    assert [face.track_id for face in results[0].faces] == ["0"]
 
 
 def test_prunes_snapshots_behind_the_spline_window() -> None:
@@ -146,7 +146,7 @@ def test_prunes_snapshots_behind_the_spline_window() -> None:
 def _scene_start_snapshot(frame_index: int, x: float) -> kernel.Snapshot[TrackedFace]:
     return kernel.Snapshot(
         frame_index=frame_index,
-        faces=[_tracked_face(x, track_id=100)],
+        faces=[_tracked_face(x, track_id="100")],
         is_scene_start=True,
     )
 
@@ -159,10 +159,10 @@ def test_scene_cut_holds_the_gap_and_restarts_the_window() -> None:
         cursor.push_snapshot(_snapshot(frame_index))
     cursor.push_snapshot(_scene_start_snapshot(14, x=500.0))
     cursor.push_snapshot(
-        kernel.Snapshot(frame_index=18, faces=[_tracked_face(500.0, track_id=100)])
+        kernel.Snapshot(frame_index=18, faces=[_tracked_face(500.0, track_id="100")])
     )
     cursor.push_snapshot(
-        kernel.Snapshot(frame_index=22, faces=[_tracked_face(500.0, track_id=100)])
+        kernel.Snapshot(frame_index=22, faces=[_tracked_face(500.0, track_id="100")])
     )
 
     results = _run(_drain(cursor))
@@ -174,9 +174,9 @@ def test_scene_cut_holds_the_gap_and_restarts_the_window() -> None:
     assert [result.frame_index for result in results] == list(range(0, 19))
     for gap_index in (11, 12, 13):
         assert by_index[gap_index].bracket is None
-        assert [face.track_id for face in by_index[gap_index].faces] == [0]
+        assert [face.track_id for face in by_index[gap_index].faces] == ["0"]
     for new_scene_index in range(14, 19):
-        assert {face.track_id for face in by_index[new_scene_index].faces} == {100}
+        assert {face.track_id for face in by_index[new_scene_index].faces} == {"100"}
     # No interpolation bracket ever spans the cut.
     for result in results:
         if result.bracket is not None:
@@ -207,7 +207,7 @@ def test_scene_with_a_single_snapshot_before_the_next_cut() -> None:
 def test_track_seen_once_in_window_is_held_not_dropped() -> None:
     cursor = _cursor(lookahead=1)
     # Track 1 appears only in the middle snapshot.
-    lonely = _tracked_face(100.0, track_id=1)
+    lonely = _tracked_face(100.0, track_id="1")
     cursor.push_snapshot(_snapshot(0))
     cursor.push_snapshot(
         kernel.Snapshot(frame_index=5, faces=[_tracked_face(5.0), lonely])
@@ -221,4 +221,4 @@ def test_track_seen_once_in_window_is_held_not_dropped() -> None:
     # Once the segment starting at 5 is active, track 1 is emitted at its only
     # known position instead of vanishing or being extrapolated.
     faces_at_7 = {face.track_id: face for face in by_index[7].faces}
-    assert faces_at_7[1].face.detection.bounding_box.x == 100.0
+    assert faces_at_7["1"].face.detection.bounding_box.x == 100.0

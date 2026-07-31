@@ -120,6 +120,14 @@ video {
   gap: 0.4rem;
 }
 
+/* Author-origin `display: flex` above would otherwise beat the UA `[hidden] { display: none }`
+   rule regardless of specificity (same reasoning as .modal-overlay[hidden] further down) — the
+   file/URL rows toggle via the `hidden` attribute in source.js, so this override is required for
+   that to actually hide anything. */
+.source-form-row[hidden] {
+  display: none;
+}
+
 .selected-file {
   flex: 1;
   min-width: 0;
@@ -139,6 +147,28 @@ video {
   font-family: system-ui, sans-serif;
   font-size: 0.8rem;
   cursor: pointer;
+}
+
+.source-form-row label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #ccc;
+  font-family: system-ui, sans-serif;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.source-url-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.15rem 0.3rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
 }
 
 .stop-strategy input[type="number"] {

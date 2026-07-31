@@ -20,7 +20,7 @@ _CROP_SIZE = 16
 
 
 def _tracked_face(
-    track_id: int, x: float, y: float
+    track_id: str, x: float, y: float
 ) -> kernel.TrackedFace[NDArray[np.float32]]:
     return kernel.TrackedFace(
         track_id=track_id,
@@ -60,9 +60,9 @@ async def test_records_interpolated_frames_at_their_interpolated_box() -> None:
     recorder = TrackRecordingFrameBroadcaster(
         config=TrackRecordingFrameBroadcasterConfig(crop_size=_CROP_SIZE)
     )
-    start = _tracked_face(1, x=10.0, y=20.0)
-    end = _tracked_face(1, x=30.0, y=20.0)
-    interpolated = _tracked_face(1, x=20.0, y=20.0)
+    start = _tracked_face("1", x=10.0, y=20.0)
+    end = _tracked_face("1", x=30.0, y=20.0)
+    interpolated = _tracked_face("1", x=20.0, y=20.0)
 
     await recorder.broadcast_frame(
         kernel.AnnotatedFrame(
@@ -73,7 +73,7 @@ async def test_records_interpolated_frames_at_their_interpolated_box() -> None:
         )
     )
 
-    crops = recorder.crops_by_track[1]
+    crops = recorder.crops_by_track["1"]
     assert len(crops) == 1
     assert crops[0].shape == (_CROP_SIZE, _CROP_SIZE, 3)
     assert (crops[0] == 255).all()
@@ -83,7 +83,7 @@ async def test_records_held_frames_too() -> None:
     recorder = TrackRecordingFrameBroadcaster(
         config=TrackRecordingFrameBroadcasterConfig(crop_size=_CROP_SIZE)
     )
-    held = _tracked_face(1, x=10.0, y=20.0)
+    held = _tracked_face("1", x=10.0, y=20.0)
 
     await recorder.broadcast_frame(
         kernel.AnnotatedFrame(
@@ -94,5 +94,5 @@ async def test_records_held_frames_too() -> None:
         )
     )
 
-    assert len(recorder.crops_by_track[1]) == 1
-    assert (recorder.crops_by_track[1][0] == 255).all()
+    assert len(recorder.crops_by_track["1"]) == 1
+    assert (recorder.crops_by_track["1"][0] == 255).all()

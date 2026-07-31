@@ -39,10 +39,11 @@ implementation — see the root `CLAUDE.md`).
 
 There are exactly two CLI options: `--config FILE` and `--dump-config`, same as `cli`. Unlike
 `cli`, there's no positional source argument and no `stop_strategy:` config section — the app
-**starts idle** (no source, no pipeline), and the video file, the speed factor, and the stop
-strategy are all chosen live from the web UI per request (`POST /api/source`), not fixed for the
-whole process. Everything else — model paths, pipeline batching/lookahead, frame source/sink
-tuning, which directory is browsable, server host/port — lives in the YAML document.
+**starts idle** (no source, no pipeline), and the video source (a local file or a pasted URL), the
+speed factor, and the stop strategy are all chosen live from the web UI per request (`POST
+/api/source`), not fixed for the whole process. Everything else — model paths, pipeline
+batching/lookahead, frame source/sink tuning, which directory is browsable, server host/port —
+lives in the YAML document.
 
 The schema, section by section (see `config.py`'s `WebappConfig`):
 
@@ -79,10 +80,21 @@ validated by hand in `app.py` (must parse as a number, must be `> 0`) before eve
 `PipelineManager.start` — there's no `core` config object to delegate to here, since a bare
 `read_rate` isn't itself a `Config` subclass.
 
+The request body carries exactly one of `path` (an absolute local path, resolved/validated by
+`fs_browser.resolve_video_path`) or `url` (format-checked for an `http(s)://` scheme in `app.py`,
+then resolved to a direct media URL via `core.resolve_direct_media_url`, the same yt-dlp-backed
+helper `app/`'s `Url` loader uses) — supplying both or neither 400s. Either way, `app.py` ends up
+with one plain ffmpeg-ready source string plus a human-readable label (the original URL, or the
+resolved local path) and hands both to `PipelineManager.start(source, speed_factor, stop_strategy,
+label=label)`; `core.FfmpegFrameSourceConfig`/`FfmpegFrameSource` themselves are source-agnostic —
+they take a bare string straight into `ffprobe`/`ffmpeg -i`, with no path-vs-URL distinction.
+
 ### System dependencies
 
-Same as `core`/`cli`: **`ffmpeg`** (decode + encode) must be on `PATH`. No `yt-dlp` dependency —
-this project only plays local files from `video_library.directory`, no URL/synthetic sources.
+Same as `core`/`cli`: **`ffmpeg`** (decode + encode) must be on `PATH`. A URL source additionally
+needs **`yt-dlp`** on `PATH` (a subprocess, not a Python dependency — same convention as
+`ffmpeg`/`ffprobe`); local-file sources from `video_library.directory` don't need it. No synthetic
+test-pattern source, unlike `app/`.
 
 ## Architecture
 
@@ -181,11 +193,16 @@ Key files (`src/video_analyzer/webapp/`):
   first `AsyncExitStack` rebuild, monotonic `_generation` counter, a per-build watchdog task
   awaiting `broadcaster.wait_closed()`, `SourceError`/`PipelineStatus` TypedDicts, `status()`), but
   composing `kernel.Pipeline` + `core`'s real backends instead of `app/`'s own `Engine`/
-  `InputVideoLoader`, and taking an already-resolved `source_path: Path`, a `speed_factor: float`,
-  and a per-request `core.StopStrategyConfig`. Resolving/validating all three is `app.py`'s job
-  (via `fs_browser` for the path, by hand for the speed factor, via `core.StopStrategyConfig
-  .from_dict` for the stop strategy) — this class trusts every argument it's handed, the same way
-  `app/app.py`'s URL format check runs before calling into the manager at all. `_build` is
+  `InputVideoLoader`, and taking an already-resolved `source: str` (a local path or a yt-dlp-
+  resolved direct media URL — `core.FfmpegFrameSource` doesn't distinguish), a `speed_factor:
+  float`, a per-request `core.StopStrategyConfig`, and an optional `label: str` (the
+  human-readable string shown in `status()`/error popups — the original pasted URL for a URL
+  source, since the resolved direct media URL is both illegible and expires; defaults to `source`
+  itself when omitted, which is what a local-file build does). Resolving/validating all of this is
+  `app.py`'s job (via `fs_browser` for a path, via `core.resolve_direct_media_url` for a URL, by
+  hand for the speed factor, via `core.StopStrategyConfig.from_dict` for the stop strategy) — this
+  class trusts every argument it's handed, the same way `app/app.py`'s URL format check runs
+  before calling into the manager at all. `_build` is
   teardown-first from the start, same reasoning as `app/pipeline.py`: only one ffmpeg pair + ONNX
   pipeline ever runs at a time. Builds the effective `core.FfmpegFrameSourceConfig` via
   `dataclasses.replace(self._config.frame_source, read_rate=speed_factor)`, and scales the
@@ -221,16 +238,21 @@ Key files (`src/video_analyzer/webapp/`):
   `/api/tracks/{track_id}` (404 if `track_manager` is `None` or the id is unknown, else
   `{"video_url": "/videos/{stream_id}/{track_id}.mp4"}`), `/ws/tracks` (`WebSocketRoute`:
   `track_manager.subscribe()`, sends `{"event": "existing", "track_ids": [...]}` then
-  `{"event": "new_track", "track_id": n}` per queue item until a `None` sentinel or disconnect;
+  `{"event": "new_track", "track_id": id}` per queue item until a `None` sentinel or disconnect;
   closes immediately if idle), `/api/browse` (`GET ?path=...`, defaults to
   `config.video_library.directory` when omitted; `{"path", "parent", "entries": [{"name", "path",
   "is_dir", "size", "modified"}, ...]}` from `fs_browser.list_directory` — a bad/unreadable path is
-  400, not a 500), `POST /api/source` (body `{"path", "speed_factor", "stop_strategy": {...}}`;
-  resolves the path via `fs_browser.resolve_video_path`, validates `speed_factor` by hand (must
-  parse as a number, must be `> 0`; defaults to `1.0` if omitted), and validates the stop strategy
-  via `core.StopStrategyConfig.from_dict` — all **before** calling `PipelineManager.start`, so any
-  of the three failing 400s without ever touching ffmpeg or tearing down whatever is currently
-  playing; 60 s timeout on the build itself → 504; other build failures → 400), `POST /api/stop`
+  400, not a 500), `POST /api/source` (body `{"path" | "url", "speed_factor", "stop_strategy":
+  {...}}` — exactly one of `path`/`url`, both or neither is a 400; resolves a path via
+  `fs_browser.resolve_video_path`, format-checks a url for an `http(s)://` scheme (mirroring
+  `app/app.py`'s own check), validates `speed_factor` by hand (must parse as a number, must be
+  `> 0`; defaults to `1.0` if omitted), and validates the stop strategy via
+  `core.StopStrategyConfig.from_dict` — all **before** calling `PipelineManager.start`, so any of
+  those failing 400s without ever touching ffmpeg/yt-dlp or tearing down whatever is currently
+  playing. The actual yt-dlp resolution (`core.resolve_direct_media_url`) runs *inside* the same
+  60 s timeout as the rest of the build, since it's a network call that can hang exactly like a
+  stuck ffprobe; timeout → 504, other build failures (including yt-dlp resolution failures) → 400),
+  `POST /api/stop`
   (go idle). The main and per-track live-tail routes share `_stream_broadcaster(request,
   broadcaster)` — the `generate()`/`StreamingResponse` construction is identical either way, only
   which `Broadcaster` differs. No `/metrics` route: `kernel.Pipeline` has no metrics-snapshot
@@ -263,11 +285,12 @@ Key files (`src/video_analyzer/webapp/`):
   folders/files from the listing, clicking a folder navigates into it, clicking a file calls
   `onSelect(absolutePath)` and closes the modal. A path input doubles as breadcrumb display and a
   jump-to-path field (Enter navigates there); an Up button uses the listing's `parent`.
-- **`static/source.js`** — adapted from `app/`'s: a "Choose file…" button opens the browse modal
-  instead of a URL text input or a directory dropdown; the selected absolute path is held in a
-  local variable and shown next to the button; form submit builds the
-  `{path, speed_factor, stop_strategy}` body above. The "Test pattern" button is dropped (no
-  synthetic source).
+- **`static/source.js`** — a File/URL radio toggle (`#source-kind-file`/`#source-kind-url`) swaps
+  which of two form rows is visible: "Choose file…" (opens the browse modal; the selected absolute
+  path is held in a local variable and shown next to the button) or a plain `#source-url` text
+  input. Form submit builds `{path, ...}` or `{url, ...}` (never both) plus the shared
+  `speed_factor`/`stop_strategy` fields. The "Test pattern" button `app/`'s own `source.js` has is
+  dropped (no synthetic source here).
 
 ## Working in this codebase
 

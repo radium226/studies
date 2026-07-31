@@ -36,8 +36,8 @@ def _forbid_pipeline_start(monkeypatch: pytest.MonkeyPatch):
     """Every test in this module expects to 400 on pure validation, before `PipelineManager`
     ever gets involved. Failing loudly here catches a validation check silently disappearing."""
 
-    async def _fail(self, source_path, speed_factor, stop_strategy):
-        raise AssertionError(f"PipelineManager.start should not have been reached: {source_path}")
+    async def _fail(self, source, speed_factor, stop_strategy, *, label=None):
+        raise AssertionError(f"PipelineManager.start should not have been reached: {source}")
 
     monkeypatch.setattr(PipelineManager, "start", _fail)
 
@@ -81,6 +81,26 @@ def test_browse_rejects_a_missing_directory(client: TestClient, tmp_path: Path) 
 def test_set_source_rejects_an_empty_path(client: TestClient) -> None:
     res = client.post("/api/source", json={"path": ""})
     assert res.status_code == 400
+
+
+def test_set_source_rejects_neither_path_nor_url(client: TestClient) -> None:
+    res = client.post("/api/source", json={})
+    assert res.status_code == 400
+
+
+def test_set_source_rejects_both_path_and_url(client: TestClient, tmp_path: Path) -> None:
+    res = client.post(
+        "/api/source",
+        json={"path": str(tmp_path / "clip.mp4"), "url": "https://example.com/video"},
+    )
+    assert res.status_code == 400
+    assert "either" in res.json()["error"]
+
+
+def test_set_source_rejects_a_non_http_url(client: TestClient) -> None:
+    res = client.post("/api/source", json={"url": "ftp://example.com/video"})
+    assert res.status_code == 400
+    assert "http" in res.json()["error"]
 
 
 def test_set_source_rejects_a_malformed_stop_strategy(client: TestClient, tmp_path: Path) -> None:

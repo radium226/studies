@@ -7,9 +7,10 @@ AsyncExitStack so the whole stack can be torn down and rebuilt on demand, not ju
 `async with` block scope. Adapted from app/pipeline.py's PipelineManager, composing
 kernel.Pipeline + core's real backends instead of app/'s own Engine/InputVideoLoader.
 
-Resolving *what* `source_path` should be (a bare filename against a configured directory, an
-absolute path from the browse modal, ...) is the caller's job (see app.py's `/api/source`) — this
-class only ever receives an already-validated, existing path.
+Resolving *what* `source` should be (a bare filename against a configured directory, an
+absolute path from the browse modal, a page URL resolved via yt-dlp to a direct media URL, ...) is
+the caller's job (see app.py's `/api/source`) — this class only ever receives an
+already-validated, ffmpeg-ready source string.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ import asyncio
 import uuid
 from contextlib import AsyncExitStack
 from dataclasses import replace
-from pathlib import Path
 from typing import Literal, TypedDict
 
 from loguru import logger
@@ -79,10 +79,15 @@ class PipelineManager:
         self._app.state.track_manager = None
 
     async def start(
-        self, source_path: Path, speed_factor: float, stop_strategy: core.StopStrategyConfig
+        self,
+        source: str,
+        speed_factor: float,
+        stop_strategy: core.StopStrategyConfig,
+        *,
+        label: str | None = None,
     ) -> core.VideoInfo:
         async with self._lock:
-            return await self._build(source_path, speed_factor, stop_strategy)
+            return await self._build(source, speed_factor, stop_strategy, label=label)
 
     async def go_idle(self) -> None:
         """Explicit stop: tear the pipeline down to idle. Not a failure, so no error popup is
@@ -91,7 +96,12 @@ class PipelineManager:
             await self._go_idle_locked(error=None)
 
     async def _build(
-        self, source_path: Path, speed_factor: float, stop_strategy: core.StopStrategyConfig
+        self,
+        source: str,
+        speed_factor: float,
+        stop_strategy: core.StopStrategyConfig,
+        *,
+        label: str | None = None,
     ) -> core.VideoInfo:
         # Teardown-first: only one ffmpeg pair + ONNX pipeline ever runs at a time, at
         # the cost of a client-visible gap during the rebuild. The closed broadcaster makes the
@@ -112,7 +122,7 @@ class PipelineManager:
             # resize, stop_timeout) still comes from the static config.
             frame_source_config = replace(self._config.frame_source, read_rate=speed_factor)
             raw_frame_source = await new_stack.enter_async_context(
-                core.FfmpegFrameSource.start(str(source_path), config=frame_source_config)
+                core.FfmpegFrameSource.start(source, config=frame_source_config)
             )
             # Always the file's native fps — read_rate paces how fast frames come out, it
             # doesn't change what the video *is*.
@@ -202,7 +212,7 @@ class PipelineManager:
 
         self._stack = new_stack
         self._orchestrator = orchestrator
-        self._current_source_label = str(source_path)
+        self._current_source_label = label if label is not None else str(source)
         self._last_error = None
         self._app.state.broadcaster = broadcaster
         self._app.state.stream_id = str(uuid.uuid4())

@@ -9,8 +9,10 @@ can only ever count sparse detection snapshots.
 The stop itself is graceful per the `StopToken` contract: frames already read
 keep flowing through the pipeline, so the track keeps growing past N while the
 tail drains. Per-track counts reset at scene cuts (`frame.is_scene_start`) —
-identities never survive a cut, and ByteTrack may reuse ids after its own
-reset, so a count must never pool frames from both sides of one."""
+identities never survive a cut, so a count must never pool frames from both
+sides of one; track ids are already unique for the pipeline's whole lifetime
+(see `bytetrack_tracker.py`), so clearing here is purely about bounding this
+dict's memory over a long-running stream, not about avoiding id reuse."""
 
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ class StopOnFirstTrack[FrameContentT, FaceEmbeddingT](
         self._wrapped = wrapped
         self._stop_token = stop_token
         self.config = config if config is not None else StopOnFirstTrackConfig()
-        self._frames_by_track: dict[int, int] = {}
+        self._frames_by_track: dict[str, int] = {}
 
     async def broadcast_frame(
         self,

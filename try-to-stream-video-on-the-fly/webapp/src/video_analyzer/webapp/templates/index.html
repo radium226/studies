@@ -15,8 +15,15 @@
     </div>
     <form id="source-form" class="source-form">
       <div class="source-form-row">
+        <label><input type="radio" name="source-kind" id="source-kind-file" checked /> File</label>
+        <label><input type="radio" name="source-kind" id="source-kind-url" /> URL</label>
+      </div>
+      <div id="source-kind-file-row" class="source-form-row">
         <span id="selected-file" class="selected-file">No file selected</span>
         <button id="source-browse" type="button">Choose file…</button>
+      </div>
+      <div id="source-kind-url-row" class="source-form-row" hidden>
+        <input id="source-url" type="text" placeholder="https://…" class="source-url-input" />
       </div>
       <div class="source-form-row">
         <label class="form-field">

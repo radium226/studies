@@ -93,3 +93,26 @@ async def test_reset_forgets_confirmed_tracks() -> None:
     # A fresh tracker's first observation is tentative again (filtered out),
     # proving the pre-reset confirmation didn't survive.
     assert await tracker.update([face]) == []
+
+
+async def test_reset_never_reuses_a_track_id() -> None:
+    """The vendored tracker restarts its own local id counter at 0 on every
+    reset, so a scene cut can hand the very same local id to an unrelated
+    face. A downstream consumer (e.g. a per-track video recorder) keys
+    long-lived state off track_id for the whole run, so a collision here
+    would silently splice two different identities into one track."""
+    tracker = ByteTrackTracker(30.0)
+    face = _face(0, 0, 10, 10)
+    results = [await tracker.update([face]) for _ in range(5)]
+    track_id_before_reset = next(
+        tracked[0].track_id for tracked in results if tracked
+    )
+
+    await tracker.reset()
+
+    results_after_reset = [await tracker.update([face]) for _ in range(5)]
+    track_id_after_reset = next(
+        tracked[0].track_id for tracked in results_after_reset if tracked
+    )
+
+    assert track_id_after_reset != track_id_before_reset

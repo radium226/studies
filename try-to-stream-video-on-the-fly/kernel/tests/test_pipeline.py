@@ -83,7 +83,7 @@ def test_pipeline() -> None:
 
     for annotated_frame in frame_sink.written_frames:
         assert len(annotated_frame.faces) == 1
-        assert annotated_frame.faces[0].track_id == 0
+        assert annotated_frame.faces[0].track_id == "0:0"
         if annotated_frame.interpolation_bracket is None:
             # Held frame: only the flushed tail past the last detection
             # snapshot may lack a bracket.
@@ -221,9 +221,10 @@ def test_natural_eof_unaffected_by_an_unset_stop_token() -> None:
 
 
 def test_scene_cut_resets_track_identities_and_loses_no_frames() -> None:
-    """A scene cut must reset the tracker (the fake shifts its ids by 100 per
-    reset) and never let annotations interpolate across the cut — while the
-    every-frame-out-exactly-once invariant still holds."""
+    """A scene cut must reset the tracker (the fake prefixes its ids with a
+    generation counter per reset) and never let annotations interpolate
+    across the cut — while the every-frame-out-exactly-once invariant still
+    holds."""
 
     cut_index = 20
     pipeline = Pipeline(
@@ -251,9 +252,9 @@ def test_scene_cut_resets_track_identities_and_loses_no_frames() -> None:
     for annotated_frame in frame_sink.written_frames:
         track_ids = {face.track_id for face in annotated_frame.faces}
         if annotated_frame.frame.index < cut_index:
-            assert track_ids <= {0}
+            assert track_ids <= {"0:0"}
         else:
-            assert track_ids <= {100}
+            assert track_ids <= {"1:0"}
         if annotated_frame.interpolation_bracket is not None:
             segment_start, segment_end = annotated_frame.interpolation_bracket
             assert (segment_start.frame_index < cut_index) == (

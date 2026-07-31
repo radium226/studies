@@ -225,8 +225,14 @@ async def set_source(request: Request):
     manager: PipelineManager = request.app.state.pipeline_manager
 
     path = (body.get("path") or "").strip()
-    if not path:
-        return JSONResponse({"error": "path must not be empty"}, status_code=400)
+    url = (body.get("url") or "").strip()
+    if path and url:
+        return JSONResponse({"error": "specify either path or url, not both"}, status_code=400)
+    if not path and not url:
+        return JSONResponse({"error": "path or url must not be empty"}, status_code=400)
+    if url and not url.startswith(("http://", "https://")):
+        return JSONResponse({"error": "url must be http(s)"}, status_code=400)
+
     speed_factor_raw = body.get("speed_factor", 1.0)
     try:
         speed_factor = float(speed_factor_raw)
@@ -241,26 +247,29 @@ async def set_source(request: Request):
         )
     try:
         # Resolved (and validated) before tearing anything down — a bad path shouldn't cost
-        # whatever is currently playing.
-        source_path = fs_browser.resolve_video_path(path)
+        # whatever is currently playing. A URL is only format-checked above; resolving it via
+        # yt-dlp happens below, inside the timeout, since that's a network call that can hang.
+        source_path = fs_browser.resolve_video_path(path) if path else None
         stop_strategy = core.StopStrategyConfig.from_dict(body.get("stop_strategy"))
     except ValueError as exc:
         # kernel.ConfigError (the stop-strategy validator) subclasses ValueError.
         return JSONResponse({"error": str(exc)}, status_code=400)
 
+    label = url or str(source_path)
     try:
-        # The timeout bounds how long a hung ffmpeg/ffprobe can hold the rebuild lock (and this
-        # request) hostage.
+        # The timeout bounds how long a hung yt-dlp/ffmpeg/ffprobe can hold the rebuild lock
+        # (and this request) hostage.
         async with asyncio.timeout(SOURCE_SWITCH_TIMEOUT_S):
-            info = await manager.start(source_path, speed_factor, stop_strategy)
+            source = await core.resolve_direct_media_url(url) if url else str(source_path)
+            info = await manager.start(source, speed_factor, stop_strategy, label=label)
     except TimeoutError:
-        logger.error("source start ({!r}) timed out after {}s", path, SOURCE_SWITCH_TIMEOUT_S)
+        logger.error("source start ({!r}) timed out after {}s", label, SOURCE_SWITCH_TIMEOUT_S)
         return JSONResponse(
             {"error": f"source start timed out after {SOURCE_SWITCH_TIMEOUT_S}s"},
             status_code=504,
         )
     except Exception as exc:
-        logger.exception("source start ({!r}) failed", path)
+        logger.exception("source start ({!r}) failed", label)
         return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse({"width": info.width, "height": info.height, "fps": info.fps})
 
@@ -276,12 +285,12 @@ app = Starlette(
     routes=[
         Route("/", index),
         Route("/{stream_id}.mp4", stream),
-        Route("/videos/{stream_id}/{track_id:int}.mp4", track_stream),
+        Route("/videos/{stream_id}/{track_id}.mp4", track_stream),
         Route("/api/status", status),
         Route("/api/browse", browse),
         Route("/api/source", set_source, methods=["POST"]),
         Route("/api/stop", stop_source, methods=["POST"]),
-        Route("/api/tracks/{track_id:int}", track_metadata),
+        Route("/api/tracks/{track_id}", track_metadata),
         WebSocketRoute("/ws/tracks", track_events),
         Mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"),
     ],

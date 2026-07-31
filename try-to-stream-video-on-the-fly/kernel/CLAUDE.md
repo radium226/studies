@@ -223,5 +223,8 @@ the backlog drains. For the same reason every `pending_frames` buffer (one in `s
   framework). `tests/fake/services.py`'s fake `FrameSource.read_frame` has a deliberate
   `await asyncio.sleep(0)` — without it, produce_frames races through every frame in one
   scheduler turn and starves the other stages, since none of the fakes have a real suspension
-  point the way ffmpeg/ONNX I/O would. The fake `Tracker` shifts ids by 100 per `reset()` so
-  scene-cut tests can tell which scene an id came from.
+  point the way ffmpeg/ONNX I/O would. The fake `Tracker` prefixes ids with a generation counter
+  bumped per `reset()` (`"{reset_count}:{index}"`) so scene-cut tests can tell which scene an id
+  came from and ids never collide across a reset — `track_id` is `str` precisely so a real
+  tracker can hand out globally-unique ids (e.g. a UUID) instead of reusing small ints after a
+  reset (see `core.ByteTrackTracker`).

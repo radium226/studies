@@ -42,7 +42,7 @@ class TrackRecordingFrameBroadcaster(
         self.config = (
             config if config is not None else TrackRecordingFrameBroadcasterConfig()
         )
-        self.crops_by_track: dict[int, list[NDArray[np.uint8]]] = {}
+        self.crops_by_track: dict[str, list[NDArray[np.uint8]]] = {}
 
     async def broadcast_frame(
         self,

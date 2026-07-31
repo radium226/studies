@@ -20,5 +20,8 @@ class Tracker[FaceEmbeddingT](ABC):
     async def reset(self) -> None:
         """Forget all temporal state. Called on a scene cut: identities never
         survive across scenes, so tracks must not be re-associated with faces
-        from a different scene."""
+        from a different scene. `track_id`s handed out after a reset must
+        never collide with ones handed out before it — downstream consumers
+        (e.g. a per-track video recorder) key long-lived state off `track_id`
+        for the whole run, not just within one scene."""
         raise NotImplementedError()

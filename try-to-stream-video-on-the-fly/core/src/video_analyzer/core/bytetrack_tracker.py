@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import numpy as np
 import supervision as sv
 from numpy.typing import NDArray
@@ -52,6 +54,13 @@ class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
             # that gap.
             iou=BIoU(buffer_ratio=self.config.iou_buffer_ratio),
         )
+        # ByteTrack's own id counter restarts from 0 on every reset(), so its
+        # local ids alone are only unique within one generation (between
+        # resets). Map each local id to a fresh UUID the first time it's seen
+        # since the last reset, so a downstream consumer that keys long-lived
+        # state off track_id (e.g. a per-track video recorder) never conflates
+        # two different scenes' tracks that happened to get the same local id.
+        self._id_map: dict[int, str] = {}
 
     async def update(
         self,
@@ -84,21 +93,29 @@ class ByteTrackTracker(kernel.Tracker[NDArray[np.float32]]):
         # track boxes can never emit the same face under different ids.
         matched: set[int] = set()
         for i, tracker_id in enumerate(tracked.tracker_id):
-            if tracker_id < 0:  # skip unconfirmed tracks
+            local_id = int(tracker_id)
+            if local_id < 0:  # skip unconfirmed tracks
                 continue
             face_idx = self._best_iou_match(tracked.xyxy[i], faces, exclude=matched)
             if face_idx is None:
                 continue
             matched.add(face_idx)
+            if local_id not in self._id_map:
+                self._id_map[local_id] = str(uuid.uuid4())
             result.append(
-                kernel.TrackedFace(track_id=int(tracker_id), face=faces[face_idx])
+                kernel.TrackedFace(
+                    track_id=self._id_map[local_id], face=faces[face_idx]
+                )
             )
         return result
 
     async def reset(self) -> None:
         # Scene cut: identities never survive it. The vendored tracker's own
-        # reset drops every live and lost track.
+        # reset drops every live and lost track and restarts its local id
+        # counter at 0 — clear our own map too, so a local id reused after
+        # this point gets a brand-new UUID instead of resurrecting the old one.
         self._bytetrack.reset()
+        self._id_map.clear()
 
     @staticmethod
     def _best_iou_match(

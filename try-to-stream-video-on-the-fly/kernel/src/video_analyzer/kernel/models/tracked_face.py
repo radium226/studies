@@ -17,7 +17,7 @@ class TrackedFace[FaceEmbeddingT]:
     unchanged from `self`, since only geometry is interpolated.
     """
 
-    track_id: int
+    track_id: str
     face: Face[FaceEmbeddingT]
 
     def to_vector(self) -> list[float]:

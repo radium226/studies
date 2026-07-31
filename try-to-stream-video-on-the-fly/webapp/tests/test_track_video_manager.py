@@ -36,7 +36,7 @@ async def _fake_frame_sink_cm(*_args: object, **_kwargs: object) -> AsyncIterato
     yield _FakeFrameSink()
 
 
-def _tracked_face(track_id: int, bounding_box: kernel.BoundingBox) -> kernel.TrackedFace:
+def _tracked_face(track_id: str, bounding_box: kernel.BoundingBox) -> kernel.TrackedFace:
     detection = kernel.Detection(
         bounding_box=bounding_box,
         landmarks=kernel.FaceLandmarks(
@@ -114,20 +114,20 @@ async def test_new_track_starts_stream_and_notifies_subscribers(monkeypatch) -> 
 
         frame = _annotated_frame(
             np.zeros((100, 100, 3), dtype=np.uint8),
-            [_tracked_face(5, kernel.BoundingBox(10, 10, 20, 20))],
+            [_tracked_face("5", kernel.BoundingBox(10, 10, 20, 20))],
         )
         await manager.broadcast_frame(frame)
 
-        assert manager.has_track(5)
-        assert manager.get_broadcaster(5) is not None
-        assert await asyncio.wait_for(queue.get(), timeout=1.0) == 5
+        assert manager.has_track("5")
+        assert manager.get_broadcaster("5") is not None
+        assert await asyncio.wait_for(queue.get(), timeout=1.0) == "5"
 
 
 async def test_idle_track_replays_its_buffered_crop_on_a_loop(monkeypatch) -> None:
     async with _start_manager(monkeypatch) as manager:
         box = kernel.BoundingBox(10, 10, 20, 20)
         live_frame = _annotated_frame(
-            np.zeros((100, 100, 3), dtype=np.uint8), [_tracked_face(3, box)]
+            np.zeros((100, 100, 3), dtype=np.uint8), [_tracked_face("3", box)]
         )
         await manager.broadcast_frame(live_frame)  # track 3 starts, gets its one real crop
 
@@ -135,7 +135,7 @@ async def test_idle_track_replays_its_buffered_crop_on_a_loop(monkeypatch) -> No
         for _ in range(3):
             await manager.broadcast_frame(empty_frame)  # track 3 absent every tick after
 
-        written = manager._streams[3].sink.written_frames
+        written = manager._streams["3"].sink.written_frames
         # One live crop, then it keeps getting written every tick even though the track never
         # reappears - the whole point being the browser-side connection never looks stalled.
         assert len(written) == 4
@@ -149,7 +149,7 @@ async def test_replay_bounces_back_and_forth_through_buffered_history(monkeypatc
         box = kernel.BoundingBox(10, 10, 20, 20)
         for value in (10, 20, 30, 40):
             live_frame = _annotated_frame(
-                np.full((100, 100, 3), value, dtype=np.uint8), [_tracked_face(5, box)]
+                np.full((100, 100, 3), value, dtype=np.uint8), [_tracked_face("5", box)]
             )
             await manager.broadcast_frame(live_frame)
 
@@ -157,7 +157,7 @@ async def test_replay_bounces_back_and_forth_through_buffered_history(monkeypatc
         for _ in range(8):
             await manager.broadcast_frame(empty_frame)
 
-        written = manager._streams[5].sink.written_frames
+        written = manager._streams["5"].sink.written_frames
         assert len(written) == 12  # 4 live crops + 8 replayed
         values = [int(frame.mean()) for frame in written]
         # Live crops of uniformly-colored frames stay uniform after crop+resize, so the mean
@@ -172,20 +172,20 @@ async def test_subscribe_backfills_tracks_seen_before_it_connected(monkeypatch) 
         frame = _annotated_frame(
             np.zeros((100, 100, 3), dtype=np.uint8),
             [
-                _tracked_face(1, kernel.BoundingBox(10, 10, 20, 20)),
-                _tracked_face(2, kernel.BoundingBox(50, 50, 20, 20)),
+                _tracked_face("1", kernel.BoundingBox(10, 10, 20, 20)),
+                _tracked_face("2", kernel.BoundingBox(50, 50, 20, 20)),
             ],
         )
         await manager.broadcast_frame(frame)
 
         existing, _queue = manager.subscribe()
-        assert existing == [1, 2]
+        assert existing == ["1", "2"]
 
 
 async def test_unknown_track_has_no_broadcaster(monkeypatch) -> None:
     async with _start_manager(monkeypatch) as manager:
-        assert not manager.has_track(99)
-        assert manager.get_broadcaster(99) is None
+        assert not manager.has_track("99")
+        assert manager.get_broadcaster("99") is None
 
 
 async def test_unsubscribe_stops_further_notifications(monkeypatch) -> None:
@@ -195,7 +195,7 @@ async def test_unsubscribe_stops_further_notifications(monkeypatch) -> None:
 
         frame = _annotated_frame(
             np.zeros((100, 100, 3), dtype=np.uint8),
-            [_tracked_face(7, kernel.BoundingBox(10, 10, 20, 20))],
+            [_tracked_face("7", kernel.BoundingBox(10, 10, 20, 20))],
         )
         await manager.broadcast_frame(frame)
 

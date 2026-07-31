@@ -118,10 +118,10 @@ class TrackVideoManager(
         self._sink_config = sink_config
         self._max_fragments = max_fragments
         self._stack = AsyncExitStack()
-        self._streams: dict[int, _TrackStream] = {}
-        self._track_order: list[int] = []
+        self._streams: dict[str, _TrackStream] = {}
+        self._track_order: list[str] = []
         self._pump_tasks: set[asyncio.Task[None]] = set()
-        self._subscribers: set[asyncio.Queue[int | None]] = set()
+        self._subscribers: set[asyncio.Queue[str | None]] = set()
         self._next_frame_index = 0
 
     @classmethod
@@ -191,7 +191,7 @@ class TrackVideoManager(
             )
         )
 
-    async def _start_track(self, track_id: int) -> None:
+    async def _start_track(self, track_id: str) -> None:
         sink = await self._stack.enter_async_context(
             core.FfmpegFrameSink.start(
                 _THUMBNAIL_SIZE, _THUMBNAIL_SIZE, self._fps, config=self._sink_config
@@ -210,19 +210,19 @@ class TrackVideoManager(
         for queue in self._subscribers:
             queue.put_nowait(track_id)
 
-    def has_track(self, track_id: int) -> bool:
+    def has_track(self, track_id: str) -> bool:
         return track_id in self._streams
 
-    def get_broadcaster(self, track_id: int) -> Broadcaster | None:
+    def get_broadcaster(self, track_id: str) -> Broadcaster | None:
         stream = self._streams.get(track_id)
         return stream.broadcaster if stream is not None else None
 
-    def subscribe(self) -> tuple[list[int], asyncio.Queue[int | None]]:
+    def subscribe(self) -> tuple[list[str], asyncio.Queue[str | None]]:
         """Snapshot of every track id seen so far, plus a queue that receives every subsequent
         one live (and a final `None` sentinel when this manager is torn down)."""
-        queue: asyncio.Queue[int | None] = asyncio.Queue()
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._subscribers.add(queue)
         return list(self._track_order), queue
 
-    def unsubscribe(self, queue: asyncio.Queue[int | None]) -> None:
+    def unsubscribe(self, queue: asyncio.Queue[str | None]) -> None:
         self._subscribers.discard(queue)

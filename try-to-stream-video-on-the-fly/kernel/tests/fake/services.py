@@ -75,15 +75,18 @@ class FaceEmbedder(kernel.FaceEmbedder[FrameContent, FaceEmbedding]):
 
 class Tracker(kernel.Tracker[FaceEmbedding]):
     """Assigns track ids by position — fine as long as fakes only ever
-    produce a stable number of faces per frame. Each `reset` shifts the ids
-    by 100, so a test can tell which scene an id was assigned in."""
+    produce a stable number of faces per frame. Each `reset` bumps a
+    generation prefix, so a test can tell which scene an id was assigned in
+    and ids never collide across a reset."""
 
     def __init__(self) -> None:
         self.reset_count = 0
 
     async def update(self, faces: list[Face]) -> list[TrackedFace]:
         return [
-            kernel.TrackedFace(track_id=self.reset_count * 100 + index, face=face)
+            kernel.TrackedFace(
+                track_id=f"{self.reset_count}:{index}", face=face
+            )
             for index, face in enumerate(faces)
         ]
 

@@ -5,6 +5,20 @@ const stopButton = document.getElementById("source-stop");
 const errorBox = document.getElementById("source-error");
 const errorText = document.getElementById("source-error-text");
 
+const sourceKindFile = document.getElementById("source-kind-file");
+const sourceKindUrl = document.getElementById("source-kind-url");
+const sourceKindFileRow = document.getElementById("source-kind-file-row");
+const sourceKindUrlRow = document.getElementById("source-kind-url-row");
+const sourceUrlInput = document.getElementById("source-url");
+
+function updateSourceKindRows() {
+  const useUrl = sourceKindUrl.checked;
+  sourceKindFileRow.hidden = useUrl;
+  sourceKindUrlRow.hidden = !useUrl;
+}
+sourceKindFile.addEventListener("change", updateSourceKindRows);
+sourceKindUrl.addEventListener("change", updateSourceKindRows);
+
 const speedFactorInput = document.getElementById("speed-factor");
 const afterFrameCountEnabled = document.getElementById("stop-after-frame-count-enabled");
 const afterFrameCountMaxFrames = document.getElementById("stop-after-frame-count-max-frames");
@@ -69,10 +83,15 @@ async function startSource(body, label) {
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
-  if (!selectedPath) return;
+  const useUrl = sourceKindUrl.checked;
+  const sourceField = useUrl
+    ? { url: sourceUrlInput.value.trim() }
+    : { path: selectedPath };
+  const label = useUrl ? sourceUrlInput.value.trim() : selectedPath;
+  if (useUrl ? !sourceField.url : !selectedPath) return;
   startSource(
     {
-      path: selectedPath,
+      ...sourceField,
       speed_factor: parseFloat(speedFactorInput.value),
       stop_strategy: {
         after_frame_count: {
@@ -85,7 +104,7 @@ form.addEventListener("submit", (e) => {
         },
       },
     },
-    selectedPath
+    label
   );
 });
 
