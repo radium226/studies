@@ -13,9 +13,10 @@ from loguru import logger
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from video_analyzer import core, kernel
 
@@ -23,6 +24,7 @@ from . import fs_browser
 from .broadcaster import Broadcaster, LaggedError
 from .config import WebappConfig
 from .pipeline_manager import PipelineManager
+from .track_video_manager import TrackVideoManager
 
 
 class SuppressShutdownCancellation(logging.Filter):
@@ -117,14 +119,10 @@ async def browse(request: Request):
     )
 
 
-async def stream(request: Request):
-    stream_id = request.path_params["stream_id"]
-    broadcaster: Broadcaster | None = request.app.state.broadcaster
-    if broadcaster is None or stream_id != request.app.state.stream_id or broadcaster.is_closed:
-        # No pipeline (idle), this id belongs to a superseded build, or the current one's
-        # broadcaster already closed. Distinguishable from a network error so the player can show
-        # "ended" and drop back to its idle poll loop.
-        return JSONResponse({"error": "stream ended"}, status_code=410)
+def _stream_broadcaster(request: Request, broadcaster: Broadcaster) -> StreamingResponse:
+    """Init segment + live tail off `broadcaster`, as a chunked HTTP response. Shared by the main
+    stream and every per-track stream — both are just a `Broadcaster` to live-tail, the only
+    difference is which one the caller already resolved (and validated) before calling this."""
 
     async def generate():
         init_segment, fragment = broadcaster.snapshot_for_new_client()
@@ -159,6 +157,64 @@ async def stream(request: Request):
         media_type="video/mp4",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+async def stream(request: Request):
+    stream_id = request.path_params["stream_id"]
+    broadcaster: Broadcaster | None = request.app.state.broadcaster
+    if broadcaster is None or stream_id != request.app.state.stream_id or broadcaster.is_closed:
+        # No pipeline (idle), this id belongs to a superseded build, or the current one's
+        # broadcaster already closed. Distinguishable from a network error so the player can show
+        # "ended" and drop back to its idle poll loop.
+        return JSONResponse({"error": "stream ended"}, status_code=410)
+    return _stream_broadcaster(request, broadcaster)
+
+
+async def track_metadata(request: Request):
+    track_manager: TrackVideoManager | None = request.app.state.track_manager
+    stream_id = request.app.state.stream_id
+    track_id = request.path_params["track_id"]
+    if track_manager is None or stream_id is None or not track_manager.has_track(track_id):
+        return JSONResponse({"error": "unknown track"}, status_code=404)
+    return JSONResponse({"video_url": f"/videos/{stream_id}/{track_id}.mp4"})
+
+
+async def track_stream(request: Request):
+    stream_id = request.path_params["stream_id"]
+    track_id = request.path_params["track_id"]
+    track_manager: TrackVideoManager | None = request.app.state.track_manager
+    if track_manager is None or stream_id != request.app.state.stream_id:
+        # Same staleness check as stream(): this id belongs to a superseded build.
+        return JSONResponse({"error": "stream ended"}, status_code=410)
+    broadcaster = track_manager.get_broadcaster(track_id)
+    if broadcaster is None or broadcaster.is_closed:
+        return JSONResponse({"error": "stream ended"}, status_code=410)
+    return _stream_broadcaster(request, broadcaster)
+
+
+async def track_events(websocket: WebSocket):
+    """Notifies the browser of every track as it's first detected, so the face-loop column can
+    add a slot for it. `TrackVideoManager.subscribe()` backfills every track id already seen
+    (for a client connecting mid-stream) before switching to live notifications; a `None` off the
+    queue means the manager itself is tearing down (pipeline stopped/rebuilt), so the client
+    should clear its column and reconnect once a new one exists."""
+    await websocket.accept()
+    track_manager: TrackVideoManager | None = websocket.app.state.track_manager
+    if track_manager is None:
+        await websocket.close()
+        return
+    existing_ids, queue = track_manager.subscribe()
+    try:
+        await websocket.send_json({"event": "existing", "track_ids": existing_ids})
+        while True:
+            track_id = await queue.get()
+            if track_id is None:
+                break
+            await websocket.send_json({"event": "new_track", "track_id": track_id})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        track_manager.unsubscribe(queue)
 
 
 SOURCE_SWITCH_TIMEOUT_S = 60
@@ -220,10 +276,13 @@ app = Starlette(
     routes=[
         Route("/", index),
         Route("/{stream_id}.mp4", stream),
+        Route("/videos/{stream_id}/{track_id:int}.mp4", track_stream),
         Route("/api/status", status),
         Route("/api/browse", browse),
         Route("/api/source", set_source, methods=["POST"]),
         Route("/api/stop", stop_source, methods=["POST"]),
+        Route("/api/tracks/{track_id:int}", track_metadata),
+        WebSocketRoute("/ws/tracks", track_events),
         Mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static"),
     ],
 )

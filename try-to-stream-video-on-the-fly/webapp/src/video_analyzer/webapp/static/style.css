@@ -21,10 +21,39 @@ video {
   background: #000;
 }
 
+.app-layout {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+}
+
 .player-wrap {
   position: relative;
   flex: 1;
   min-height: 0;
+}
+
+.tracks-column {
+  width: 9rem;
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #0a0a0a;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.track-entry {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #000;
+  flex-shrink: 0;
 }
 
 .progress-bar {

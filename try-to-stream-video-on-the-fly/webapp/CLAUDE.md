@@ -8,12 +8,13 @@ and `cli/`.
 
 `video-analyzer-webapp` (importable as `video_analyzer.webapp`) — `app/`'s browser-facing product
 (pick a video, watch it stream live over HTTP via MSE while detected/tracked faces are drawn on
-it), rebuilt on [`kernel`](../kernel)'s `Pipeline` and [`core`](../core)'s real SCRFD/ArcFace/
+it, with a scrollable left-hand column showing a live, ever-growing face-loop video per tracked
+face), rebuilt on [`kernel`](../kernel)'s `Pipeline` and [`core`](../core)'s real SCRFD/ArcFace/
 ByteTrack/spline/ffmpeg backends, the same way [`cli`](../cli) is — except `cli` shows the result
 in a local `ffplay` window and this project streams it to a browser instead. That transport layer
-(an fMP4 encoder sink with overlay drawing, an HTTP fan-out broadcaster, the Starlette routes and
-web UI) is this project's own contribution; neither `kernel` nor `core` has an opinion on it (see
-`core/CLAUDE.md`).
+(an fMP4 encoder sink with overlay drawing, an HTTP fan-out broadcaster, a second fan-out per
+tracked face, the Starlette routes and web UI) is this project's own contribution; neither
+`kernel` nor `core` has an opinion on it (see `core/CLAUDE.md`).
 
 Depends on `core` via a `uv` path source (`../core`, editable), which transitively pulls in
 `kernel`. Not a workspace, matching the standalone-project style `app/`, `kernel`, `core`, and
@@ -91,23 +92,31 @@ core.FfmpegFrameSource.start()  -- decodes the chosen file, probes VideoInfo
         v
 kernel.Pipeline.run(frame_source, stop_token)   -- the whole CV pipeline: detect/embed/track/
         |                                          interpolate, in six concurrent stages
-        v  (per rendered frame, via write_and_broadcast)
-OverlayFrameSink.write_frame(annotated_frame)   -- copies the frame, draws boxes+track ids,
-        |                                          hands it to core.FfmpegFrameSink
-        v
-core.FfmpegFrameSink            -- encodes to fragmented MP4 (baseline H.264, same MSE-tuned
-        |                          flags as app/writer.py's _encoder_cmd)
-        v  (Orchestrator's box-parse task)
-iso_bmff.BoxReader.feed()       -- splits the encoder's raw stdout into top-level ISO BMFF boxes
-        |
-        v
-broadcaster.Broadcaster         -- init segment (ftyp..moov) + bounded deque of moof+mdat frags
-        |
-        v
-Starlette GET /{stream_id}.mp4  -- StreamingResponse: init + latest frag, then live-tail
-        |
-        v
-static/player.js                -- MediaSource + SourceBuffer, seeks to the live edge
+        v  (per rendered frame, via write_and_broadcast -- both consumers get the same
+        |   AnnotatedFrame)
+        +-----------------------------------------------------+
+        v                                                     v
+OverlayFrameSink.write_frame(annotated_frame)     TrackVideoManager.broadcast_frame(annotated_frame)
+        |  copies the frame, draws boxes+track ids,                 |  per new track_id: crops a padded
+        |  hands it to core.FfmpegFrameSink                         |  square around that face, spins up
+        v                                                           |  its own core.FfmpegFrameSink +
+core.FfmpegFrameSink  -- encodes to fragmented MP4                  |  Broadcaster; every subsequent
+        |  (baseline H.264, same MSE-tuned flags as                 |  sighting feeds it another frame
+        |  app/writer.py's _encoder_cmd)                            v
+        v  (Orchestrator's box-parse task)                (one more core.FfmpegFrameSink per track)
+iso_bmff.pump_fragments()  -- splits raw ffmpeg stdout into                |  (same pump_fragments(), one
+        |  top-level ISO BMFF boxes, pairs moof+mdat                      |   pump task per track)
+        v                                                                 v
+broadcaster.Broadcaster  -- init segment (ftyp..moov) +      broadcaster.Broadcaster (one per track)
+        |  bounded deque of moof+mdat frags                          |
+        v                                                            v
+Starlette GET /{stream_id}.mp4         Starlette GET /videos/{stream_id}/{track_id}.mp4
+        |  StreamingResponse: init + latest frag, then live-tail (both routes share the
+        |  _stream_broadcaster() helper)                                    |
+        v                                                                    v
+static/player.js -- MediaSource + SourceBuffer         static/tracks.js -- /ws/tracks announces each
+   (via static/live-stream.js's attachLiveStream())       track_id, then one <video> per track, also
+                                                            via attachLiveStream()
 ```
 
 Key files (`src/video_analyzer/webapp/`):
@@ -145,6 +154,18 @@ Key files (`src/video_analyzer/webapp/`):
   single failing stage — and its own `str()` is just "unhandled errors in a TaskGroup (1
   sub-exception)". `failure_reason` uses this instead of a bare `str()` so the browser's error
   popup says something useful.
+- **`track_video_manager.py`** — `TrackVideoManager(kernel.FrameBroadcaster)`: the *other* consumer
+  `write_and_broadcast` hands every `AnnotatedFrame` to, alongside `OverlayFrameSink`. On a
+  track_id's first appearance it spins up a dedicated `core.FfmpegFrameSink` + `Broadcaster` +
+  `pump_fragments()` task for it (same shape as the main stream, just scoped to one face) and runs
+  forever after that — no per-track teardown, only whole-pipeline teardown (the manager's own
+  `AsyncExitStack`). Every appearance of that track (exact or interpolated — whatever
+  `write_and_broadcast` hands it) is cropped to a padded square around the bounding box, resized
+  to a fixed thumbnail, and written into that track's own sink — a genuinely live, ever-growing
+  stream, not a replayed ring buffer; it *reads* as a loop because a face's crops naturally repeat.
+  `subscribe()`/`unsubscribe()` back a `/ws/tracks` websocket: a new subscriber gets every track id
+  already seen, then every subsequent one live; a `None` sentinel on teardown unblocks anyone still
+  parked on a queue. `has_track`/`get_broadcaster` back `app.py`'s per-track routes.
 - **`pipeline_manager.py`** — `PipelineManager`: same overall shape as `app/pipeline.py` (teardown-
   first `AsyncExitStack` rebuild, monotonic `_generation` counter, a per-build watchdog task
   awaiting `broadcaster.wait_closed()`, `SourceError`/`PipelineStatus` TypedDicts, `status()`), but
@@ -161,41 +182,71 @@ Key files (`src/video_analyzer/webapp/`):
   compression, same as `app/`'s and `cli`'s `--speed-factor`/`read_rate`. Constructs
   `core.StopAfterFrameCount`/`core.StopOnFirstTrack` decorators only when the per-request
   `stop_strategy` arms them (same "enabled is composition metadata" rule `core/CLAUDE.md`
-  documents), and a trivial local `NoopFrameBroadcaster` (`kernel.FrameBroadcaster` is the CV
-  pipeline's *metadata* sink — unrelated to the HTTP `Broadcaster` below — and this project
-  doesn't consume it, same as `cli`'s).
+  documents). Unlike `cli`'s `NoopFrameBroadcaster`, this project's `kernel.FrameBroadcaster` is a
+  real consumer: `TrackVideoManager` (entered into the same `new_stack`, fps matching the main
+  encoder's `fps * speed_factor`), optionally wrapped by `core.StopOnFirstTrack` when armed. Also
+  sets `self._app.state.track_manager` alongside `broadcaster`/`stream_id` (and clears it in
+  `_set_idle_state`), so `app.py`'s track routes see the same idle/stale-generation semantics for
+  free.
 - **`broadcaster.py`** — `Broadcaster`: ported from `app/broadcaster.py`, unchanged. Single
   producer (the box-parse task) / many async consumers on one `asyncio.Condition`; bounded `deque`
   drop-oldest retention; `wait_for_next()` raises `LaggedError` when a client falls off the back;
   `snapshot_for_new_client()` gives a new client the init segment + only the latest fragment (true
   live join, not rewind).
 - **`iso_bmff.py`** — `BoxReader`: ported from `app/iso_bmff.py`, unchanged. Minimal ISO BMFF box
-  parser; pipe reads never align to box boundaries.
-- **`noop_frame_broadcaster.py`**, **`noop_scene_detector.py`**, **`system_clock.py`** — trivial
-  local copies of `cli`'s versions of the same name. `webapp` can't depend on `cli` (a sibling
-  standalone project, not a dependency), so these few-line classes are re-created rather than
-  imported.
+  parser; pipe reads never align to box boundaries. Also owns `pump_fragments(read_chunk,
+  broadcaster)`: the moof/mdat-pairing loop that drives a `Broadcaster` from an ffmpeg encoder's
+  raw stdout, extracted so `Orchestrator._read_sink_output` (the main stream) and every per-track
+  pump task in `track_video_manager.py` share one implementation instead of two copies of the same
+  box-pairing logic.
+- **`noop_scene_detector.py`**, **`system_clock.py`** — trivial local copies of `cli`'s versions of
+  the same name. `webapp` can't depend on `cli` (a sibling standalone project, not a dependency),
+  so these few-line classes are re-created rather than imported.
 - **`app.py`** — Starlette wiring + `click` CLI. Routes: `/` (player page), `/{stream_id}.mp4`
-  (live tail, ported from `app/app.py`'s `stream()` — same `410 Gone` contract: no pipeline,
-  superseded `stream_id`, or an already-closed broadcaster), `/api/status` (`PipelineManager
-  .status()`), `/api/browse` (`GET ?path=...`, defaults to `config.video_library.directory` when
-  omitted; `{"path", "parent", "entries": [{"name", "path", "is_dir", "size", "modified"}, ...]}`
-  from `fs_browser.list_directory` — a bad/unreadable path is 400, not a 500), `POST /api/source`
-  (body `{"path", "speed_factor", "stop_strategy": {...}}`; resolves the path via
-  `fs_browser.resolve_video_path`, validates `speed_factor` by hand (must parse as a number, must
-  be `> 0`; defaults to `1.0` if omitted), and validates the stop strategy via
-  `core.StopStrategyConfig.from_dict` — all **before** calling `PipelineManager.start`, so any of
-  the three failing 400s without ever touching ffmpeg or tearing down whatever is currently
+  (main live tail, ported from `app/app.py`'s `stream()` — same `410 Gone` contract: no pipeline,
+  superseded `stream_id`, or an already-closed broadcaster), `/videos/{stream_id}/{track_id}.mp4`
+  (per-track live tail, same staleness check against `stream_id` plus an unknown/closed-track
+  check against `track_manager.get_broadcaster`), `/api/status` (`PipelineManager.status()`),
+  `/api/tracks/{track_id}` (404 if `track_manager` is `None` or the id is unknown, else
+  `{"video_url": "/videos/{stream_id}/{track_id}.mp4"}`), `/ws/tracks` (`WebSocketRoute`:
+  `track_manager.subscribe()`, sends `{"event": "existing", "track_ids": [...]}` then
+  `{"event": "new_track", "track_id": n}` per queue item until a `None` sentinel or disconnect;
+  closes immediately if idle), `/api/browse` (`GET ?path=...`, defaults to
+  `config.video_library.directory` when omitted; `{"path", "parent", "entries": [{"name", "path",
+  "is_dir", "size", "modified"}, ...]}` from `fs_browser.list_directory` — a bad/unreadable path is
+  400, not a 500), `POST /api/source` (body `{"path", "speed_factor", "stop_strategy": {...}}`;
+  resolves the path via `fs_browser.resolve_video_path`, validates `speed_factor` by hand (must
+  parse as a number, must be `> 0`; defaults to `1.0` if omitted), and validates the stop strategy
+  via `core.StopStrategyConfig.from_dict` — all **before** calling `PipelineManager.start`, so any
+  of the three failing 400s without ever touching ffmpeg or tearing down whatever is currently
   playing; 60 s timeout on the build itself → 504; other build failures → 400), `POST /api/stop`
-  (go idle). No `/metrics` route: `kernel.Pipeline` has no metrics-
-  snapshot facility today (unlike `app/`'s `Engine.metrics_snapshot()`) — a real scope cut versus
-  `app/`'s UI, not an oversight. `_configure_logging()` (called inside `main()`, not at import
-  time, so importing this module for tests has no logging side effects) calls `logger.enable
+  (go idle). The main and per-track live-tail routes share `_stream_broadcaster(request,
+  broadcaster)` — the `generate()`/`StreamingResponse` construction is identical either way, only
+  which `Broadcaster` differs. No `/metrics` route: `kernel.Pipeline` has no metrics-snapshot
+  facility today (unlike `app/`'s `Engine.metrics_snapshot()`) — a real scope cut versus `app/`'s
+  UI, not an oversight. `_configure_logging()` (called inside `main()`, not at import time, so
+  importing this module for tests has no logging side effects) calls `logger.enable
   ("video_analyzer")`: `kernel`/`core`/`webapp` each disable their own logger by default (library
   etiquette — see `kernel/CLAUDE.md`), so the entry point has to opt back in, same as `cli/main.py`
-  does.
-- **`static/player.js`** — reused **verbatim** from `app/`: it only depends on `/api/status`'s
-  shape and a stream URL, both unchanged, so it's already source-agnostic.
+  does. Needs `websockets` (or `wsproto`) installed for uvicorn's `WebSocketRoute` support — it's a
+  declared dependency (`pyproject.toml`), not implied by `starlette`/`uvicorn` alone.
+- **`static/live-stream.js`** — `attachLiveStream(videoEl, streamUrl, {onStreaming, onEnded})`: the
+  MediaSource/SourceBuffer live-tail plumbing (append queue, quota-eviction, buffer trim,
+  live-edge seek) every stream route's client needs, extracted out of `player.js` so both the main
+  player and every per-track `<video>` in `tracks.js` share one implementation. One-shot per call
+  (creates and later revokes its own object URL); callers wanting reconnect-on-drop call it again.
+- **`static/player.js`** — adapted from `app/`'s (previously reused verbatim; now calls
+  `attachLiveStream` instead of inlining the MediaSource logic itself) — still only depends on
+  `/api/status`'s shape and a stream URL, so it stays source-agnostic. `onEnded(gone)`'s `gone`
+  flag reproduces the original's two distinct endings: a clean 410/EOF close (show idle, poll
+  `/api/status` again) versus a dropped connection (show "reconnecting...", retry sooner).
+- **`static/tracks.js`** — the face-loop column: opens `/ws/tracks`, and for every `existing`/
+  `new_track` track id not already rendered, `GET /api/tracks/{id}` for its `video_url`, creates a
+  small muted `<video class="track-entry">` in `#tracks-column`, and calls `attachLiveStream` on
+  it (no `onStreaming`/`onEnded` needed — a track's stream runs for the pipeline's whole lifetime,
+  and the socket closing already signals "clear everything"). A socket close (idle, or the
+  manager tearing down on stop/rebuild) clears every entry and reconnects on a timer, same
+  `player.js` idle-retry idiom.
 - **`static/browse-modal.js`** — the file-browser modal: `window.openBrowseModal(onSelect)` opens
   it (fetching `/api/browse` with no `path`, i.e. the configured default directory), renders
   folders/files from the listing, clicking a folder navigates into it, clicking a file calls
@@ -210,14 +261,26 @@ Key files (`src/video_analyzer/webapp/`):
 ## Working in this codebase
 
 - **This project only composes `kernel`+`core` plus a transport layer** — it shouldn't grow
-  algorithm code of its own beyond `overlay_frame_sink.py`'s drawing glue. A new detector/tracker/
-  interpolator backend belongs in `core`; a new service contract belongs in `kernel`.
+  algorithm code of its own beyond `overlay_frame_sink.py`'s drawing glue and
+  `track_video_manager.py`'s crop/resize (same category: presentation, not detection/tracking
+  math). A new detector/tracker/interpolator backend belongs in `core`; a new service contract
+  belongs in `kernel`.
 - **`core.FfmpegFrameSink` draws nothing; `OverlayFrameSink` is the only place that does it.**
   Never bypass it and call `core.FfmpegFrameSink` directly if you want boxes burned into the video.
-- **`kernel.FrameBroadcaster` and this project's own `Broadcaster` are unrelated.** The former is
-  the CV pipeline's per-frame metadata sink (`NoopFrameBroadcaster` here, wrapped by
-  `core.StopOnFirstTrack` when that strategy is armed); the latter is the HTTP fMP4 byte fan-out to
-  browsers. Don't conflate them when reading `pipeline_manager.py`.
+- **`kernel.FrameBroadcaster` and this project's own `Broadcaster` are conceptually unrelated, even
+  though `TrackVideoManager` is now both at once.** `FrameBroadcaster` is the CV pipeline's
+  per-frame metadata sink contract (`TrackVideoManager` implements it, optionally wrapped by
+  `core.StopOnFirstTrack` when that strategy is armed); `Broadcaster` is the HTTP fMP4 byte fan-out
+  to browsers (`TrackVideoManager` owns one *instance* of it per track, entirely separate from the
+  `Broadcaster` the main stream uses). Don't conflate the two when reading `pipeline_manager.py` or
+  `track_video_manager.py`.
+- **Every per-track stream is a second, independent copy of the main stream's plumbing** — its own
+  `core.FfmpegFrameSink`, its own `Broadcaster`, its own `pump_fragments()` task — just fed cropped
+  thumbnails instead of full frames. There's no ring buffer or replay: it's a genuinely live,
+  ever-growing stream, and it starts on first detection and runs until the *whole pipeline* tears
+  down (no per-track idle timeout). If you're tempted to add one to bound resource usage with many
+  simultaneous tracks, that's a deliberate scope cut for this local single-user tool, not a gap to
+  silently close.
 - **A crash out of `kernel.Pipeline.run()` is a `BaseExceptionGroup`, always** — even for exactly
   one failing stage, since the six stages run in an `asyncio.TaskGroup`. `orchestrator
   ._describe_exception` unwraps it recursively; if you add another layer that catches a pipeline
@@ -249,12 +312,19 @@ Key files (`src/video_analyzer/webapp/`):
   `OverlayFrameSink.start` to lightweight fakes (mirroring `app/tests/test_pipeline.py`'s style) —
   `core.ByteTrackTracker`/`HistogramSceneDetector`/`SplineInterpolator` are constructed for real
   since they need no external resource (same reasoning `core/CLAUDE.md` gives for testing
-  `ByteTrackTracker` directly). `test_app.py` only covers requests that 400 on pure validation
+  `ByteTrackTracker` directly). Its fakes never emit a face, so they don't exercise
+  `TrackVideoManager.broadcast_frame` — that lives in its own `test_track_video_manager.py`
+  instead, which monkeypatches `core.FfmpegFrameSink.start` the same way and covers crop math
+  (padding, clamping at frame edges, the outside-frame-returns-None case), new-track subscribe/
+  notify ordering (including the "subscribe backfills tracks seen before it connected" case), and
+  the `None`-sentinel teardown. `test_app.py` only covers requests that 400 on pure validation
   (bad path, relative path, malformed stop strategy) before ever reaching `PipelineManager.start`
   — pinned with an autouse fixture that monkeypatches `PipelineManager.start` to fail the test
   outright if it's ever called, so a validation check silently disappearing gets caught instead of
   the test passing for the wrong reason. A request that would actually build a pipeline needs real
   `ffmpeg`/ONNX weights and is manual/integration verification only (`mise run webapp` + a
-  browser). `test_fs_browser.py` exercises real arbitrary `tmp_path` locations (there's no
-  allowlist to work around) and skips the unreadable-directory case when running as root (which
-  bypasses permission bits).
+  browser — for the face-loop column specifically, that means a source with an actual detectable
+  face; the bundled `app/assets/sample.mp4` is a synthetic `testsrc` colorbar pattern with no
+  faces in it, so it'll never populate the column). `test_fs_browser.py` exercises real arbitrary
+  `tmp_path` locations (there's no allowlist to work around) and skips the unreadable-directory
+  case when running as root (which bypasses permission bits).

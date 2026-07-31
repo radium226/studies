@@ -17,7 +17,7 @@ from loguru import logger
 from video_analyzer import kernel
 
 from .broadcaster import Broadcaster
-from .iso_bmff import BoxReader, BoxType
+from .iso_bmff import pump_fragments
 from .overlay_frame_sink import OverlayFrameSink
 
 
@@ -113,38 +113,4 @@ class Orchestrator:
             await self._frame_sink.close_stdin()
 
     async def _read_sink_output(self) -> None:
-        box_reader = BoxReader()
-        init_boxes: list[bytes] = []
-        have_init = False
-        pending_moof: bytes | None = None
-
-        while True:
-            chunk = await self._frame_sink.read_output_chunk()
-            if not chunk:
-                if pending_moof is not None:
-                    logger.warning("encoder EOF with unpaired trailing moof, dropping")
-                # End of stream: wake every client so they finish instead of polling a stream
-                # that will never produce again.
-                await self._broadcaster.close()
-                break
-            for box_type, raw in box_reader.feed(chunk):
-                if not have_init:
-                    init_boxes.append(raw)
-                    if box_type == BoxType.MOOV:
-                        await self._broadcaster.set_init_segment(b"".join(init_boxes))
-                        have_init = True
-                        init_boxes = []
-                    continue
-                if box_type == BoxType.MOOF:
-                    pending_moof = raw
-                elif box_type == BoxType.MDAT:
-                    if pending_moof is not None:
-                        await self._broadcaster.publish_fragment(pending_moof + raw)
-                        pending_moof = None
-                    else:
-                        logger.warning("mdat box with no preceding moof, dropping")
-                else:
-                    logger.debug(
-                        "ignoring unexpected top-level box {!r} after init segment",
-                        box_type,
-                    )
+        await pump_fragments(self._frame_sink.read_output_chunk, self._broadcaster)

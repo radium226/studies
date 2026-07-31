@@ -28,11 +28,11 @@ from video_analyzer import core, kernel
 
 from .broadcaster import Broadcaster
 from .config import WebappConfig
-from .noop_frame_broadcaster import NoopFrameBroadcaster
 from .noop_scene_detector import NoopSceneDetector
 from .orchestrator import Orchestrator
 from .overlay_frame_sink import OverlayFrameSink
 from .system_clock import SystemClock
+from .track_video_manager import TrackVideoManager
 
 
 class SourceError(TypedDict):
@@ -76,6 +76,7 @@ class PipelineManager:
     def _set_idle_state(self) -> None:
         self._app.state.broadcaster = None
         self._app.state.stream_id = None
+        self._app.state.track_manager = None
 
     async def start(
         self, source_path: Path, speed_factor: float, stop_strategy: core.StopStrategyConfig
@@ -149,7 +150,19 @@ class PipelineManager:
                 Broadcaster.start(max_fragments=self._config.broadcaster.max_fragments)
             )
 
-            frame_broadcaster: kernel.FrameBroadcaster = NoopFrameBroadcaster()
+            # Same time-compression reasoning as the main encoder above: track streams are fed at
+            # whatever rate frames actually arrive at broadcast_frame, which speed_factor scales
+            # too (via the decoder's -readrate), so their own encoder fps must match it exactly
+            # to play back at the same perceived speed as the main stream.
+            track_video_manager = await new_stack.enter_async_context(
+                TrackVideoManager.start(
+                    fps * speed_factor,
+                    sink_config=self._config.frame_sink,
+                    max_fragments=self._config.broadcaster.max_fragments,
+                )
+            )
+
+            frame_broadcaster: kernel.FrameBroadcaster = track_video_manager
             if stop_strategy.on_first_track.enabled:
                 frame_broadcaster = core.StopOnFirstTrack(
                     frame_broadcaster, stop_token, config=stop_strategy.on_first_track
@@ -193,6 +206,7 @@ class PipelineManager:
         self._last_error = None
         self._app.state.broadcaster = broadcaster
         self._app.state.stream_id = str(uuid.uuid4())
+        self._app.state.track_manager = track_video_manager
         self._generation += 1
         generation = self._generation
         task = asyncio.create_task(

@@ -6,6 +6,8 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div class="app-layout">
+  <div id="tracks-column" class="tracks-column"></div>
   <div class="player-wrap">
     <video id="player" autoplay muted playsinline></video>
     <div id="progress-bar" class="progress-bar">
@@ -47,6 +49,7 @@
     </div>
     <p id="status"></p>
   </div>
+  </div>
   <div id="browse-modal" class="modal-overlay" hidden>
     <div class="modal">
       <div class="modal-header">
@@ -58,8 +61,10 @@
       <ul id="browse-entries" class="modal-entries"></ul>
     </div>
   </div>
+  <script src="/static/live-stream.js"></script>
   <script src="/static/player.js"></script>
   <script src="/static/browse-modal.js"></script>
   <script src="/static/source.js"></script>
+  <script src="/static/tracks.js"></script>
 </body>
 </html>
