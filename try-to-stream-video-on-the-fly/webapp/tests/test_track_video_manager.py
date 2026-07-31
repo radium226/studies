@@ -92,6 +92,21 @@ def test_crop_padded_square_none_when_box_outside_frame() -> None:
     assert _crop_padded_square(frame, box) is None
 
 
+def test_crop_letterboxes_when_edge_clamping_makes_it_non_square() -> None:
+    # A narrow frame clamps the padded square's x-axis hard while leaving the y-axis room to
+    # spare, so the actual crop region ends up much taller than wide.
+    frame = np.full((200, 6, 3), 200, dtype=np.uint8)
+    box = kernel.BoundingBox(x=0, y=100, width=4, height=4)
+    crop = _crop_padded_square(frame, box)
+    assert crop is not None
+    assert crop.shape == (320, 320, 3)
+    # Preserving the aspect ratio (taller-than-wide source) pillarboxes: black bars on the sides,
+    # not squashed content filling the whole square.
+    assert np.array_equal(crop[:, 0], np.zeros((320, 3), dtype=np.uint8))
+    assert np.array_equal(crop[:, -1], np.zeros((320, 3), dtype=np.uint8))
+    assert not np.array_equal(crop[:, 160], np.zeros((320, 3), dtype=np.uint8))
+
+
 async def test_new_track_starts_stream_and_notifies_subscribers(monkeypatch) -> None:
     async with _start_manager(monkeypatch) as manager:
         existing, queue = manager.subscribe()
@@ -106,6 +121,50 @@ async def test_new_track_starts_stream_and_notifies_subscribers(monkeypatch) -> 
         assert manager.has_track(5)
         assert manager.get_broadcaster(5) is not None
         assert await asyncio.wait_for(queue.get(), timeout=1.0) == 5
+
+
+async def test_idle_track_replays_its_buffered_crop_on_a_loop(monkeypatch) -> None:
+    async with _start_manager(monkeypatch) as manager:
+        box = kernel.BoundingBox(10, 10, 20, 20)
+        live_frame = _annotated_frame(
+            np.zeros((100, 100, 3), dtype=np.uint8), [_tracked_face(3, box)]
+        )
+        await manager.broadcast_frame(live_frame)  # track 3 starts, gets its one real crop
+
+        empty_frame = _annotated_frame(np.zeros((100, 100, 3), dtype=np.uint8), [])
+        for _ in range(3):
+            await manager.broadcast_frame(empty_frame)  # track 3 absent every tick after
+
+        written = manager._streams[3].sink.written_frames
+        # One live crop, then it keeps getting written every tick even though the track never
+        # reappears - the whole point being the browser-side connection never looks stalled.
+        assert len(written) == 4
+        assert all(frame.shape == (320, 320, 3) for frame in written)
+        # Only one crop was ever buffered, so every replay is that exact same crop.
+        assert all(np.array_equal(frame, written[0]) for frame in written)
+
+
+async def test_replay_bounces_back_and_forth_through_buffered_history(monkeypatch) -> None:
+    async with _start_manager(monkeypatch) as manager:
+        box = kernel.BoundingBox(10, 10, 20, 20)
+        for value in (10, 20, 30, 40):
+            live_frame = _annotated_frame(
+                np.full((100, 100, 3), value, dtype=np.uint8), [_tracked_face(5, box)]
+            )
+            await manager.broadcast_frame(live_frame)
+
+        empty_frame = _annotated_frame(np.zeros((100, 100, 3), dtype=np.uint8), [])
+        for _ in range(8):
+            await manager.broadcast_frame(empty_frame)
+
+        written = manager._streams[5].sink.written_frames
+        assert len(written) == 12  # 4 live crops + 8 replayed
+        values = [int(frame.mean()) for frame in written]
+        # Live crops of uniformly-colored frames stay uniform after crop+resize, so the mean
+        # pixel value alone identifies which buffered crop each write is. Buffer (oldest->newest)
+        # is [10, 20, 30, 40]; the idle loop resumes from the frame just before the last live one
+        # (30) and ping-pongs both ends forever, rather than jump-cutting back to the oldest.
+        assert values == [10, 20, 30, 40, 30, 20, 10, 20, 30, 40, 30, 20]
 
 
 async def test_subscribe_backfills_tracks_seen_before_it_connected(monkeypatch) -> None:

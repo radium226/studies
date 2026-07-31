@@ -97,12 +97,12 @@ kernel.Pipeline.run(frame_source, stop_token)   -- the whole CV pipeline: detect
         +-----------------------------------------------------+
         v                                                     v
 OverlayFrameSink.write_frame(annotated_frame)     TrackVideoManager.broadcast_frame(annotated_frame)
-        |  copies the frame, draws boxes+track ids,                 |  per new track_id: crops a padded
-        |  hands it to core.FfmpegFrameSink                         |  square around that face, spins up
-        v                                                           |  its own core.FfmpegFrameSink +
-core.FfmpegFrameSink  -- encodes to fragmented MP4                  |  Broadcaster; every subsequent
-        |  (baseline H.264, same MSE-tuned flags as                 |  sighting feeds it another frame
-        |  app/writer.py's _encoder_cmd)                            v
+        |  copies the frame, draws boxes+track ids,                 |  per new track_id: spins up its own
+        |  hands it to core.FfmpegFrameSink                         |  core.FfmpegFrameSink + Broadcaster;
+        v                                                           |  every tick, every started track
+core.FfmpegFrameSink  -- encodes to fragmented MP4                  |  gets one frame: a fresh
+        |  (baseline H.264, same MSE-tuned flags as                 |  letterboxed crop if present, else
+        |  app/writer.py's _encoder_cmd)                            v  the next step of a ping-pong bounce
         v  (Orchestrator's box-parse task)                (one more core.FfmpegFrameSink per track)
 iso_bmff.pump_fragments()  -- splits raw ffmpeg stdout into                |  (same pump_fragments(), one
         |  top-level ISO BMFF boxes, pairs moof+mdat                      |   pump task per track)
@@ -159,13 +159,24 @@ Key files (`src/video_analyzer/webapp/`):
   track_id's first appearance it spins up a dedicated `core.FfmpegFrameSink` + `Broadcaster` +
   `pump_fragments()` task for it (same shape as the main stream, just scoped to one face) and runs
   forever after that — no per-track teardown, only whole-pipeline teardown (the manager's own
-  `AsyncExitStack`). Every appearance of that track (exact or interpolated — whatever
-  `write_and_broadcast` hands it) is cropped to a padded square around the bounding box, resized
-  to a fixed thumbnail, and written into that track's own sink — a genuinely live, ever-growing
-  stream, not a replayed ring buffer; it *reads* as a loop because a face's crops naturally repeat.
-  `subscribe()`/`unsubscribe()` back a `/ws/tracks` websocket: a new subscriber gets every track id
-  already seen, then every subsequent one live; a `None` sentinel on teardown unblocks anyone still
-  parked on a queue. `has_track`/`get_broadcaster` back `app.py`'s per-track routes.
+  `AsyncExitStack`). Every `_TrackStream` also owns a bounded `deque` (`_LOOP_BUFFER_FRAMES`, its
+  most recent crops) plus a replay position/direction pair for a ping-pong bounce through it. Every
+  tick (one `broadcast_frame` call per rendered frame), every started track gets **exactly one**
+  frame written: if the track is actually present this tick, its bounding box is cropped to a
+  padded square (letterboxed into a fixed thumbnail via `_letterbox_resize` if edge-clamping made
+  the actual crop region non-square — never squashed/distorted), appended to the buffer
+  (`record_live_crop`, which also arms the bounce to resume from the previous frame next time it
+  goes idle), and written straight through; if it's *not* present (occluded, out of frame, lost by
+  the tracker), `next_replay_frame()` advances one step of the bounce and that frame is written
+  instead. So a live track streams its real crops, and once it goes quiet it seamlessly starts
+  bouncing back and forth through its own recent history — oldest↔newest, forever, at the same fps
+  — rather than the encoder stalling or jump-cutting on every wrap. Writing every tick regardless
+  (not skipping quiet ticks) is also what keeps each per-track connection's byte rate steady enough
+  that the browser's own idle timeout (`live-stream.js`'s `IDLE_TIMEOUT_MS`) never fires.
+  `subscribe()`/`unsubscribe()` back a
+  `/ws/tracks` websocket: a new subscriber gets every track id already seen, then every subsequent
+  one live; a `None` sentinel on teardown unblocks anyone still parked on a queue.
+  `has_track`/`get_broadcaster` back `app.py`'s per-track routes.
 - **`pipeline_manager.py`** — `PipelineManager`: same overall shape as `app/pipeline.py` (teardown-
   first `AsyncExitStack` rebuild, monotonic `_generation` counter, a per-build watchdog task
   awaiting `broadcaster.wait_closed()`, `SourceError`/`PipelineStatus` TypedDicts, `status()`), but
@@ -276,11 +287,33 @@ Key files (`src/video_analyzer/webapp/`):
   `track_video_manager.py`.
 - **Every per-track stream is a second, independent copy of the main stream's plumbing** — its own
   `core.FfmpegFrameSink`, its own `Broadcaster`, its own `pump_fragments()` task — just fed cropped
-  thumbnails instead of full frames. There's no ring buffer or replay: it's a genuinely live,
-  ever-growing stream, and it starts on first detection and runs until the *whole pipeline* tears
-  down (no per-track idle timeout). If you're tempted to add one to bound resource usage with many
+  thumbnails instead of full frames. It starts on first detection and runs until the *whole
+  pipeline* tears down (no per-track idle timeout, no per-track disposal when the tracker loses
+  it). If you're tempted to add a per-track teardown to bound resource usage with many
   simultaneous tracks, that's a deliberate scope cut for this local single-user tool, not a gap to
   silently close.
+- **A quiet track bounces through its own recent history rather than stalling or jump-cutting.**
+  `_TrackStream.buffer` (capped at `_LOOP_BUFFER_FRAMES`) holds a track's most recent crops;
+  `broadcast_frame` writes a fresh crop when the track is present, or
+  `stream.next_replay_frame()` when it isn't — every tick, unconditionally. `next_replay_frame`
+  is a **ping-pong bounce** (oldest↔newest, reversing at both ends), not a forward-only cycle back
+  to index 0: that's what makes the loop fluid — every step, including the ones at either end,
+  differs from the last by exactly one buffered frame, so it never teleports. `record_live_crop`
+  arms the bounce to resume *backward* from the just-appended frame the next time the track goes
+  idle (not forward from the oldest buffered frame), so even the very first idle tick after a live
+  stretch continues smoothly rather than jump-cutting into the loop. Don't special-case "track is
+  present but its crop is None" (a box clipped to nothing) differently from "track absent
+  entirely" — both fall through to the same replay path, on purpose, so the write cadence never
+  skips a tick. If you change any of this, keep the "one write per started track per tick"
+  invariant: a tick that goes by with no write for some track is exactly what makes its
+  browser-side connection look stalled and hit `live-stream.js`'s idle timeout.
+- **Crops are letterboxed, never squashed, to protect the aspect ratio.** `_crop_padded_square`'s
+  target region is square, but clamping it to the frame's bounds near an edge can make the actual
+  crop non-square again (clipped on one axis, not the other). `_letterbox_resize` scales that
+  region to fit `_THUMBNAIL_SIZE` on its longer side and centers it on a black canvas rather than
+  stretching it to fill the square — a face near the frame edge should look correctly proportioned
+  with black bars, not stretched. It's a no-op (no visible bars) whenever the crop is already
+  square, which is the common, unclamped case.
 - **A crash out of `kernel.Pipeline.run()` is a `BaseExceptionGroup`, always** — even for exactly
   one failing stage, since the six stages run in an `asyncio.TaskGroup`. `orchestrator
   ._describe_exception` unwraps it recursively; if you add another layer that catches a pipeline
@@ -315,9 +348,13 @@ Key files (`src/video_analyzer/webapp/`):
   `ByteTrackTracker` directly). Its fakes never emit a face, so they don't exercise
   `TrackVideoManager.broadcast_frame` — that lives in its own `test_track_video_manager.py`
   instead, which monkeypatches `core.FfmpegFrameSink.start` the same way and covers crop math
-  (padding, clamping at frame edges, the outside-frame-returns-None case), new-track subscribe/
-  notify ordering (including the "subscribe backfills tracks seen before it connected" case), and
-  the `None`-sentinel teardown. `test_app.py` only covers requests that 400 on pure validation
+  (padding, clamping at frame edges, the outside-frame-returns-None case, the letterbox-not-squash
+  case when clamping makes the region non-square), new-track subscribe/notify ordering (including
+  the "subscribe backfills tracks seen before it connected" case), the `None`-sentinel teardown,
+  and the idle-bounce behavior itself — asserting on the fake sink's `written_frames` that a quiet
+  track keeps getting exactly one write per tick and that a multi-crop buffer bounces oldest↔newest
+  in the exact order the ping-pong math predicts (not a forward-only cycle). `test_app.py` only
+  covers requests that 400 on pure validation
   (bad path, relative path, malformed stop strategy) before ever reaching `PipelineManager.start`
   — pinned with an autouse fixture that monkeypatches `PipelineManager.start` to fail the test
   outright if it's ever called, so a validation check silently disappearing gets caught instead of
