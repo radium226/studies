@@ -36,7 +36,7 @@ def _forbid_pipeline_start(monkeypatch: pytest.MonkeyPatch):
     """Every test in this module expects to 400 on pure validation, before `PipelineManager`
     ever gets involved. Failing loudly here catches a validation check silently disappearing."""
 
-    async def _fail(self, source, speed_factor, stop_strategy, *, label=None):
+    async def _fail(self, source, speed_factor, stop_strategy, *, loop=None, label=None):
         raise AssertionError(f"PipelineManager.start should not have been reached: {source}")
 
     monkeypatch.setattr(PipelineManager, "start", _fail)

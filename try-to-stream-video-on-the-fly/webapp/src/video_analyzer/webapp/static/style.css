@@ -99,6 +99,13 @@ video {
   font-size: 0.9rem;
 }
 
+.source-loop {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
 /* Pipeline stats overlay, top-left of the player — the source form takes the
    top-right corner. Ported from app/'s stylesheet unchanged. */
 .stats {

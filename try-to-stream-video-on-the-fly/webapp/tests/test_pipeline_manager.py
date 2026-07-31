@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import pytest
 from starlette.applications import Starlette
 
 from video_analyzer import core, kernel
@@ -100,14 +101,14 @@ async def _blocking_frame_sink_cm(
     yield _FakeFrameSink(blocking=True)
 
 
-def _make_manager(monkeypatch) -> PipelineManager:
+def _make_manager(monkeypatch, config: WebappConfig | None = None) -> PipelineManager:
     monkeypatch.setattr(core.FfmpegFrameSource, "start", _fake_frame_source_cm)
     monkeypatch.setattr(pipeline_manager_module.core, "OnnxFaceDetector", _FakeOnnxModel)
     monkeypatch.setattr(pipeline_manager_module.core, "OnnxFaceEmbedder", _FakeOnnxModel)
     monkeypatch.setattr(pipeline_manager_module.OverlayFrameSink, "start", _fake_frame_sink_cm)
 
     app = Starlette()
-    return PipelineManager(app, config=WebappConfig())
+    return PipelineManager(app, config=config if config is not None else WebappConfig())
 
 
 async def test_starts_idle(monkeypatch) -> None:
@@ -186,12 +187,54 @@ async def test_speed_factor_overrides_read_rate_and_scales_encoder_fps(
     monkeypatch.setattr(pipeline_manager_module.OverlayFrameSink, "start", _capturing_frame_sink_cm)
     try:
         await manager._build(tmp_path / "test.mp4", 2.0, core.StopStrategyConfig())
-        # read_rate is the one frame_source knob overridden per request; everything else in the
-        # section (loop, resize, stop_timeout) still comes from the static config.
+        # read_rate and loop are the per-request frame_source knobs; resize and stop_timeout
+        # still come from the static config. No loop was passed here, so the YAML's value stands.
         assert captured["frame_source_config"].read_rate == 2.0
         assert captured["frame_source_config"].loop == WebappConfig().frame_source.loop
         # _FakeFrameSource reports a native fps of 25.0.
         assert captured["sink_fps"] == 25.0 * 2.0
+    finally:
+        await manager.aclose()
+
+
+@asynccontextmanager
+async def _capturing_frame_source_cm(source, *, config=None):
+    _CAPTURED_FRAME_SOURCE_CONFIGS.append(config)
+    yield _FakeFrameSource()
+
+
+_CAPTURED_FRAME_SOURCE_CONFIGS: list[object] = []
+
+
+@pytest.mark.parametrize(
+    ("configured_loop", "requested_loop", "expected_loop"),
+    [
+        # An explicit request wins either way round...
+        (False, True, True),
+        (True, False, False),
+        # ...and None means "no preference", so the YAML's own value stands. That distinction is
+        # what keeps a configured loop: true from being silently cleared by an API client that
+        # simply doesn't send the field.
+        (True, None, True),
+        (False, None, False),
+    ],
+)
+async def test_loop_is_a_per_request_override_of_the_configured_default(
+    monkeypatch,
+    tmp_path: Path,
+    configured_loop: bool,
+    requested_loop: bool | None,
+    expected_loop: bool,
+) -> None:
+    _CAPTURED_FRAME_SOURCE_CONFIGS.clear()
+    config = WebappConfig.from_dict({"frame_source": {"loop": configured_loop}})
+    manager = _make_manager(monkeypatch, config)
+    monkeypatch.setattr(core.FfmpegFrameSource, "start", _capturing_frame_source_cm)
+    try:
+        await manager._build(
+            tmp_path / "test.mp4", 1.0, core.StopStrategyConfig(), loop=requested_loop
+        )
+        assert _CAPTURED_FRAME_SOURCE_CONFIGS[-1].loop is expected_loop
     finally:
         await manager.aclose()
 

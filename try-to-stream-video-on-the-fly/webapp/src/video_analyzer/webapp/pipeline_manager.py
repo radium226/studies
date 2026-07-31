@@ -87,10 +87,13 @@ class PipelineManager:
         speed_factor: float,
         stop_strategy: core.StopStrategyConfig,
         *,
+        loop: bool | None = None,
         label: str | None = None,
     ) -> core.VideoInfo:
         async with self._lock:
-            return await self._build(source, speed_factor, stop_strategy, label=label)
+            return await self._build(
+                source, speed_factor, stop_strategy, loop=loop, label=label
+            )
 
     async def go_idle(self) -> None:
         """Explicit stop: tear the pipeline down to idle. Not a failure, so no error popup is
@@ -104,6 +107,7 @@ class PipelineManager:
         speed_factor: float,
         stop_strategy: core.StopStrategyConfig,
         *,
+        loop: bool | None = None,
         label: str | None = None,
     ) -> core.VideoInfo:
         # Teardown-first: only one ffmpeg pair + ONNX pipeline ever runs at a time, at
@@ -120,10 +124,16 @@ class PipelineManager:
         try:
             stop_token = kernel.StopToken()
 
-            # read_rate (the playback speed factor) is the one frame_source knob chosen live per
-            # request rather than fixed in the YAML — everything else in the section (loop,
-            # resize, stop_timeout) still comes from the static config.
-            frame_source_config = replace(self._config.frame_source, read_rate=speed_factor)
+            # read_rate (the playback speed factor) and loop are the frame_source knobs chosen
+            # live per request rather than fixed in the YAML; resize and stop_timeout still come
+            # from the static config. `loop=None` means the request didn't express a preference,
+            # so the YAML's own value stands — that's what keeps a config-file default meaningful
+            # instead of being silently overwritten by an absent form field.
+            frame_source_config = replace(
+                self._config.frame_source,
+                read_rate=speed_factor,
+                loop=self._config.frame_source.loop if loop is None else loop,
+            )
             raw_frame_source = await new_stack.enter_async_context(
                 core.FfmpegFrameSource.start(source, config=frame_source_config)
             )

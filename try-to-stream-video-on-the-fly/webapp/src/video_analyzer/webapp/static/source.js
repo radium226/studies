@@ -20,6 +20,7 @@ sourceKindFile.addEventListener("change", updateSourceKindRows);
 sourceKindUrl.addEventListener("change", updateSourceKindRows);
 
 const speedFactorInput = document.getElementById("speed-factor");
+const loopCheckbox = document.getElementById("source-loop");
 const afterFrameCountEnabled = document.getElementById("stop-after-frame-count-enabled");
 const afterFrameCountMaxFrames = document.getElementById("stop-after-frame-count-max-frames");
 const onFirstTrackEnabled = document.getElementById("stop-on-first-track-enabled");
@@ -93,6 +94,9 @@ form.addEventListener("submit", (e) => {
     {
       ...sourceField,
       speed_factor: parseFloat(speedFactorInput.value),
+      // Always sent, so the checkbox is authoritative once the form is used. The server treats
+      // an *absent* loop as "keep the YAML default" — that path is for API clients, not this UI.
+      loop: loopCheckbox.checked,
       stop_strategy: {
         after_frame_count: {
           enabled: afterFrameCountEnabled.checked,

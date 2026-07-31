@@ -240,6 +240,11 @@ async def set_source(request: Request):
     if url and not url.startswith(("http://", "https://")):
         return JSONResponse({"error": "url must be http(s)"}, status_code=400)
 
+    # Absent means "no preference" (-> the YAML's frame_source.loop stands), which is different
+    # from an explicit false. Anything present is read as a plain JSON truthiness flag, same as
+    # app/app.py's own `bool(body.get("loop"))`.
+    loop = None if body.get("loop") is None else bool(body["loop"])
+
     speed_factor_raw = body.get("speed_factor", 1.0)
     try:
         speed_factor = float(speed_factor_raw)
@@ -268,7 +273,9 @@ async def set_source(request: Request):
         # (and this request) hostage.
         async with asyncio.timeout(SOURCE_SWITCH_TIMEOUT_S):
             source = await core.resolve_direct_media_url(url) if url else str(source_path)
-            info = await manager.start(source, speed_factor, stop_strategy, label=label)
+            info = await manager.start(
+                source, speed_factor, stop_strategy, loop=loop, label=label
+            )
     except TimeoutError:
         logger.error("source start ({!r}) timed out after {}s", label, SOURCE_SWITCH_TIMEOUT_S)
         return JSONResponse(

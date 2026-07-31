@@ -40,8 +40,8 @@ implementation — see the root `CLAUDE.md`).
 There are exactly two CLI options: `--config FILE` and `--dump-config`, same as `cli`. Unlike
 `cli`, there's no positional source argument and no `stop_strategy:` config section — the app
 **starts idle** (no source, no pipeline), and the video source (a local file or a pasted URL), the
-speed factor, and the stop strategy are all chosen live from the web UI per request (`POST
-/api/source`), not fixed for the whole process. Everything else — model paths, pipeline
+speed factor, whether to loop, and the stop strategy are all chosen live from the web UI per
+request (`POST /api/source`), not fixed for the whole process. Everything else — model paths, pipeline
 batching/lookahead, frame source/sink tuning, which directory is browsable, server host/port —
 lives in the YAML document.
 
@@ -50,11 +50,15 @@ The schema, section by section (see `config.py`'s `WebappConfig`):
 - `models:` — `scrfd`/`arcface` ONNX weight paths (not bundled; default to `../app/models/...`).
 - `pipeline:` — `kernel.PipelineConfig` verbatim, same as `cli`.
 - `frame_source:` — `core.FfmpegFrameSourceConfig` (`loop`, `resize`, `read_rate`, `stop_timeout`).
-  `read_rate` (the playback speed factor) is the one field of this section overridden per request
-  — `PipelineManager._build` builds the effective config via `dataclasses.replace(self._config
-  .frame_source, read_rate=speed_factor)`, so `loop`/`resize`/`stop_timeout` still come from here
-  unconditionally. Unlike `app/`'s original UI, `loop` is **not** exposed per request — it stays a
-  static YAML-only choice.
+  `read_rate` (the playback speed factor) and `loop` are the two fields of this section overridden
+  per request — `PipelineManager._build` builds the effective config via `dataclasses.replace
+  (self._config.frame_source, read_rate=speed_factor, loop=...)`, so `resize`/`stop_timeout` still
+  come from here unconditionally. `loop` is **tri-state** at the boundary: `PipelineManager.start`
+  takes `loop: bool | None`, and `None` (the field absent from the `/api/source` body) means "no
+  preference", leaving this YAML value in force. That distinction matters because a `false` from
+  an unchecked box and a missing field are otherwise indistinguishable in JSON, and the latter
+  must not silently clear a configured `loop: true`. The web form always sends the checkbox, so
+  the `None` path is for API clients only.
 - `frame_sink:` — `core.FfmpegFrameSinkConfig` directly (unlike `cli`, which needs its own
   `FfplayFrameSinkConfig` because its sink isn't `core`'s ffmpeg encoder — this project's sink
   *is*, via `overlay_frame_sink.py`).
@@ -251,11 +255,13 @@ Key files (`src/video_analyzer/webapp/`):
   closes immediately if idle), `/api/browse` (`GET ?path=...`, defaults to
   `config.video_library.directory` when omitted; `{"path", "parent", "entries": [{"name", "path",
   "is_dir", "size", "modified"}, ...]}` from `fs_browser.list_directory` — a bad/unreadable path is
-  400, not a 500), `POST /api/source` (body `{"path" | "url", "speed_factor", "stop_strategy":
-  {...}}` — exactly one of `path`/`url`, both or neither is a 400; resolves a path via
-  `fs_browser.resolve_video_path`, format-checks a url for an `http(s)://` scheme (mirroring
-  `app/app.py`'s own check), validates `speed_factor` by hand (must parse as a number, must be
-  `> 0`; defaults to `1.0` if omitted), and validates the stop strategy via
+  400, not a 500), `POST /api/source` (body `{"path" | "url", "speed_factor", "loop",
+  "stop_strategy": {...}}` — exactly one of `path`/`url`, both or neither is a 400; resolves a
+  path via `fs_browser.resolve_video_path`, format-checks a url for an `http(s)://` scheme
+  (mirroring `app/app.py`'s own check), validates `speed_factor` by hand (must parse as a number,
+  must be `> 0`; defaults to `1.0` if omitted), reads `loop` as tri-state (absent → `None` →
+  the YAML default stands, see the `frame_source:` bullet above), and validates the stop strategy
+  via
   `core.StopStrategyConfig.from_dict` — all **before** calling `PipelineManager.start`, so any of
   those failing 400s without ever touching ffmpeg/yt-dlp or tearing down whatever is currently
   playing. The actual yt-dlp resolution (`core.resolve_direct_media_url`) runs *inside* the same
@@ -303,7 +309,8 @@ Key files (`src/video_analyzer/webapp/`):
   which of two form rows is visible: "Choose file…" (opens the browse modal; the selected absolute
   path is held in a local variable and shown next to the button) or a plain `#source-url` text
   input. Form submit builds `{path, ...}` or `{url, ...}` (never both) plus the shared
-  `speed_factor`/`stop_strategy` fields. The "Test pattern" button `app/`'s own `source.js` has is
+  `speed_factor`/`loop`/`stop_strategy` fields (the loop checkbox is always sent, so the form is
+  authoritative about it). The "Test pattern" button `app/`'s own `source.js` has is
   dropped (no synthetic source here).
 
 ## Working in this codebase
