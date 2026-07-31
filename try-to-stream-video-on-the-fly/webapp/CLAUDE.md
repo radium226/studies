@@ -155,9 +155,23 @@ Key files (`src/video_analyzer/webapp/`):
   `kernel` nor `core` provides. `core.FfmpegFrameSink.write_frame` takes a full `AnnotatedFrame`
   and draws nothing (see its own module docstring — overlay drawing is explicitly left to the
   composing app, same as `cli/ffplay_frame_sink.py` does it inline for its own sink). This class
-  copies the frame, draws boxes/track-ids via `core.overlay.draw_dashed_rect`/`cv2` (solid = exact
-  detection, dashed = interpolated — same convention `cli`'s sink uses), and delegates the rest
-  (`write_frame`/`close_stdin`/`read_output_chunk`) to a wrapped `core.FfmpegFrameSink`.
+  copies the frame, draws boxes/landmarks/track-ids via `core.overlay.draw_dashed_rect`/`cv2`
+  (solid = exact detection, dashed = interpolated — same convention `cli`'s sink uses), and
+  delegates the rest (`write_frame`/`close_stdin`/`read_output_chunk`) to a wrapped
+  `core.FfmpegFrameSink`. The 5 SCRFD keypoints are drawn as filled discs alongside the box: they
+  are interpolated per frame anyway (`kernel.TrackedFace` flattens box + landmarks into one
+  14-float vector), and they make a bad interpolation visible long before the box itself drifts.
+  **`_track_color` deliberately does not reproduce `app/engine.py`'s formula.** `app/` mapped the
+  first three embedding dimensions onto BGR as `(v + 1) / 2 * 255`; since ArcFace embeddings are
+  L2-normalized over 512 dimensions, each component averages about `1/sqrt(512)` ≈ 0.04, so that
+  formula collapses every identity into near-identical mid-grey — it only *looked* like
+  per-identity colouring. This takes `atan2` of the first two dimensions as an OpenCV hue
+  (`[0, 180)`) at full saturation/value instead, which spreads identities across the colour wheel
+  and is exactly as deterministic; the embedding survives interpolation unchanged
+  (`TrackedFace.with_vector` copies it from the template), so a track keeps one colour for life.
+  `test_overlay_frame_sink.py` pins both properties. Note this is the **only** consumer of
+  `face.embedding` anywhere in `webapp`/`cli` — everywhere else ArcFace output is computed and
+  carried but never read (`core.ByteTrackTracker` associates on IoU alone).
 - **`orchestrator.py`** — `Orchestrator`: owns two long-lived asyncio tasks, created with plain
   `create_task` (not a `TaskGroup` — a `TaskGroup` held open across the context-manager yield would
   cancel whichever unrelated task entered the context when a child crashes, same reasoning
