@@ -8,6 +8,7 @@ from .config import FfmpegFrameSinkConfig as FfmpegFrameSinkConfig
 from .config import FfmpegFrameSourceConfig as FfmpegFrameSourceConfig
 from .config import HistogramSceneDetectorConfig as HistogramSceneDetectorConfig
 from .config import InterpolationMethod as InterpolationMethod
+from .config import MetricsCollectorConfig as MetricsCollectorConfig
 from .config import OnnxFaceDetectorConfig as OnnxFaceDetectorConfig
 from .config import OnnxFaceEmbedderConfig as OnnxFaceEmbedderConfig
 from .config import SplineInterpolatorConfig as SplineInterpolatorConfig
@@ -20,6 +21,10 @@ from .ffmpeg_frame_source import VideoInfo as VideoInfo
 from .ffmpeg_frame_source import probe_video_info as probe_video_info
 from .ffmpeg_frame_source import resolve_resize as resolve_resize
 from .histogram_scene_detector import HistogramSceneDetector as HistogramSceneDetector
+from .metrics import MeteredFaceDetector as MeteredFaceDetector
+from .metrics import MeteredFaceEmbedder as MeteredFaceEmbedder
+from .metrics import MeteredFrameBroadcaster as MeteredFrameBroadcaster
+from .metrics import MetricsCollector as MetricsCollector
 from .onnx_face_detector import OnnxFaceDetector as OnnxFaceDetector
 from .onnx_face_embedder import OnnxFaceEmbedder as OnnxFaceEmbedder
 from .overlay import draw_caption_text as draw_caption_text

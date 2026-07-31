@@ -151,6 +151,23 @@ class FfmpegFrameSinkConfig(Config):
 
 
 @dataclass(frozen=True, slots=True)
+class MetricsCollectorConfig(Config):
+    """How far back the live pipeline metrics average.
+
+    The clock is not here: it is a collaborator, so it stays a constructor
+    argument of `MetricsCollector` (same rule as `BatchGate`'s).
+    """
+
+    # Long enough to smooth out a single slow inference pass, short enough that
+    # the panel still tracks what the pipeline is doing *now*.
+    window_s: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.window_s <= 0.0:
+            raise ConfigError(f"window_s must be > 0, got {self.window_s}")
+
+
+@dataclass(frozen=True, slots=True)
 class StopAfterFrameCountConfig(Config):
     """After how many frames read the stop token is set.
 

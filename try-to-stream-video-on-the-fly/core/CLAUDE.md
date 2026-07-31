@@ -77,6 +77,18 @@ src/video_analyzer/core/
 ├── overlay.py               draw_caption_text / draw_dashed_rect — pure cv2 helpers, no ABC to
 │                           satisfy; draw onto annotated_frame.frame.content before it reaches
 │                           a FrameSink if you want boxes burned into the video
+├── metrics.py              MetricsCollector — trailing time-window (MetricsCollectorConfig
+│                           .window_s, default 5 s) moving averages of live pipeline stats, plus
+│                           the three decorators that feed it: MeteredFaceDetector (times a
+│                           detection pass, records its batch size and per-frame face counts),
+│                           MeteredFaceEmbedder (times an embedding pass, records its crop
+│                           count), MeteredFrameBroadcaster (counts rendered frames, records the
+│                           latest frame's face count as active_tracks). Ported from
+│                           app/metrics.py, which recorded all of it from one monolithic
+│                           Engine.process; the numbers live in three separate kernel.Pipeline
+│                           stages here, so decorators are the only way to reach them without a
+│                           new kernel contract. Generic and numpy-free, same as the stop
+│                           strategies below
 ├── stop_after_frame_count.py StopAfterFrameCount(kernel.FrameSource) — decorates a FrameSource,
 │                           requests an early kernel.StopToken stop once the Nth frame has been
 │                           read (still returns that frame). Generic, no numpy — lives here only
@@ -161,11 +173,21 @@ config); point it at `app/models/scrfd_10g_kps_dynamic.onnx` /
   injectable `Executor`, defaulting to the loop's default thread pool) — `ByteTrackTracker.update`
   deliberately does not, since ByteTrack's update is cheap bookkeeping, not inference; don't add
   executor offloading there without a reason.
-- `StopAfterFrameCount`/`StopOnFirstTrack` are the only generic classes in `core` — an
-  intentional exception to "everything that computes numbers belongs here, only `kernel`'s
-  `Interpolator`/`Interpolable` stays generic": neither touches frame content at all (one counts
-  reads, the other counts rendered frames per track id), so pinning them to `NDArray[np.uint8]`
-  like every other backend here would just be dishonest about what they depend on.
+- `StopAfterFrameCount`/`StopOnFirstTrack` and the three `Metered*` decorators in `metrics.py`
+  are the only generic classes in `core` — an intentional exception to "everything that computes
+  numbers belongs here, only `kernel`'s `Interpolator`/`Interpolable` stays generic": none of
+  them touches frame content at all (they count reads, rendered frames per track id, batch sizes,
+  and elapsed time), so pinning them to `NDArray[np.uint8]` like every other backend here would
+  just be dishonest about what they depend on.
+- **Observing the pipeline is a decorator, not a new `kernel` service.** `metrics.py` follows the
+  exact rule the stop strategies do (`kernel/CLAUDE.md` states it for `StopToken`): the timings
+  worth reporting live inside `kernel.Pipeline`'s stages, and the way a composing application
+  reaches them is by wrapping the service the stage calls — never by adding an observer ABC to
+  `kernel`. If you want a metric the three `Metered*` decorators can't see (`BatchGate`'s own
+  firing decisions, say), that is a real limit of this approach, not a reason to punch a hole in
+  the kernel contract. Note also that `MetricsCollector` is fed from the event loop on every
+  path (the decorators time the `await`; they do not run inside the detector's executor), which
+  is what lets it stay lock-free — keep it that way.
 - `app/` was not touched when this project was created and still has its own inline
   `engine.py`/`detection.py`/`tracking.py`/`interpolation.py`/`reader.py`/`writer.py` copies —
   migrating `app/` to depend on `core`+`kernel` instead is a separate, not-yet-done task.
