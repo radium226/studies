@@ -94,6 +94,13 @@ async def status(request: Request):
     return JSONResponse(manager.status())
 
 
+async def metrics(request: Request):
+    """Live pipeline stats, polled by static/metrics.js. `{}` while idle — there is no pipeline
+    to measure, and the panel renders a missing key as a dash rather than a stale number."""
+    collector: core.MetricsCollector | None = request.app.state.metrics
+    return JSONResponse(collector.snapshot() if collector is not None else {})
+
+
 async def browse(request: Request):
     config: WebappConfig = request.app.state.config
     path = request.query_params.get("path")
@@ -287,6 +294,7 @@ app = Starlette(
         Route("/{stream_id}.mp4", stream),
         Route("/videos/{stream_id}/{track_id}.mp4", track_stream),
         Route("/api/status", status),
+        Route("/metrics", metrics),
         Route("/api/browse", browse),
         Route("/api/source", set_source, methods=["POST"]),
         Route("/api/stop", stop_source, methods=["POST"]),

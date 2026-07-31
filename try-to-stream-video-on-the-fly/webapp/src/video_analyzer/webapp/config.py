@@ -102,6 +102,9 @@ class WebappConfig(kernel.Config):
     scene_detector: core.HistogramSceneDetectorConfig | None = dataclass_field(
         default_factory=core.HistogramSceneDetectorConfig
     )
+    metrics: core.MetricsCollectorConfig = dataclass_field(
+        default_factory=core.MetricsCollectorConfig
+    )
     video_library: VideoLibraryConfig = dataclass_field(default_factory=VideoLibraryConfig)
     broadcaster: BroadcasterConfig = dataclass_field(default_factory=BroadcasterConfig)
     server: ServerConfig = dataclass_field(default_factory=ServerConfig)

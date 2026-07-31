@@ -54,6 +54,14 @@ def test_status_is_idle_at_startup(client: TestClient) -> None:
     assert res.json() == {"state": "idle", "stream_url": None, "source": None, "error": None}
 
 
+def test_metrics_is_empty_while_idle(client: TestClient) -> None:
+    # There is no pipeline to measure, so the panel gets nothing to render rather than a
+    # zeroed-out snapshot that would look like a stalled pipeline.
+    res = client.get("/metrics")
+    assert res.status_code == 200
+    assert res.json() == {}
+
+
 def test_browse_returns_the_configured_directory_by_default(client: TestClient) -> None:
     res = client.get("/api/browse")
     assert res.status_code == 200

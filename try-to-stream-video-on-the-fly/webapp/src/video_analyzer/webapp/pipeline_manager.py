@@ -77,6 +77,9 @@ class PipelineManager:
         self._app.state.broadcaster = None
         self._app.state.stream_id = None
         self._app.state.track_manager = None
+        # Metrics belong to one build: a new pipeline gets a fresh collector rather than carrying
+        # the previous source's timings into its first window. /metrics reports {} while None.
+        self._app.state.metrics = None
 
     async def start(
         self,
@@ -135,13 +138,31 @@ class PipelineManager:
                     frame_source, stop_token, config=stop_strategy.after_frame_count
                 )
 
-            face_detector = new_stack.enter_context(
-                core.OnnxFaceDetector(self._config.models.scrfd, config=self._config.face_detector)
+            # One clock for the whole build, shared by the pipeline's BatchGate and the metrics
+            # windows so both measure elapsed time on the same monotonic scale.
+            clock = SystemClock()
+            metrics = core.MetricsCollector(clock, config=self._config.metrics)
+
+            # The Metered* wrappers are how /metrics sees inside kernel.Pipeline at all: the
+            # timings it reports happen in stages the composing app can't otherwise reach (see
+            # core/CLAUDE.md). They only time the await, so the real work is untouched.
+            face_detector: kernel.FaceDetector = core.MeteredFaceDetector(
+                new_stack.enter_context(
+                    core.OnnxFaceDetector(
+                        self._config.models.scrfd, config=self._config.face_detector
+                    )
+                ),
+                metrics,
+                clock,
             )
-            face_embedder = new_stack.enter_context(
-                core.OnnxFaceEmbedder(
-                    self._config.models.arcface, config=self._config.face_embedder
-                )
+            face_embedder: kernel.FaceEmbedder = core.MeteredFaceEmbedder(
+                new_stack.enter_context(
+                    core.OnnxFaceEmbedder(
+                        self._config.models.arcface, config=self._config.face_embedder
+                    )
+                ),
+                metrics,
+                clock,
             )
 
             # -r on the encoder is the other half of the time compression: the decoder hands us
@@ -172,7 +193,11 @@ class PipelineManager:
                 )
             )
 
-            frame_broadcaster: kernel.FrameBroadcaster = track_video_manager
+            # Metered innermost, so processed_fps counts every rendered frame regardless of
+            # which stop strategies happen to be armed on top of it.
+            frame_broadcaster: kernel.FrameBroadcaster = core.MeteredFrameBroadcaster(
+                track_video_manager, metrics
+            )
             if stop_strategy.on_first_track.enabled:
                 frame_broadcaster = core.StopOnFirstTrack(
                     frame_broadcaster, stop_token, config=stop_strategy.on_first_track
@@ -183,7 +208,7 @@ class PipelineManager:
             tracker: kernel.Tracker = core.ByteTrackTracker(fps, config=self._config.tracker)
 
             pipeline = kernel.Pipeline(
-                clock=SystemClock(),
+                clock=clock,
                 scene_detector=(
                     core.HistogramSceneDetector(config=self._config.scene_detector)
                     if self._config.scene_detector is not None
@@ -217,6 +242,7 @@ class PipelineManager:
         self._app.state.broadcaster = broadcaster
         self._app.state.stream_id = str(uuid.uuid4())
         self._app.state.track_manager = track_video_manager
+        self._app.state.metrics = metrics
         self._generation += 1
         generation = self._generation
         task = asyncio.create_task(

@@ -68,6 +68,8 @@ The schema, section by section (see `config.py`'s `WebappConfig`):
   open-ended list, so the allowed extension set lives as a module constant
   (`fs_browser.VIDEO_EXTENSIONS`) instead — closer to a format allowlist than a per-run tuning
   choice anyway.
+- `metrics:` — `core.MetricsCollectorConfig` (`window_s`, how far back the live pipeline stats
+  average; `app/`'s hardcoded 5 s, promoted to a config field).
 - `broadcaster:` — `max_fragments`, how many recent fMP4 fragments the HTTP broadcaster retains
   for new/lagging clients (`app/`'s hardcoded default of 15, promoted to a config field).
 - `server:` — `host`/`port` for uvicorn.
@@ -215,7 +217,14 @@ Key files (`src/video_analyzer/webapp/`):
   encoder's `fps * speed_factor`), optionally wrapped by `core.StopOnFirstTrack` when armed. Also
   sets `self._app.state.track_manager` alongside `broadcaster`/`stream_id` (and clears it in
   `_set_idle_state`), so `app.py`'s track routes see the same idle/stale-generation semantics for
-  free.
+  free. Same for `state.metrics`: each build gets a **fresh** `core.MetricsCollector` (so a new
+  source never inherits the previous one's timings in its first window) and wraps the ONNX
+  detector/embedder in `core.MeteredFaceDetector`/`MeteredFaceEmbedder` and the track manager in
+  `core.MeteredFrameBroadcaster` — the only way to observe timings that happen inside
+  `kernel.Pipeline`'s stages without inventing a kernel-level observer contract (see
+  `core/CLAUDE.md`). The metered broadcaster goes *inside* any armed `StopOnFirstTrack`, so
+  `processed_fps` counts every rendered frame regardless of which stop strategies are on. One
+  `SystemClock` is shared by the pipeline's `BatchGate` and the metrics windows.
 - **`broadcaster.py`** — `Broadcaster`: ported from `app/broadcaster.py`, unchanged. Single
   producer (the box-parse task) / many async consumers on one `asyncio.Condition`; bounded `deque`
   drop-oldest retention; `wait_for_next()` raises `LaggedError` when a client falls off the back;
@@ -255,9 +264,10 @@ Key files (`src/video_analyzer/webapp/`):
   `POST /api/stop`
   (go idle). The main and per-track live-tail routes share `_stream_broadcaster(request,
   broadcaster)` — the `generate()`/`StreamingResponse` construction is identical either way, only
-  which `Broadcaster` differs. No `/metrics` route: `kernel.Pipeline` has no metrics-snapshot
-  facility today (unlike `app/`'s `Engine.metrics_snapshot()`) — a real scope cut versus `app/`'s
-  UI, not an oversight. `_configure_logging()` (called inside `main()`, not at import time, so
+  which `Broadcaster` differs. `/metrics` returns `app.state.metrics.snapshot()`, or `{}` while
+  idle — same contract as `app/`'s own route, and `static/metrics.js` renders a missing key as a
+  dash, so an idle server shows dashes rather than a zeroed snapshot that would read as a stalled
+  pipeline. `_configure_logging()` (called inside `main()`, not at import time, so
   importing this module for tests has no logging side effects) calls `logger.enable
   ("video_analyzer")`: `kernel`/`core`/`webapp` each disable their own logger by default (library
   etiquette — see `kernel/CLAUDE.md`), so the entry point has to opt back in, same as `cli/main.py`
@@ -273,6 +283,10 @@ Key files (`src/video_analyzer/webapp/`):
   `/api/status`'s shape and a stream URL, so it stays source-agnostic. `onEnded(gone)`'s `gone`
   flag reproduces the original's two distinct endings: a clean 410/EOF close (show idle, poll
   `/api/status` again) versus a dropped connection (show "reconnecting...", retry sooner).
+- **`static/metrics.js`** — ported from `app/`'s unchanged (the `/metrics` snapshot keys are
+  deliberately identical, so it stays a straight port): polls `/metrics` twice a second and
+  redraws the `#stats` overlay panel. Server-side moving averages, so it only ever renders the
+  latest snapshot — no client-side smoothing.
 - **`static/tracks.js`** — the face-loop column: opens `/ws/tracks`, and for every `existing`/
   `new_track` track id not already rendered, `GET /api/tracks/{id}` for its `video_url`, creates a
   small muted `<video class="track-entry">` in `#tracks-column`, and calls `attachLiveStream` on

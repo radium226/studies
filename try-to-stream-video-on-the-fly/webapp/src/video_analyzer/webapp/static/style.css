@@ -99,6 +99,59 @@ video {
   font-size: 0.9rem;
 }
 
+/* Pipeline stats overlay, top-left of the player — the source form takes the
+   top-right corner. Ported from app/'s stylesheet unchanged. */
+.stats {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: #ddd;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+  min-width: 12rem;
+}
+
+.stats-title {
+  color: #9ad;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+  margin-bottom: 0.35rem;
+}
+
+.stats-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.stats-table td {
+  padding: 0.05rem 0;
+  white-space: nowrap;
+}
+
+.stats-table td.stats-label {
+  color: #999;
+  padding-right: 1rem;
+}
+
+.stats-table td.stats-value {
+  text-align: right;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-table td.stats-unit {
+  color: #777;
+  padding-left: 0.35rem;
+}
+
 .source-form {
   position: absolute;
   top: 0.75rem;
