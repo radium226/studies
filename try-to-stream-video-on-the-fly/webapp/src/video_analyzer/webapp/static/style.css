@@ -1,0 +1,323 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
+}
+
+.player-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.progress-bar {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.progress-bar.visible {
+  display: block;
+}
+
+.progress-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  background: #eee;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+#status {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.source-form {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem 0.6rem;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+  max-width: min(24rem, 60vw);
+}
+
+.source-form-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.selected-file {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #ccc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.stop-strategy {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #ccc;
+  font-family: system-ui, sans-serif;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.stop-strategy input[type="number"] {
+  width: 4.5rem;
+  padding: 0.15rem 0.3rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+  font-size: 0.8rem;
+}
+
+.form-field {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #ccc;
+  font-family: system-ui, sans-serif;
+  font-size: 0.8rem;
+}
+
+.form-field input[type="number"] {
+  width: 4.5rem;
+  padding: 0.15rem 0.3rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+  font-size: 0.8rem;
+}
+
+.source-form button {
+  padding: 0.3rem 0.75rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.source-form button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.source-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.source-error {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  max-width: min(44rem, 80vw);
+  background: rgba(40, 0, 0, 0.8);
+  border: 1px solid rgba(255, 80, 80, 0.45);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+  color: #fbb;
+}
+
+.source-error-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid rgba(255, 80, 80, 0.25);
+}
+
+.source-error-title {
+  color: #f88;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.7rem;
+}
+
+.source-error-header button {
+  background: none;
+  border: none;
+  color: #f88;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.source-error pre {
+  margin: 0;
+  padding: 0.6rem;
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 10;
+}
+
+/* An author-origin `display` declaration overrides the UA stylesheet's `[hidden] { display:
+   none }` regardless of specificity, so the rule above would otherwise keep this permanently
+   visible (and unclosable, since toggling the `hidden` attribute in JS would have no visual
+   effect). This rule is more specific than the one above ([hidden] adds an attribute selector),
+   so it correctly wins whenever the attribute is present. */
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(36rem, 90vw);
+  max-height: 80vh;
+  background: #161616;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.modal-path {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.modal-header button {
+  padding: 0.3rem 0.6rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  color: #eee;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.modal-header button:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.modal-header button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.modal-error {
+  margin: 0.6rem 0.6rem 0;
+  padding: 0.5rem 0.6rem;
+  background: rgba(40, 0, 0, 0.6);
+  border: 1px solid rgba(255, 80, 80, 0.4);
+  border-radius: 4px;
+  color: #fbb;
+  font-size: 0.8rem;
+}
+
+.modal-entries {
+  margin: 0;
+  padding: 0.4rem;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.modal-entry {
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  color: #ddd;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-entry:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.modal-entry-empty {
+  color: #888;
+  cursor: default;
+}
+
+.modal-entry-empty:hover {
+  background: none;
+}

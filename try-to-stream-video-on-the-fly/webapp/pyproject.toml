@@ -1,0 +1,47 @@
+[project]
+name = "video-analyzer-webapp"
+version = "0.1.0"
+description = "Browser-facing video streamer: pick a local file, pick a stop strategy, watch it play live with detected/tracked faces drawn on it. Wires video-analyzer-core's real SCRFD/ArcFace/ByteTrack/PCHIP/histogram-scene-cut backends into video-analyzer-kernel's Pipeline, MSE-streamed to the browser over Starlette."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "video-analyzer-core",
+    "starlette>=1.3.1",
+    "uvicorn>=0.51.0",
+    "click>=8.1.0",
+    "jinja2>=3.1.6",
+    "loguru>=0.7.3",
+]
+
+[project.scripts]
+video-analyzer-webapp = "video_analyzer.webapp.app:main"
+
+[tool.uv.sources]
+video-analyzer-core = { path = "../core", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "video_analyzer.webapp"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.15.21",
+    "ty>=0.0.58",
+    "httpx2>=2.9.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

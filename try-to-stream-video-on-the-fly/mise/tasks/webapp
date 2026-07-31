@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-#MISE description="Run the video-streamer webapp"
+#MISE description="Run the video-analyzer-webapp (kernel/core-based rebuild of app/)"
 set -euxo pipefail
 
-# The app starts idle; enter a source URL (and tick "loop") in the web UI.
-uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer \
-    --speed-factor=1 \
-    --scrfd-batch-frames=16 \
-    --max-batch-lag-ms=5000
+# The app starts idle; pick a file and a stop strategy from the web UI.
+uv --directory="${MISE_PROJECT_ROOT}/webapp" run video-analyzer-webapp

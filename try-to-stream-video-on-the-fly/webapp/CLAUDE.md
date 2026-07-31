@@ -1,0 +1,260 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this
+subproject. See the repo root `CLAUDE.md` for how this fits alongside `app/`, `kernel/`, `core/`,
+and `cli/`.
+
+## What this is
+
+`video-analyzer-webapp` (importable as `video_analyzer.webapp`) — `app/`'s browser-facing product
+(pick a video, watch it stream live over HTTP via MSE while detected/tracked faces are drawn on
+it), rebuilt on [`kernel`](../kernel)'s `Pipeline` and [`core`](../core)'s real SCRFD/ArcFace/
+ByteTrack/spline/ffmpeg backends, the same way [`cli`](../cli) is — except `cli` shows the result
+in a local `ffplay` window and this project streams it to a browser instead. That transport layer
+(an fMP4 encoder sink with overlay drawing, an HTTP fan-out broadcaster, the Starlette routes and
+web UI) is this project's own contribution; neither `kernel` nor `core` has an opinion on it (see
+`core/CLAUDE.md`).
+
+Depends on `core` via a `uv` path source (`../core`, editable), which transitively pulls in
+`kernel`. Not a workspace, matching the standalone-project style `app/`, `kernel`, `core`, and
+`cli` already use.
+
+## Commands
+
+All commands run from this directory (a `uv`-managed Python project).
+
+```bash
+uv sync                                  # install/update dependencies (resolves ../core, ../kernel)
+uv run video-analyzer-webapp             # http://127.0.0.1:8000, defaults
+uv run video-analyzer-webapp --dump-config > run.yaml   # every knob, at its default
+uv run video-analyzer-webapp --config run.yaml          # ...and run with it
+uv run pytest                            # unit tests (tests/ — pure-Python units, no ffmpeg/ONNX)
+uv run ruff check src tests              # lint
+uv run ty check src                      # type check
+```
+
+Or via `mise` from anywhere in the repo: `mise run webapp` (`mise run app` runs the older `app/`
+implementation — see the root `CLAUDE.md`).
+
+There are exactly two CLI options: `--config FILE` and `--dump-config`, same as `cli`. Unlike
+`cli`, there's no positional source argument and no `stop_strategy:` config section — the app
+**starts idle** (no source, no pipeline), and the video file, the speed factor, and the stop
+strategy are all chosen live from the web UI per request (`POST /api/source`), not fixed for the
+whole process. Everything else — model paths, pipeline batching/lookahead, frame source/sink
+tuning, which directory is browsable, server host/port — lives in the YAML document.
+
+The schema, section by section (see `config.py`'s `WebappConfig`):
+
+- `models:` — `scrfd`/`arcface` ONNX weight paths (not bundled; default to `../app/models/...`).
+- `pipeline:` — `kernel.PipelineConfig` verbatim, same as `cli`.
+- `frame_source:` — `core.FfmpegFrameSourceConfig` (`loop`, `resize`, `read_rate`, `stop_timeout`).
+  `read_rate` (the playback speed factor) is the one field of this section overridden per request
+  — `PipelineManager._build` builds the effective config via `dataclasses.replace(self._config
+  .frame_source, read_rate=speed_factor)`, so `loop`/`resize`/`stop_timeout` still come from here
+  unconditionally. Unlike `app/`'s original UI, `loop` is **not** exposed per request — it stays a
+  static YAML-only choice.
+- `frame_sink:` — `core.FfmpegFrameSinkConfig` directly (unlike `cli`, which needs its own
+  `FfplayFrameSinkConfig` because its sink isn't `core`'s ffmpeg encoder — this project's sink
+  *is*, via `overlay_frame_sink.py`).
+- `face_detector:`/`face_embedder:`/`tracker:`/`interpolator:` — the corresponding `core` configs.
+- `scene_detector:` — `core.HistogramSceneDetectorConfig`, or `null` for the never-cuts
+  `NoopSceneDetector`, same idiom as `cli`.
+- `video_library:` — `directory:` only, and it's purely the default directory the browse modal
+  (`/api/browse`) opens on first use — not an access boundary; the modal can navigate anywhere the
+  process can read. Which extensions count as a video is **not** configurable here:
+  `kernel.Config`'s parser only supports fixed-length tuples (`tuple[int, int]`-style), not an
+  open-ended list, so the allowed extension set lives as a module constant
+  (`fs_browser.VIDEO_EXTENSIONS`) instead — closer to a format allowlist than a per-run tuning
+  choice anyway.
+- `broadcaster:` — `max_fragments`, how many recent fMP4 fragments the HTTP broadcaster retains
+  for new/lagging clients (`app/`'s hardcoded default of 15, promoted to a config field).
+- `server:` — `host`/`port` for uvicorn.
+
+The stop strategy — `core.StopStrategyConfig`'s `after_frame_count`/`on_first_track`, exactly as
+`core/CLAUDE.md` documents — is parsed straight from the `POST /api/source` JSON body
+(`core.StopStrategyConfig.from_dict(body.get("stop_strategy"))`, reusing `core`'s own validation)
+each time a source starts, not from the YAML. `speed_factor` (default `1.0` if omitted) is
+validated by hand in `app.py` (must parse as a number, must be `> 0`) before ever calling
+`PipelineManager.start` — there's no `core` config object to delegate to here, since a bare
+`read_rate` isn't itself a `Config` subclass.
+
+### System dependencies
+
+Same as `core`/`cli`: **`ffmpeg`** (decode + encode) must be on `PATH`. No `yt-dlp` dependency —
+this project only plays local files from `video_library.directory`, no URL/synthetic sources.
+
+## Architecture
+
+```
+core.FfmpegFrameSource.start()  -- decodes the chosen file, probes VideoInfo
+        |
+        v
+kernel.Pipeline.run(frame_source, stop_token)   -- the whole CV pipeline: detect/embed/track/
+        |                                          interpolate, in six concurrent stages
+        v  (per rendered frame, via write_and_broadcast)
+OverlayFrameSink.write_frame(annotated_frame)   -- copies the frame, draws boxes+track ids,
+        |                                          hands it to core.FfmpegFrameSink
+        v
+core.FfmpegFrameSink            -- encodes to fragmented MP4 (baseline H.264, same MSE-tuned
+        |                          flags as app/writer.py's _encoder_cmd)
+        v  (Orchestrator's box-parse task)
+iso_bmff.BoxReader.feed()       -- splits the encoder's raw stdout into top-level ISO BMFF boxes
+        |
+        v
+broadcaster.Broadcaster         -- init segment (ftyp..moov) + bounded deque of moof+mdat frags
+        |
+        v
+Starlette GET /{stream_id}.mp4  -- StreamingResponse: init + latest frag, then live-tail
+        |
+        v
+static/player.js                -- MediaSource + SourceBuffer, seeks to the live edge
+```
+
+Key files (`src/video_analyzer/webapp/`):
+
+- **`config.py`** — `WebappConfig`: the YAML-backed document described above, on `kernel.Config`.
+- **`fs_browser.py`** — the server side of the "choose a file from anywhere" browse modal, with
+  deliberately **no access boundary** beyond "must be a real, readable directory/existing video
+  file" (an acceptable posture only because this is a local single-user tool — see the repo root
+  `CLAUDE.md`). `list_directory(path, default)` lists the directories and recognized video files
+  directly under `path` (or `default` — the configured `video_library.directory` — when `path` is
+  empty, i.e. the modal's first open), sorted case-insensitively with directories first; raises
+  `ValueError` for anything that isn't a readable, existing directory. `resolve_video_path(path)`
+  validates a path picked in the modal: must be absolute, must have a recognized video extension,
+  must resolve to an existing file. The web UI only ever POSTs a path it already got from
+  `list_directory` via `/api/browse`, but the request could still be forged, so
+  `resolve_video_path` re-validates from scratch rather than trusting the client.
+- **`overlay_frame_sink.py`** — `OverlayFrameSink(kernel.FrameSink)`: the one piece neither
+  `kernel` nor `core` provides. `core.FfmpegFrameSink.write_frame` takes a full `AnnotatedFrame`
+  and draws nothing (see its own module docstring — overlay drawing is explicitly left to the
+  composing app, same as `cli/ffplay_frame_sink.py` does it inline for its own sink). This class
+  copies the frame, draws boxes/track-ids via `core.overlay.draw_dashed_rect`/`cv2` (solid = exact
+  detection, dashed = interpolated — same convention `cli`'s sink uses), and delegates the rest
+  (`write_frame`/`close_stdin`/`read_output_chunk`) to a wrapped `core.FfmpegFrameSink`.
+- **`orchestrator.py`** — `Orchestrator`: owns two long-lived asyncio tasks, created with plain
+  `create_task` (not a `TaskGroup` — a `TaskGroup` held open across the context-manager yield would
+  cancel whichever unrelated task entered the context when a child crashes, same reasoning
+  `app/orchestrator.py` documents). `_run_pipeline` is just `await pipeline.run(frame_source,
+  stop_token=...)` — `kernel.Pipeline.run()` already *is* the CV pipeline, so there's no
+  hand-rolled forwarding loop like `app/orchestrator.py`'s `_forward_frames` — with a `finally:
+  await frame_sink.close_stdin()` to guarantee the encoder gets EOF'd (flushing trailing
+  fragments) whether `run()` returns cleanly, raises, or is cancelled during teardown.
+  `_read_sink_output` is the box-parse loop, logic identical to `app/orchestrator.py`'s.
+  **`_describe_exception`** unwraps `BaseExceptionGroup` recursively: `kernel.Pipeline.run()` runs
+  its six stages in an `asyncio.TaskGroup`, so a crash always arrives wrapped in one — even for a
+  single failing stage — and its own `str()` is just "unhandled errors in a TaskGroup (1
+  sub-exception)". `failure_reason` uses this instead of a bare `str()` so the browser's error
+  popup says something useful.
+- **`pipeline_manager.py`** — `PipelineManager`: same overall shape as `app/pipeline.py` (teardown-
+  first `AsyncExitStack` rebuild, monotonic `_generation` counter, a per-build watchdog task
+  awaiting `broadcaster.wait_closed()`, `SourceError`/`PipelineStatus` TypedDicts, `status()`), but
+  composing `kernel.Pipeline` + `core`'s real backends instead of `app/`'s own `Engine`/
+  `InputVideoLoader`, and taking an already-resolved `source_path: Path`, a `speed_factor: float`,
+  and a per-request `core.StopStrategyConfig`. Resolving/validating all three is `app.py`'s job
+  (via `fs_browser` for the path, by hand for the speed factor, via `core.StopStrategyConfig
+  .from_dict` for the stop strategy) — this class trusts every argument it's handed, the same way
+  `app/app.py`'s URL format check runs before calling into the manager at all. `_build` is
+  teardown-first from the start, same reasoning as `app/pipeline.py`: only one ffmpeg pair + ONNX
+  pipeline ever runs at a time. Builds the effective `core.FfmpegFrameSourceConfig` via
+  `dataclasses.replace(self._config.frame_source, read_rate=speed_factor)`, and scales the
+  encoder's own fps by the same factor (`fps * speed_factor`) — the other half of the time
+  compression, same as `app/`'s and `cli`'s `--speed-factor`/`read_rate`. Constructs
+  `core.StopAfterFrameCount`/`core.StopOnFirstTrack` decorators only when the per-request
+  `stop_strategy` arms them (same "enabled is composition metadata" rule `core/CLAUDE.md`
+  documents), and a trivial local `NoopFrameBroadcaster` (`kernel.FrameBroadcaster` is the CV
+  pipeline's *metadata* sink — unrelated to the HTTP `Broadcaster` below — and this project
+  doesn't consume it, same as `cli`'s).
+- **`broadcaster.py`** — `Broadcaster`: ported from `app/broadcaster.py`, unchanged. Single
+  producer (the box-parse task) / many async consumers on one `asyncio.Condition`; bounded `deque`
+  drop-oldest retention; `wait_for_next()` raises `LaggedError` when a client falls off the back;
+  `snapshot_for_new_client()` gives a new client the init segment + only the latest fragment (true
+  live join, not rewind).
+- **`iso_bmff.py`** — `BoxReader`: ported from `app/iso_bmff.py`, unchanged. Minimal ISO BMFF box
+  parser; pipe reads never align to box boundaries.
+- **`noop_frame_broadcaster.py`**, **`noop_scene_detector.py`**, **`system_clock.py`** — trivial
+  local copies of `cli`'s versions of the same name. `webapp` can't depend on `cli` (a sibling
+  standalone project, not a dependency), so these few-line classes are re-created rather than
+  imported.
+- **`app.py`** — Starlette wiring + `click` CLI. Routes: `/` (player page), `/{stream_id}.mp4`
+  (live tail, ported from `app/app.py`'s `stream()` — same `410 Gone` contract: no pipeline,
+  superseded `stream_id`, or an already-closed broadcaster), `/api/status` (`PipelineManager
+  .status()`), `/api/browse` (`GET ?path=...`, defaults to `config.video_library.directory` when
+  omitted; `{"path", "parent", "entries": [{"name", "path", "is_dir", "size", "modified"}, ...]}`
+  from `fs_browser.list_directory` — a bad/unreadable path is 400, not a 500), `POST /api/source`
+  (body `{"path", "speed_factor", "stop_strategy": {...}}`; resolves the path via
+  `fs_browser.resolve_video_path`, validates `speed_factor` by hand (must parse as a number, must
+  be `> 0`; defaults to `1.0` if omitted), and validates the stop strategy via
+  `core.StopStrategyConfig.from_dict` — all **before** calling `PipelineManager.start`, so any of
+  the three failing 400s without ever touching ffmpeg or tearing down whatever is currently
+  playing; 60 s timeout on the build itself → 504; other build failures → 400), `POST /api/stop`
+  (go idle). No `/metrics` route: `kernel.Pipeline` has no metrics-
+  snapshot facility today (unlike `app/`'s `Engine.metrics_snapshot()`) — a real scope cut versus
+  `app/`'s UI, not an oversight. `_configure_logging()` (called inside `main()`, not at import
+  time, so importing this module for tests has no logging side effects) calls `logger.enable
+  ("video_analyzer")`: `kernel`/`core`/`webapp` each disable their own logger by default (library
+  etiquette — see `kernel/CLAUDE.md`), so the entry point has to opt back in, same as `cli/main.py`
+  does.
+- **`static/player.js`** — reused **verbatim** from `app/`: it only depends on `/api/status`'s
+  shape and a stream URL, both unchanged, so it's already source-agnostic.
+- **`static/browse-modal.js`** — the file-browser modal: `window.openBrowseModal(onSelect)` opens
+  it (fetching `/api/browse` with no `path`, i.e. the configured default directory), renders
+  folders/files from the listing, clicking a folder navigates into it, clicking a file calls
+  `onSelect(absolutePath)` and closes the modal. A path input doubles as breadcrumb display and a
+  jump-to-path field (Enter navigates there); an Up button uses the listing's `parent`.
+- **`static/source.js`** — adapted from `app/`'s: a "Choose file…" button opens the browse modal
+  instead of a URL text input or a directory dropdown; the selected absolute path is held in a
+  local variable and shown next to the button; form submit builds the
+  `{path, speed_factor, stop_strategy}` body above. The "Test pattern" button is dropped (no
+  synthetic source).
+
+## Working in this codebase
+
+- **This project only composes `kernel`+`core` plus a transport layer** — it shouldn't grow
+  algorithm code of its own beyond `overlay_frame_sink.py`'s drawing glue. A new detector/tracker/
+  interpolator backend belongs in `core`; a new service contract belongs in `kernel`.
+- **`core.FfmpegFrameSink` draws nothing; `OverlayFrameSink` is the only place that does it.**
+  Never bypass it and call `core.FfmpegFrameSink` directly if you want boxes burned into the video.
+- **`kernel.FrameBroadcaster` and this project's own `Broadcaster` are unrelated.** The former is
+  the CV pipeline's per-frame metadata sink (`NoopFrameBroadcaster` here, wrapped by
+  `core.StopOnFirstTrack` when that strategy is armed); the latter is the HTTP fMP4 byte fan-out to
+  browsers. Don't conflate them when reading `pipeline_manager.py`.
+- **A crash out of `kernel.Pipeline.run()` is a `BaseExceptionGroup`, always** — even for exactly
+  one failing stage, since the six stages run in an `asyncio.TaskGroup`. `orchestrator
+  ._describe_exception` unwraps it recursively; if you add another layer that catches a pipeline
+  failure, route it through the same helper (or an equivalent) rather than a bare `str(exc)`, or
+  the browser popup degrades to "unhandled errors in a TaskGroup (1 sub-exception)".
+- **Validate before tearing down.** `app.py`'s `set_source` resolves the path (`fs_browser
+  .resolve_video_path`) and the stop strategy **before** calling `manager.start(...)` at all — a
+  bad request shouldn't stop whatever is currently playing. `PipelineManager` itself no longer
+  does any resolution or validation; it trusts the `Path` it's handed. If you add more
+  per-request validation, put it in `app.py` ahead of the `manager.start(...)` call, not inside
+  `PipelineManager._build`.
+- **There is deliberately no directory allowlist any more.** `fs_browser.resolve_video_path`
+  accepts any absolute path to an existing, recognized-extension file — the browse modal can reach
+  anywhere the process can read. `video_library.directory` is only ever a *default starting point*
+  for the modal, not an access boundary; don't reintroduce a "must be inside this directory" check
+  expecting it to be a security control, since the modal already lets an operator navigate past it
+  freely, and this is a local single-user tool where that's an accepted tradeoff (see the repo
+  root `CLAUDE.md`).
+- **Video file extensions are a module constant (`fs_browser.VIDEO_EXTENSIONS`), not a config
+  field.** `kernel.Config`'s parser only supports fixed-length tuples (it zips a YAML list against
+  a fixed set of field annotations), not an open-ended `list[str]`/`tuple[str, ...]` — see
+  `kernel/config.py`'s `_parse_value` if you're tempted to add one.
+- Encoder settings are identical to `app/writer.py`'s and `core.FfmpegFrameSink`'s own — baseline
+  profile, `frag_keyframe+empty_moov+default_base_moof`, a GOP aligned to a fixed keyframe
+  interval. The browser MIME in `player.js` (`avc1.42001e`) must keep matching if either changes.
+- Testing boundary matches every sibling project's own convention: tests are pure-Python units
+  with no real `ffmpeg` subprocess or ONNX model file. `test_pipeline_manager.py` monkeypatches
+  `core.FfmpegFrameSource.start`, `core.OnnxFaceDetector`/`OnnxFaceEmbedder`, and
+  `OverlayFrameSink.start` to lightweight fakes (mirroring `app/tests/test_pipeline.py`'s style) —
+  `core.ByteTrackTracker`/`HistogramSceneDetector`/`SplineInterpolator` are constructed for real
+  since they need no external resource (same reasoning `core/CLAUDE.md` gives for testing
+  `ByteTrackTracker` directly). `test_app.py` only covers requests that 400 on pure validation
+  (bad path, relative path, malformed stop strategy) before ever reaching `PipelineManager.start`
+  — pinned with an autouse fixture that monkeypatches `PipelineManager.start` to fail the test
+  outright if it's ever called, so a validation check silently disappearing gets caught instead of
+  the test passing for the wrong reason. A request that would actually build a pipeline needs real
+  `ffmpeg`/ONNX weights and is manual/integration verification only (`mise run webapp` + a
+  browser). `test_fs_browser.py` exercises real arbitrary `tmp_path` locations (there's no
+  allowlist to work around) and skips the unreadable-directory case when running as root (which
+  bypasses permission bits).

@@ -15,13 +15,16 @@ See `README.md` for a very detailed, box-by-box explanation of the pipeline (eve
 space, rescale, and buffering point). Keep the two in sync when the pipeline changes.
 
 Everything below describes `app/`, the original monolithic implementation. Alongside it, a
-`kernel`/`core`/`cli` split is in progress: `kernel/` (dependency-free service contracts +
+`kernel`/`core`/`cli`/`webapp` split is in progress: `kernel/` (dependency-free service contracts +
 orchestration, see `kernel/CLAUDE.md`), `core/` (real SCRFD/ArcFace/ByteTrack/PCHIP/
-histogram-scene-cut/ffmpeg backends for those contracts, see `core/CLAUDE.md`), and `cli/` (a small `ffplay`-based example
-composing `kernel`+`core`, driven entirely by a YAML config file rather than flags, see
-`cli/CLAUDE.md`) — three standalone `uv` projects, `core` and `cli`
-each depending on the previous via a `uv` path source. `app/` has not been migrated to depend on
-them yet (see `core/CLAUDE.md`).
+histogram-scene-cut/ffmpeg backends for those contracts, see `core/CLAUDE.md`), `cli/` (a small
+`ffplay`-based example composing `kernel`+`core`, driven entirely by a YAML config file rather
+than flags, see `cli/CLAUDE.md`), and `webapp/` (`app/`'s browser-facing product — pick a local
+file, pick a stop strategy, watch it stream live with overlays — rebuilt on `kernel`+`core`
+instead of `app/`'s own pipeline code, see `webapp/CLAUDE.md`) — four standalone `uv` projects,
+each of `core`/`cli`/`webapp` depending on the previous via a `uv` path source (`cli` and `webapp`
+both depend on `core` directly; they don't depend on each other). `app/` has not been migrated to
+depend on them yet (see `core/CLAUDE.md`).
 
 ## Commands
 
@@ -29,12 +32,16 @@ All commands run from the `app/` directory (a `uv`-managed Python project) unles
 
 ```bash
 uv run video-streamer         # run the app directly (synthetic input by default)
-mise run webapp               # from repo root: runs the app against a URL source via yt-dlp
+mise run app                  # from repo root: runs this app against a URL source via yt-dlp
 uv sync                       # install/update dependencies from uv.lock
 uv run pytest                 # unit tests (tests/ — pure-Python units, no ffmpeg/ONNX needed)
 uv run ruff check src tests   # lint (config in pyproject.toml)
 uv run ty check src           # type check
 ```
+
+`mise run webapp` now runs the new `kernel`/`core`-based `webapp/` project instead of this one —
+see `webapp/CLAUDE.md`. This section is about `app/` specifically; use `mise run app` (above) for
+this implementation.
 
 The app **starts idle** (no source, no pipeline). A source is chosen at runtime from the player
 page — paste a URL, hit "Test pattern" for the synthetic `testsrc` asset, or "Stop" to go back to
