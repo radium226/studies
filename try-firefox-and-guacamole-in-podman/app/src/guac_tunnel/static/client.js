@@ -13,9 +13,32 @@ const stage = $('stage');
 const sink = $('keyboard-sink');
 const controls = $('controls');
 
-// The remote geometry, as reported by guacd once VNC tells it the truth. Our
-// requested size is only a hint: Xvnc is a fixed framebuffer and does not
-// resize (see the README), so this is what we scale to fit.
+/**
+ * Physical pixels below which the remote session must not be asked to shrink.
+ *
+ * Firefox will not size its window under 450 CSS px, and inside the session
+ * those are multiplied by DEVICE_PIXEL_RATIO -- 450 * 2.4, see
+ * containers/firefox/firefox-user.js. Ask for a narrower session and Firefox
+ * comes out wider than the screen, clipping the right edge of every page. A
+ * phone at 390 CSS px with a dpr of 2 would do exactly that.
+ */
+const MIN_REMOTE_WIDTH = 1080;
+
+/** Matches `Settings.max_dimension`; the tunnel clamps to it regardless. */
+const MAX_REMOTE_DIMENSION = 4096;
+
+/** Quiet period before asking the session to resize. See requestSize(). */
+const RESIZE_SETTLE_MS = 250;
+
+/** How long to leave a resize request unanswered before repeating it. */
+const RESIZE_RETRY_MS = 1200;
+
+/** Times to ask before settling for a letterbox. Covers a cold session. */
+const RESIZE_ATTEMPTS = 4;
+
+// The remote geometry, as reported by guacd once the session has actually
+// resized. What we asked for is only a request: the round trip is a RandR
+// resize and a full Firefox reflow, so this always lags and is never assumed.
 let remote = { width: 0, height: 0 };
 let scale = 1;
 let client = null;
@@ -32,10 +55,37 @@ function noteInput(what) {
   render();
 }
 
-// --- scaling --------------------------------------------------------------
+// --- geometry -------------------------------------------------------------
 //
-// Rotation cannot reflow the remote session, so it rescales instead: the
-// display is fitted into the viewport, letterboxed, and stays connected.
+// Rotation asks the remote session to change shape, and RDP's display-update
+// channel carries that: guacd turns a mid-session `size` into a Display
+// Control PDU, xorgxrdp does a RandR resize, Firefox reflows. Scaling stays as
+// the fallback -- something has to be on screen during the round trip, and the
+// request is not always granted in full.
+
+/**
+ * The session size this viewport wants, in physical pixels.
+ *
+ * The dpi is always 96, and that is not laziness. To guacd's RDP client the
+ * `size` instruction's dpi is not metadata, it is a divisor: it rescales the
+ * pixels you asked for by 96/dpi before handing them to the server. Sending
+ * this phone's real 230 asks for 1080x2400 and gets a 560x1252 session. All
+ * the scaling this study does is explicit and elsewhere -- devPixelsPerPx
+ * inside Firefox, display.scale() out here -- so 96 is how you say "these are
+ * the pixels I meant".
+ */
+function wantedSize() {
+  const viewport = window.visualViewport;
+  const ratio = window.devicePixelRatio || 1;
+  const clamp = (value) =>
+    Math.min(Math.round(value * ratio), MAX_REMOTE_DIMENSION);
+
+  return {
+    width: Math.max(clamp(viewport ? viewport.width : window.innerWidth), MIN_REMOTE_WIDTH),
+    height: clamp(viewport ? viewport.height : window.innerHeight),
+    dpi: 96,
+  };
+}
 
 function fit() {
   if (!client || !remote.width || !remote.height) return;
@@ -54,15 +104,50 @@ function fit() {
   render();
 }
 
+/**
+ * Ask the remote session to become the shape of this viewport.
+ *
+ * Repeated until it obeys, because a resize that arrives while the session is
+ * still coming up is dropped and nothing anywhere says so -- and the first
+ * rotation after opening the page is exactly when that happens. Giving up is
+ * safe: fit() letterboxes, which is only what the VNC version always did.
+ */
+function requestSize() {
+  if (!client) return;
+
+  // Same reason fit() bows out: the on-screen keyboard shrinks the visual
+  // viewport, and reflowing the *remote session* down to the sliver above the
+  // keys -- on every keypress -- is far worse than rescaling ever was.
+  if (document.activeElement === sink) return;
+
+  const wanted = wantedSize();
+  if (wanted.width === remote.width && wanted.height === remote.height) return;
+
+  client.sendSize(wanted.width, wanted.height);
+
+  if (--attemptsLeft > 0) {
+    resizeTimer = setTimeout(requestSize, RESIZE_RETRY_MS);
+  }
+}
+
 // A phone reports a resize for every keyboard show/hide and every scroll of
-// the URL bar, so coalesce them into one rescale per frame.
+// the URL bar. Rescaling is cheap, so it happens once a frame; resizing is not
+// -- each request costs a RandR resize and a full Firefox reflow -- so it waits
+// for the viewport to hold still first.
 let pendingFit = null;
-function scheduleFit() {
-  if (pendingFit !== null) return;
-  pendingFit = requestAnimationFrame(() => {
-    pendingFit = null;
-    fit();
-  });
+let resizeTimer = null;
+let attemptsLeft = 0;
+function scheduleGeometry() {
+  if (pendingFit === null) {
+    pendingFit = requestAnimationFrame(() => {
+      pendingFit = null;
+      fit();
+    });
+  }
+
+  attemptsLeft = RESIZE_ATTEMPTS;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(requestSize, RESIZE_SETTLE_MS);
 }
 
 // --- the session ----------------------------------------------------------
@@ -72,13 +157,9 @@ const STATES = ['idle', 'connecting', 'waiting', 'connected', 'disconnecting', '
 function connect() {
   disconnect();
 
-  const viewport = window.visualViewport;
-  const ratio = window.devicePixelRatio || 1;
-  const query = new URLSearchParams({
-    width: Math.round((viewport ? viewport.width : window.innerWidth) * ratio),
-    height: Math.round((viewport ? viewport.height : window.innerHeight) * ratio),
-    dpi: Math.round(96 * ratio),
-  });
+  // The initial size is the same question requestSize() asks later, so it is
+  // the same answer: the session opens at the shape it will keep.
+  const query = new URLSearchParams(wantedSize());
 
   // The tunnel URL must not carry a query string of its own: the library
   // builds the socket URL as `url + "?" + data`, so anything already there
@@ -184,7 +265,7 @@ $('keyboard').addEventListener('click', () => {
 $('fullscreen').addEventListener('click', async () => {
   if (document.fullscreenElement) await document.exitFullscreen();
   else await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
-  scheduleFit();
+  scheduleGeometry();
 });
 
 $('reconnect').addEventListener('click', connect);
@@ -193,10 +274,10 @@ for (const event of ['pointerdown', 'touchstart']) {
   document.addEventListener(event, wake, { passive: true });
 }
 
-window.addEventListener('resize', scheduleFit);
-window.addEventListener('orientationchange', scheduleFit);
-window.visualViewport?.addEventListener('resize', scheduleFit);
-sink.addEventListener('blur', scheduleFit);
+window.addEventListener('resize', scheduleGeometry);
+window.addEventListener('orientationchange', scheduleGeometry);
+window.visualViewport?.addEventListener('resize', scheduleGeometry);
+sink.addEventListener('blur', scheduleGeometry);
 
 attachKeyboard({ sink, client: () => client, onInput: noteInput });
 

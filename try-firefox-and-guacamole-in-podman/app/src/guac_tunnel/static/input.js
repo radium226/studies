@@ -1,7 +1,8 @@
-// Turning phone gestures into the mouse and keyboard a VNC session expects.
+// Turning phone gestures into the mouse and keyboard the session expects.
 //
-// The remote end has no idea a touchscreen exists: guacd speaks VNC, and VNC
-// speaks mouse. Everything here is about that mismatch.
+// The remote end has no idea a touchscreen exists. RDP does have a multi-touch
+// channel, but nothing on this path uses it: guacd is driven as a mouse, and a
+// mouse is what Firefox sees. Everything here is about that mismatch.
 
 import Guacamole from '/static/vendor/guacamole-common.min.js';
 

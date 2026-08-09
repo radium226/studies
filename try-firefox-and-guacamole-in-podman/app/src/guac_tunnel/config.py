@@ -46,9 +46,12 @@ class Settings:
     rdp_password: str = "firefox"
 
     #: Fallback geometry, used when the browser does not say what it wants.
+    #: The dpi is 96 deliberately: guacd's RDP client treats it as a divisor
+    #: and rescales the requested pixels by 96/dpi, so anything else quietly
+    #: asks for a different session than the one named here.
     default_width: int = 412
     default_height: int = 915
-    default_dpi: int = 192
+    default_dpi: int = 96
 
     #: Clamp what a client may ask for, so a bad query string cannot ask guacd
     #: to allocate an absurd framebuffer.

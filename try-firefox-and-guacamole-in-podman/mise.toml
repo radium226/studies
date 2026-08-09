@@ -13,8 +13,11 @@ node = "latest"
 # what the tunnel asks for when the browser sends no geometry of its own.
 SCREEN_WIDTH = "1080"
 SCREEN_HEIGHT = "2400"
-SCREEN_DPI = "420"
 DEVICE_PIXEL_RATIO = "2.4"
+
+# Not the panel's DPI. guacd's RDP client divides the requested pixels by
+# dpi/96, so 96 is how the size above is taken literally -- see client.js.
+SCREEN_DPI = "96"
 
 # --- the RDP session --------------------------------------------------------
 # xrdp authenticates through PAM, so unlike Xvnc there is no passwordless mode.
