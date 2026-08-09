@@ -59,17 +59,25 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        # Through an instance, not through `cls`: `slots=True` replaces every
+        # class attribute with a slot descriptor, so `cls.remote_protocol` is
+        # not "rdp" but a `member_descriptor` -- which then travels all the way
+        # to guacd as the protocol name and comes back as `Support for protocol
+        # "<member 'remote_protocol' of 'Settings' objects>" is not installed`.
+        # Only reachable with the variable unset, which is to say only outside
+        # the container -- which is exactly where `mise run dev` runs.
+        fallback = cls()
         return cls(
-            guacd_host=_env("GUACD_HOST", cls.guacd_host),
-            guacd_port=_env_int("GUACD_PORT", cls.guacd_port),
-            remote_protocol=_env("REMOTE_PROTOCOL", cls.remote_protocol),
-            remote_host=_env("REMOTE_HOST", cls.remote_host),
-            remote_port=_env_int("REMOTE_PORT", cls.remote_port),
-            rdp_username=_env("RDP_USERNAME", cls.rdp_username),
-            rdp_password=_env("RDP_PASSWORD", cls.rdp_password),
-            default_width=_env_int("SCREEN_WIDTH", cls.default_width),
-            default_height=_env_int("SCREEN_HEIGHT", cls.default_height),
-            default_dpi=_env_int("SCREEN_DPI", cls.default_dpi),
+            guacd_host=_env("GUACD_HOST", fallback.guacd_host),
+            guacd_port=_env_int("GUACD_PORT", fallback.guacd_port),
+            remote_protocol=_env("REMOTE_PROTOCOL", fallback.remote_protocol),
+            remote_host=_env("REMOTE_HOST", fallback.remote_host),
+            remote_port=_env_int("REMOTE_PORT", fallback.remote_port),
+            rdp_username=_env("RDP_USERNAME", fallback.rdp_username),
+            rdp_password=_env("RDP_PASSWORD", fallback.rdp_password),
+            default_width=_env_int("SCREEN_WIDTH", fallback.default_width),
+            default_height=_env_int("SCREEN_HEIGHT", fallback.default_height),
+            default_dpi=_env_int("SCREEN_DPI", fallback.default_dpi),
         )
 
     def connection_parameters(self) -> dict[str, str]:

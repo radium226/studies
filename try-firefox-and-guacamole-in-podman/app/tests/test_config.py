@@ -68,3 +68,21 @@ class TestDefaults:
 
         assert settings.rdp_username == "from-env"
         assert settings.rdp_password == "also-from-env"
+
+    def test_the_defaults_survive_an_empty_environment(self, monkeypatch):
+        """`slots=True` turns every class attribute into a slot descriptor.
+
+        Reading the fallbacks off the class rather than off an instance sends
+        guacd a protocol named `<member 'remote_protocol' of 'Settings'
+        objects>`, which it answers with `Support for protocol ... is not
+        installed`. Only reachable with a variable unset, which is to say only
+        outside the container.
+        """
+        for name in ("GUACD_HOST", "REMOTE_PROTOCOL", "RDP_USERNAME", "RDP_PASSWORD"):
+            monkeypatch.delenv(name, raising=False)
+
+        settings = Settings.from_env()
+
+        assert settings.remote_protocol == "rdp"
+        assert settings.guacd_host == "127.0.0.1"
+        assert settings.rdp_username == "firefox"
