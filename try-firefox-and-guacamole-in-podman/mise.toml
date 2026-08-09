@@ -5,12 +5,16 @@ node = "latest"
 
 [env]
 # --- session geometry -------------------------------------------------------
-# Portrait phone by default. Xvnc geometry is fixed for the life of the
-# container: VNC has no dynamic resize (see README), so this is the *remote*
-# resolution and the browser scales it to fit.
-SCREEN_WIDTH = "412"
-SCREEN_HEIGHT = "915"
-SCREEN_DPI = "192"
+# A portrait phone panel, in *physical* pixels. Divided by DEVICE_PIXEL_RATIO
+# this gives Firefox a 450x1000 CSS viewport; 2.4 is not arbitrary, see
+# containers/firefox/firefox-user.js.
+#
+# Fixed for the life of the container: VNC has no dynamic resize (see README),
+# so this is the remote resolution and the browser scales it to fit.
+SCREEN_WIDTH = "1080"
+SCREEN_HEIGHT = "2400"
+SCREEN_DPI = "420"
+DEVICE_PIXEL_RATIO = "2.4"
 
 # --- what Firefox opens in kiosk mode ---------------------------------------
 # Defaults to the diagnostic page served by the tunnel container itself, so the
