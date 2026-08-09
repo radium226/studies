@@ -150,11 +150,41 @@ export function attachPointer({ element, client, onInput }) {
   mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = send;
 }
 
+/** Keys that never produce an `input` event, so must come from `keydown`. */
+const SPECIAL_KEYS = {
+  Tab: 0xff09,
+  Escape: 0xff1b,
+  Home: 0xff50,
+  End: 0xff57,
+  ArrowLeft: 0xff51,
+  ArrowUp: 0xff52,
+  ArrowRight: 0xff53,
+  ArrowDown: 0xff54,
+  PageUp: 0xff55,
+  PageDown: 0xff56,
+  Delete: 0xffff,
+  Insert: 0xff63,
+};
+
+/** Modifiers, so shortcuts can be held down around a key. */
+const MODIFIER_KEYS = {
+  ctrlKey: 0xffe3,
+  altKey: 0xffe9,
+  shiftKey: 0xffe1,
+  metaKey: 0xffe7,
+};
+
 /**
  * Binds keyboard input.
  *
- * Phone keyboards are not keyboards: they mostly report keyCode 229 and commit
- * text instead, so key events have to be reconstructed from what was typed.
+ * Deliberately *without* `Guacamole.Keyboard`. It cancels every keydown it
+ * sees -- which is exactly right when it owns the keyboard, and fatal here: a
+ * cancelled keydown never inserts text, so the capture field never emits
+ * `beforeinput`, and on a phone that is the only signal there is. Attaching
+ * both silently produces a keyboard that does nothing at all.
+ *
+ * So everything comes from the capture field: text from `beforeinput`, and the
+ * keys that produce no text from `keydown`.
  *
  * @param {object} options
  * @param {HTMLTextAreaElement} options.sink  focused to raise the keyboard
@@ -189,6 +219,7 @@ export function attachKeyboard({ sink, client, onInput }) {
   };
 
   sink.addEventListener('beforeinput', (event) => {
+
     switch (event.inputType) {
       case 'deleteContentBackward':
         press(0xff08, 'BackSpace');
@@ -210,19 +241,35 @@ export function attachKeyboard({ sink, client, onInput }) {
   sink.addEventListener('input', reset);
   sink.addEventListener('focus', reset);
 
-  // A real keyboard, for when this is opened on a desktop. Only while the sink
-  // is *not* focused: with it focused both paths fire and every character is
-  // sent twice.
-  const keyboard = new Guacamole.Keyboard(document);
-  keyboard.onkeydown = (keysym) => {
-    if (document.activeElement === sink) return;
-    client()?.sendKeyEvent(1, keysym);
-    onInput(`key ${keysym}`);
-  };
-  keyboard.onkeyup = (keysym) => {
-    if (document.activeElement === sink) return;
-    client()?.sendKeyEvent(0, keysym);
-  };
+  sink.addEventListener('keydown', (event) => {
+
+    // Mid-composition the text is not settled yet; `beforeinput` will deliver
+    // it once it is.
+    if (event.isComposing || event.keyCode === 229) return;
+
+    const held = Object.entries(MODIFIER_KEYS).filter(([flag]) => event[flag]);
+    const special = SPECIAL_KEYS[event.key];
+
+    // A shortcut such as ctrl+w produces no text, so `beforeinput` will never
+    // report it: hold the modifiers down around the key by hand.
+    if (held.length && event.key.length === 1) {
+      const target = client();
+      if (!target) return;
+      event.preventDefault();
+      for (const [, keysym] of held) target.sendKeyEvent(1, keysym);
+      press(keysymOf(event.key), `${held.map(([flag]) => flag.replace('Key', '')).join('+')}+${event.key}`);
+      for (const [, keysym] of held.reverse()) target.sendKeyEvent(0, keysym);
+      return;
+    }
+
+    if (special) {
+      event.preventDefault();
+      press(special, event.key);
+    }
+
+    // Anything else is left alone deliberately: cancelling it here would stop
+    // the field producing the `beforeinput` that carries the character.
+  });
 
   reset();
 }

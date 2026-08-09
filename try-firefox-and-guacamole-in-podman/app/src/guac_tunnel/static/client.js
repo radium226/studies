@@ -200,6 +200,14 @@ sink.addEventListener('blur', scheduleFit);
 
 attachKeyboard({ sink, client: () => client, onInput: noteInput });
 
+// Keystrokes only reach the session while the capture field holds focus, so
+// on a desktop clicking the display has to hand it over. Not on a phone: the
+// on-screen keyboard would then cover the screen on every single tap, which
+// is what the keyboard button is for.
+if (!window.matchMedia('(pointer: coarse)').matches) {
+  stage.addEventListener('mousedown', () => sink.focus());
+}
+
 setInterval(render, 500);
 wake();
 connect();

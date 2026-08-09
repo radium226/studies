@@ -199,12 +199,19 @@ Touch and mouse deliberately share one coordinate path —
 client divide by the display scale itself — so a tap and a click cannot disagree about
 where they landed.
 
-The keyboard needs its own workaround. Phone keyboards do not report keys: they send
-`keyCode 229` and commit text, so keystrokes are reconstructed from `beforeinput` on a
-hidden textarea. Two traps there. The textarea is seeded with filler, because backspace on
-an empty field has nothing to delete and so fires no event at all — backspace silently does
-nothing. And `Guacamole.Keyboard` is ignored while that field has focus, or a desktop
-sends every character twice.
+The keyboard needs its own workaround, and this is where the sharpest trap in the whole
+study is. Phone keyboards do not report keys: they send `keyCode 229` and commit text, so
+keystrokes have to be reconstructed from `beforeinput` on a hidden capture field.
+
+**`Guacamole.Keyboard` cannot be used alongside that.** It calls `preventDefault()` on
+every keydown it sees — correct when it owns the keyboard, fatal here, because a cancelled
+keydown never inserts text, so the field never emits `beforeinput`. Attaching both produces
+a keyboard that does nothing whatsoever, with no error anywhere. It is gone; text comes
+from `beforeinput` and keys that produce no text (arrows, Tab, Escape, shortcuts) come from
+`keydown` on the same field.
+
+The field is also seeded with filler, because backspace on an empty field has nothing to
+delete and so fires no event at all — backspace silently does nothing.
 
 Expand the debug strip to see `last input`: it reports the gesture and the remote
 coordinates actually sent.
