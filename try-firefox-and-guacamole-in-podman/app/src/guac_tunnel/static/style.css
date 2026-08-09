@@ -52,18 +52,22 @@ body {
   position: relative;
 }
 
-/* Off-screen rather than hidden: it must stay focusable for the phone's
-   keyboard to appear, and display:none or visibility:hidden kill that. */
+/* Invisible but still *inside* the viewport, and never display:none or
+   visibility:hidden: a phone only raises its keyboard for an element it
+   considers really focusable, and parking one far off-screen either fails to
+   summon it or makes the page lurch trying to scroll it into view. */
 #keyboard-sink {
   position: fixed;
   top: 0;
-  left: -9999px;
+  left: 0;
   width: 1px;
   height: 1px;
   opacity: 0;
   border: 0;
   padding: 0;
   resize: none;
+  z-index: -1;
+  caret-color: transparent;
 }
 
 /* --- floating controls ---------------------------------------------------- */

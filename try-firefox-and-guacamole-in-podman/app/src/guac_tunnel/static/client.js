@@ -5,6 +5,7 @@
 // the page is what starts it.
 
 import Guacamole from '/static/vendor/guacamole-common.min.js';
+import { attachKeyboard, attachPointer } from '/static/input.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -21,7 +22,15 @@ let client = null;
 let tunnel = null;
 let lastInputAt = null;
 
-const stats = { opcode: '–', instructions: 0, latency: null, state: 'connecting' };
+const stats = { opcode: '–', instructions: 0, latency: null, state: 'connecting', input: '–' };
+
+/** Records what the last gesture or keystroke actually sent. */
+function noteInput(what) {
+  stats.input = what;
+  lastInputAt = performance.now();
+  wake();
+  render();
+}
 
 // --- scaling --------------------------------------------------------------
 //
@@ -30,6 +39,11 @@ const stats = { opcode: '–', instructions: 0, latency: null, state: 'connectin
 
 function fit() {
   if (!client || !remote.width || !remote.height) return;
+
+  // Not while the on-screen keyboard is up. It shrinks the visual viewport,
+  // and rescaling the session to the sliver left above the keys makes typing
+  // unreadable -- and it happens on every single keypress.
+  if (document.activeElement === sink) return;
 
   const viewport = window.visualViewport;
   const width = viewport ? viewport.width : window.innerWidth;
@@ -49,80 +63,6 @@ function scheduleFit() {
     pendingFit = null;
     fit();
   });
-}
-
-// --- input ----------------------------------------------------------------
-
-function markInput() {
-  lastInputAt = performance.now();
-  wake();
-}
-
-function attachPointer(element) {
-  const touch = new Guacamole.Mouse.Touchscreen(element);
-  const mouse = new Guacamole.Mouse(element);
-
-  const send = (state) => {
-    if (!client) return;
-    markInput();
-    // Touch coordinates arrive in on-screen pixels; the remote session is in
-    // its own, unscaled ones.
-    client.sendMouseState(
-      new Guacamole.Mouse.State(
-        state.x / scale,
-        state.y / scale,
-        state.left,
-        state.middle,
-        state.right,
-        state.up,
-        state.down,
-      ),
-    );
-  };
-
-  for (const source of [touch, mouse]) {
-    source.onmousedown = source.onmouseup = source.onmousemove = send;
-  }
-}
-
-function attachKeyboard() {
-  const keyboard = new Guacamole.Keyboard(document);
-  keyboard.onkeydown = (keysym) => {
-    markInput();
-    client?.sendKeyEvent(1, keysym);
-  };
-  keyboard.onkeyup = (keysym) => {
-    markInput();
-    client?.sendKeyEvent(0, keysym);
-  };
-
-  // Phone keyboards mostly do not produce usable key events -- they report
-  // keyCode 229 and commit text instead. So take the committed text and
-  // synthesise key presses from it.
-  sink.addEventListener('beforeinput', (event) => {
-    markInput();
-    if (event.inputType === 'deleteContentBackward') return pressKeysym(0xff08);
-    if (event.inputType === 'insertLineBreak') return pressKeysym(0xff0d);
-    for (const character of event.data ?? '') pressKeysym(keysymOf(character));
-  });
-
-  // Never let it accumulate text: it exists to capture keystrokes, not to hold
-  // a value.
-  sink.addEventListener('input', () => {
-    sink.value = '';
-  });
-}
-
-// X11 keysyms are Latin-1 directly, and everything else is the codepoint with
-// the Unicode plane flag set.
-function keysymOf(character) {
-  const codepoint = character.codePointAt(0);
-  return codepoint <= 0xff ? codepoint : 0x01000000 | codepoint;
-}
-
-function pressKeysym(keysym) {
-  client?.sendKeyEvent(1, keysym);
-  client?.sendKeyEvent(0, keysym);
 }
 
 // --- the session ----------------------------------------------------------
@@ -178,7 +118,7 @@ function connect() {
 
   const element = display.getElement();
   stage.replaceChildren(element);
-  attachPointer(element);
+  attachPointer({ element, client: () => client, onInput: noteInput });
 
   client.connect(query.toString());
 
@@ -222,6 +162,7 @@ function render() {
     `${Math.round(window.innerWidth)}×${Math.round(window.innerHeight)} @${window.devicePixelRatio}x`;
   $('d-scale').textContent = `${(scale * 100).toFixed(1)}%`;
   $('d-latency').textContent = stats.latency === null ? '–' : `${stats.latency}ms`;
+  $('d-input').textContent = stats.input;
   $('d-opcode').textContent = stats.opcode;
   $('d-instructions').textContent = String(stats.instructions);
 }
@@ -255,6 +196,9 @@ for (const event of ['pointerdown', 'touchstart']) {
 window.addEventListener('resize', scheduleFit);
 window.addEventListener('orientationchange', scheduleFit);
 window.visualViewport?.addEventListener('resize', scheduleFit);
+sink.addEventListener('blur', scheduleFit);
+
+attachKeyboard({ sink, client: () => client, onInput: noteInput });
 
 setInterval(render, 500);
 wake();

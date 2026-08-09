@@ -177,6 +177,38 @@ On the client side: `100dvh` rather than `100vh` (on a phone `vh` lies about the
 and `overscroll-behavior: none` so a drag reaches the remote session instead of
 rubber-banding the page, and 44 px tap targets.
 
+## Touch, on something that only understands a mouse
+
+guacd speaks VNC and VNC speaks mouse, so every gesture has to be translated.
+`static/input.js` maps them:
+
+| gesture | sent to the remote |
+|---|---|
+| tap | move, then left click at that point |
+| one-finger drag | **scroll wheel**, not a mouse drag |
+| long press (500 ms) | right click |
+| two-finger tap | right click |
+
+The drag mapping is the one that matters. `Guacamole.Mouse.Touchscreen` maps a one-finger
+drag to a mouse drag, which is correct for a desktop but wrong here: to the remote a mouse
+drag means *select text*, so trying to scroll a page smears a selection across it instead.
+Dragging emits wheel notches instead, one per 40 px of travel.
+
+Touch and mouse deliberately share one coordinate path —
+`Guacamole.Position.fromClientPosition` plus `sendMouseState(state, true)`, which makes the
+client divide by the display scale itself — so a tap and a click cannot disagree about
+where they landed.
+
+The keyboard needs its own workaround. Phone keyboards do not report keys: they send
+`keyCode 229` and commit text, so keystrokes are reconstructed from `beforeinput` on a
+hidden textarea. Two traps there. The textarea is seeded with filler, because backspace on
+an empty field has nothing to delete and so fires no event at all — backspace silently does
+nothing. And `Guacamole.Keyboard` is ignored while that field has focus, or a desktop
+sends every character twice.
+
+Expand the debug strip to see `last input`: it reports the gesture and the remote
+coordinates actually sent.
+
 ## What it cost to drop RDP
 
 Guacamole's `resize-method=display-update` is **RDP-only**. Over VNC there is no
