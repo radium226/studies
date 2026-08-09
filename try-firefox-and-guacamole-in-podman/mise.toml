@@ -1,0 +1,53 @@
+[tools]
+python = "3.13"
+uv = "latest"
+node = "latest"
+
+[env]
+# --- session geometry -------------------------------------------------------
+# Portrait phone by default. Xvnc geometry is fixed for the life of the
+# container: VNC has no dynamic resize (see README), so this is the *remote*
+# resolution and the browser scales it to fit.
+SCREEN_WIDTH = "412"
+SCREEN_HEIGHT = "915"
+SCREEN_DPI = "192"
+
+# --- what Firefox opens in kiosk mode ---------------------------------------
+# Defaults to the diagnostic page served by the tunnel container itself, so the
+# mobile tuning and scaling are visibly verifiable with no internet access.
+KIOSK_URL = "http://localhost:8080/kiosk"
+
+# --- podman -----------------------------------------------------------------
+POD_NAME = "firefox-guac"
+HOST_PORT = "8080"
+GUACD_IMAGE = "docker.io/guacamole/guacd:1.5.5"
+FIREFOX_IMAGE = "localhost/firefox-kiosk:latest"
+TUNNEL_IMAGE = "localhost/guac-tunnel:latest"
+
+# guacamole-common-js lags guacd on npm; matching majors keeps the 1.5+
+# protocol version negotiation happy.
+GUACAMOLE_JS_VERSION = "1.5.0"
+
+# ============================================================================
+# Python
+# ============================================================================
+
+[tasks.sync]
+description = "Install Python dependencies"
+dir = "app"
+run = "uv sync"
+
+[tasks.test]
+description = "Run the tunnel unit tests"
+dir = "app"
+run = "uv run pytest"
+
+[tasks.lint]
+description = "Lint and format-check the tunnel"
+dir = "app"
+run = ["uv run ruff check .", "uv run ruff format --check ."]
+
+[tasks.format]
+description = "Format the tunnel sources"
+dir = "app"
+run = "uv run ruff format ."
