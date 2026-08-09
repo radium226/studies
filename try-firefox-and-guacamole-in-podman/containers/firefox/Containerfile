@@ -1,8 +1,10 @@
-# A normal Firefox on a headless X server, exposed over VNC.
+# A normal Firefox on an X server that xrdp spawns per session.
 #
-# Xvnc is both the X server and the VNC server in one process, which is what
-# makes this image short: no display manager, no session manager, no PAM, and
-# nothing that needs to be root.
+# This image is not short, and that is the trade. xrdp is three moving parts --
+# xrdp on 3389, xrdp-sesman authenticating through PAM, and an Xorg with the
+# xorgxrdp driver started per session -- but it is the only backend that speaks
+# the RDP Display Control channel, which is what makes the session reflow when
+# the phone rotates.
 FROM docker.io/library/debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -15,40 +17,76 @@ RUN apt-get update \
         fonts-dejavu-core \
         fonts-noto-color-emoji \
         openbox \
+        openssl \
         procps \
-        tigervnc-standalone-server \
         x11-utils \
         x11-xserver-utils \
         xauth \
+        xrdp \
+        xorgxrdp \
+        xserver-xorg-core \
+        xserver-xorg-legacy \
     && rm -rf /var/lib/apt/lists/*
 
-# Nothing here needs privileges, so nothing here gets them.
+# The account the RDP session runs as. sesman authenticates it against
+# /etc/shadow, so unlike the Xvnc setup it needs a real password -- set from the
+# environment by the entrypoint, so changing it needs no rebuild.
 RUN useradd --create-home --shell /bin/bash firefox
 
-# Xvnc runs unprivileged and so cannot create this itself:
-#   _XSERVTransmkdir: ERROR: euid != 0, directory /tmp/.X11-unix will not be created
-RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+# xrdp's own runtime state. The package normally gets these from a tmpfiles.d
+# rule that nothing runs in a container.
+RUN mkdir -p /run/xrdp /var/log/xrdp /tmp/.X11-unix
 
-COPY entrypoint.sh session.sh /usr/local/bin/
+# Generated here rather than left to the package's postinst, which is not
+# reliably run under buildah. Both are needed: rsakeys.ini for RDP standard
+# security, cert/key for the TLS layer xrdp negotiates by default. The
+# certificate is self-signed, which is why guacd connects with `ignore-cert`.
+RUN xrdp-keygen xrdp auto \
+    && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout /etc/xrdp/key.pem -out /etc/xrdp/cert.pem \
+        -subj /CN=firefox 2>/dev/null \
+    && chmod 600 /etc/xrdp/key.pem
+
+# Debian ships Xorg behind a setuid wrapper that only lets the console user
+# start it. xorgxrdp drives no hardware and claims no VT, so the session's Xorg
+# needs neither the console nor root -- only permission to run at all.
+RUN printf 'allowed_users=anybody\nneeds_root_rights=no\n' > /etc/X11/Xwrapper.config
+
+# Two adjustments to the shipped config:
+#   - xrdp logs to files by default, which `podman logs` never sees. Running
+#     with --nodaemon plus EnableConsole puts both halves on stdout.
+#   - sesman refuses users outside TerminalServerUsers when that group exists,
+#     and silently skips the check when it does not. Create it and join it, so
+#     the behaviour does not depend on which of those is true.
+RUN sed -i 's/^#\?EnableConsole=.*/EnableConsole=true/; s/^#\?ConsoleLevel=.*/ConsoleLevel=INFO/' \
+        /etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini \
+    && groupadd --force tsusers \
+    && usermod --append --groups tsusers firefox
+
+COPY entrypoint.sh /usr/local/bin/
+# sesman runs this as the session, in place of Debian's default startwm.sh --
+# which sources /etc/X11/Xsession and would start a full desktop session.
+COPY startwm.sh /etc/xrdp/startwm.sh
 COPY firefox-user.js /opt/firefox-user.js
 COPY openbox-rc.xml /opt/openbox-rc.xml
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/session.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /etc/xrdp/startwm.sh
 
-USER firefox
-WORKDIR /home/firefox
+# Deliberately root: sesman reads /etc/shadow and setuids into the session, and
+# neither is possible otherwise. Rootless Podman maps this to an ordinary
+# unprivileged user on the host, so it is root only inside the namespace.
+WORKDIR /root
 
-# Physical pixels, like a phone panel. Divided by DEVICE_PIXEL_RATIO this is a
-# 450x1000 CSS viewport -- see firefox-user.js for why 2.4 and not something
-# rounder.
+# No SCREEN_WIDTH/SCREEN_HEIGHT here: under RDP the framebuffer size is
+# negotiated by the client, so the browser's own viewport decides it. What is
+# left is the ratio that divides it down to a CSS viewport -- see
+# firefox-user.js for why 2.4 and not something rounder.
 ENV LANG=C.UTF-8 \
-    DISPLAY=:0 \
-    SCREEN_WIDTH=1080 \
-    SCREEN_HEIGHT=2400 \
-    SCREEN_DPI=420 \
     DEVICE_PIXEL_RATIO=2.4 \
     START_URL=http://localhost:8080/diagnostics \
-    USER_AGENT="Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0"
+    USER_AGENT="Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0" \
+    RDP_USERNAME=firefox \
+    RDP_PASSWORD=firefox
 
-EXPOSE 5900
+EXPOSE 3389
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
