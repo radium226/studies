@@ -107,8 +107,13 @@ export function attachPointer({ element, client, onInput }) {
       const travelled = gesture.lastY - touch.clientY;
       const notches = Math.trunc(Math.abs(travelled) / PIXELS_PER_NOTCH);
       if (notches > 0) {
-        const point = pointOf(touch);
-        scrollAt(point, notches, travelled > 0 ? 'down' : 'up');
+        // Every notch is sent where the finger went *down*, not where it has
+        // got to. A wheel event scrolls whatever is under the pointer, so
+        // sending them along the path walks the scroll off the element the
+        // gesture started on -- swipe out of a scrollable panel and the rest
+        // of the swipe lands on the page behind it, or on nothing. Latching
+        // to the anchor is also what a real touchscreen does.
+        scrollAt(gesture.point, notches, travelled > 0 ? 'down' : 'up');
         gesture.lastY -= Math.sign(travelled) * notches * PIXELS_PER_NOTCH;
         gesture.scrolled += notches;
         onInput(`scroll ${travelled > 0 ? 'down' : 'up'} ×${gesture.scrolled}`);
