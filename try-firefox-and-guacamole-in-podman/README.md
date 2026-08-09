@@ -287,6 +287,30 @@ in**, which looks like the obvious answer and is not:
 wlroots owns `seat0` from the moment it starts, independently of any client. That is the
 whole reason this is sway.
 
+**gnome-remote-desktop** is the other Wayland-native RDP server, and it is the one that
+delivers what RDP was wanted for: mutter genuinely changes its monitor configuration
+mid-session, so a `size` instruction reflows the session in **113 ms** — four times faster
+than the reconnect this study settled on, and the closest thing to xorgxrdp's 30 ms that
+Wayland offers. guacd 1.6 connects to it over NLA and negotiates the graphics pipeline
+without complaint.
+
+It is not here for two reasons. The first is the price of admission: the daemon mounts a
+FUSE filesystem for clipboard file transfer and treats failure as fatal, so a rootless
+container needs `--device /dev/fuse --cap-add SYS_ADMIN --security-opt
+apparmor=unconfined` before it will stay running at all — handing back rather more than
+the root the X11 version needed. Around it go mutter, PipeWire, WirePlumber, a session
+bus and gnome-keyring, because credentials live in libsecret and want a TPM that a
+container does not have.
+
+The second is that **Firefox will not open a window on it.** It starts, spawns its socket
+process, and stops there: no content processes, no window, nothing in the log but
+`glxtest: libpci missing`. Not a monitor problem — `mutter --headless --virtual-monitor
+1080x2400` makes a monitor that outlives every connection, and the `GDK_IS_MONITOR`
+assertions Firefox spews without one do go away. Not the compositor or the stream either:
+`weston-simple-shm` drew 2030 frames through the same mutter, the same GRD and the same
+guacd in eighteen seconds. Disabling the a11y bridge and the portals changed nothing. The
+fast rotation is real and reachable; it just has no browser in it.
+
 ## Rotation is a reconnect
 
 Coming back to VNC should have cost the feature that RDP was adopted for, and no longer
