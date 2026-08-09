@@ -4,7 +4,7 @@ Run Firefox headlessly in a rootless Podman pod and drive it from a phone browse
 the phone as the *primary* target rather than an afterthought.
 
 The twist that makes this a study rather than a compose copy/paste: **the Java Guacamole
-webapp is dropped entirely.** What stays is `guacd`, the C proxy that actually speaks VNC.
+webapp is dropped entirely.** What stays is `guacd`, the C proxy that actually speaks RDP.
 What replaces Tomcat is ~250 lines of Python that bridge a browser WebSocket to guacd's
 wire protocol. Removing the webapp is also what makes genuinely zero-auth, single-URL
 access possible: there is no login form to skip, because there is no auth subsystem.
@@ -12,7 +12,7 @@ access possible: there is no login form to skip, because there is no auth subsys
 | | |
 |---|---|
 | ![portrait](docs/client-portrait.png) | ![landscape](docs/client-landscape.png) |
-| A 450×1000 CSS px phone viewport showing the remote 1080×2400 session at 38%. | The same session after rotating: letterboxed at 15%, still connected. |
+| A 450×1000 CSS px phone viewport, and a remote session sized to match it: 1080×2400. | The same session after rotating. The remote reflowed to 2400×1080 — Firefox is genuinely landscape, not scaled down to fit. |
 
 Both screenshots are a real Firefox, phone-shaped, rendering the client page — which is
 showing a *second* Firefox running inside the pod. That inner Firefox is an ordinary
@@ -42,14 +42,18 @@ Everything is driven by `mise`; there is no Makefile, no compose file and no kub
                    │        ▼ 127.0.0.1:4822                      │
                    │ guacd   (guacamole/guacd:1.5.5)              │
                    │        │                                     │
-                   │        ▼ 127.0.0.1:5900   (vnc)              │
-                   │ firefox (Xvnc + openbox + firefox)           │
+                   │        ▼ 127.0.0.1:3389   (rdp)              │
+                   │ firefox (xrdp + Xorg + openbox + firefox)    │
                    └──────────────────────────────────────────────┘
 ```
 
 Containers in a pod share a network namespace, so all three talk over loopback and only
-port 8080 is published. That is the only reason Xvnc can run with `-SecurityTypes None`:
-5900 is not reachable from anywhere but the pod.
+port 8080 is published. That is what makes the RDP password in `mise.toml` a reasonable
+thing to commit rather than a hole: 3389 is not reachable from anywhere but the pod.
+
+There *is* a password, which there was not before. xrdp authenticates through PAM and has
+no equivalent of Xvnc's `-SecurityTypes None`, so the credential is fixed, published, and
+load-bearing only inside the pod.
 
 ## The protocol
 
@@ -57,7 +61,7 @@ Guacamole instructions are a comma-separated list of length-prefixed elements en
 semicolon; the first element is the opcode.
 
 ```
-6.select,3.vnc;
+6.select,3.rdp;
 ^      ^ ^   ^
 |      | |   +-- terminator
 |      | +------ value
@@ -70,42 +74,67 @@ semicolon; the first element is the opcode.
 against guacd 1.5.5 by `mise run up` and a narrating client:
 
 ```
-client ──► 6.select,3.vnc;
-guacd  ──► 4.args,13.VERSION_1_5_0,8.hostname,4.port,9.read-only,…   (796 chars, 44 parameters)
-client ──► 4.size,4.1080,4.2400,3.420;
+client ──► 6.select,3.rdp;
+guacd  ──► 4.args,13.VERSION_1_5_0,8.hostname,4.port,6.domain,8.username,…  (1503 chars, 81 parameters)
+client ──► 4.size,4.1080,4.2400,2.96;
 client ──► 5.audio,8.audio/L8,9.audio/L16;
 client ──► 5.video;
 client ──► 5.image,10.image/jpeg,9.image/png,10.image/webp;
-client ──► 7.connect,13.VERSION_1_5_0,9.127.0.0.1,4.5900,0.,0.,0.,0.,0.,2.24,6.remote,1.3,…
-guacd  ──► 5.ready,37.$3f910fa8-1b60-4d5f-ab9e-4845257a32aa;
+client ──► 7.connect,13.VERSION_1_5_0,9.127.0.0.1,4.3389,0.,7.firefox,7.firefox,0.,…
+guacd  ──► 5.ready,37.$8ba89709-996d-47d7-918c-67aeef19884c;
 
            …and the session stream begins:
 
-guacd  ──► 4.size,2.-1,1.5,1.5;
+guacd  ──► 5.mouse,1.0,1.0,10.1125589696,8.10707530;
+guacd  ──► 4.size,2.-1,2.11,2.16;
 guacd  ──► 3.img,1.1,2.12,2.-1,9.image/png,1.0,1.0;
-guacd  ──► 4.blob,1.1,152.iVBORw0KGgoAAAANSUhEUgAAAAUAAAAF…
+guacd  ──► 4.blob,1.1,232.iVBORw0KGgoAAAANSUhEUgAAAAsAAAAQCAYAAADAvYV+…
 guacd  ──► 3.end,1.1;
-guacd  ──► 6.cursor,1.2,1.2,2.-1,1.0,1.0,1.5,1.5;
-guacd  ──► 3.set,1.0,11.multi-touch,1.0;
+guacd  ──► 6.cursor,1.0,1.0,2.-1,1.0,1.0,2.11,2.16;
 ```
 
 Three things in there are worth pausing on.
 
 **`connect` is positional.** Its values line up with the parameter names guacd sent in
-`args` — all 44 of them, in that order, with an empty string for each of the 39 we do not
-set. Sending only the ones we care about connects to garbage rather than failing.
+`args` — all 81 of them, in that order, with an empty string for each of the 72 we do not
+set. Sending only the nine we care about connects to garbage rather than failing. RDP is
+where this stops being theoretical: VNC asks for 44 parameters, RDP for 81.
 
 **Slot 0 is a version, not a parameter.** From 1.5.0 guacd puts `VERSION_1_5_0` first in
 `args`, and expects the negotiated version echoed back in that slot. Treating it as a
 parameter name shifts every subsequent value by one.
 
-**`ready` does not mean connected.** guacd answers `ready` before it has reached the VNC
-server, so a dead Xvnc surfaces later as an `error` instruction *inside* the session
-stream rather than as a handshake failure.
+**`ready` does not mean connected.** guacd answers `ready` before it has reached xrdp —
+and under RDP it does not even mean the session exists, because sesman has still to
+authenticate and start one. A failure there surfaces later as an `error` instruction
+*inside* the session stream rather than as a handshake failure.
 
-## Three things that bit
+## Four things that bit
 
-Each of these failed silently — no exception, no error log, just a black screen.
+Each of these failed silently — no exception, no error log, just a black screen or a
+wrong-sized one.
+
+### The `dpi` in a `size` instruction is a divisor
+
+To guacd's RDP client it is not metadata describing the display, it is arithmetic: the
+pixel dimensions you asked for are rescaled by `96/dpi` before the server ever sees them.
+Asking for 1080×2400 at this phone's real 230 dpi produces a 560×1252 session — not an
+error, not a warning, just a session that is the wrong size and a client that letterboxes
+it without knowing why.
+
+Measured across a sweep, holding the request at 1080×2400:
+
+| dpi sent | session created |
+|---|---|
+| 96 | 1080×2400 |
+| 144 | 720×1600 |
+| 192 | 540×1200 |
+| 230 | 560×1252 |
+
+96 is the only value that means what it says. Every bit of scaling in this study is
+explicit and lives somewhere else — `layout.css.devPixelsPerPx` inside Firefox,
+`display.scale()` in the client — so the tunnel now always sends 96, and the pixels
+requested are the pixels allocated.
 
 ### The browser's tunnel keeps no buffer between messages
 
@@ -142,9 +171,10 @@ verified by reading them back out of a running instance (`mise run up`, then ope
 
 **Firefox will not size its window below 450 CSS px**, maximised or not. Ask for less and
 the window comes out *wider* than the screen, clipping the right edge of every page. So
-the framebuffer is sized in physical pixels like a real phone panel — 1080×2400 — and
-divided by `layout.css.devPixelsPerPx = 2.4`, which lands exactly on that floor: a
-450×1000 CSS viewport, rendered at 2.4×.
+the client asks for a framebuffer in *physical* pixels, exactly as a phone panel reports
+them — a 450×1000 viewport at a device pixel ratio of 2.4 means 1080×2400 — and
+`layout.css.devPixelsPerPx = 2.4` divides it back down, landing exactly on that floor. It
+is also why the client clamps its request at 1080 wide: below that, no ratio saves it.
 
 **The pointer capability bitfield is `Coarse=1, Fine=2, Hover=4`.** Setting
 `ui.primaryPointerCapabilities` to 2 for "coarse" quietly reports a mouse, and every site
@@ -156,7 +186,7 @@ undefined until `dom.w3c_touch_events.legacy_apis.enabled` is set too.
 
 Firefox runs as an ordinary browser here — tabs, URL bar, menu, all navigable from the
 phone — so it has to be *told* to fill the screen, and there is no command-line flag for
-that. Two pieces: the window geometry lives in the profile, so `session.sh` seeds
+that. Two pieces: the window geometry lives in the profile, so `startwm.sh` seeds
 `xulstore.json` with `sizemode: maximized` before first start; and openbox is configured
 with `<decor>no</decor>`, because its title bar otherwise costs 61 px of a phone-sized
 screen to duplicate a title Firefox already shows.
@@ -179,7 +209,8 @@ rubber-banding the page, and 44 px tap targets.
 
 ## Touch, on something that only understands a mouse
 
-guacd speaks VNC and VNC speaks mouse, so every gesture has to be translated.
+RDP does have a multi-touch channel, but nothing on this path uses it: guacd is driven as
+a mouse, and a mouse is what Firefox sees. So every gesture has to be translated.
 `static/input.js` maps them:
 
 | gesture | sent to the remote |
@@ -216,35 +247,57 @@ delete and so fires no event at all — backspace silently does nothing.
 Expand the debug strip to see `last input`: it reports the gesture and the remote
 coordinates actually sent.
 
-## What it cost to drop RDP
+## What RDP bought, and what it cost
 
-Guacamole's `resize-method=display-update` is **RDP-only**. Over VNC there is no
-client-driven dynamic resize, so rotating the phone cannot reflow the remote session.
+This study ran on VNC first, and the reason to leave it was one line of Guacamole
+documentation: `resize-method=display-update` is **RDP-only**. Over VNC there is no
+client-driven dynamic resize, so rotating the phone could not reflow the remote session —
+it could only rescale it. The same 1080×2400 session rendered at 38% in portrait and 15%
+in landscape, letterboxed, with a `mise run resize` escape hatch that recreated the
+container to change geometry for real.
 
-Instead the display is scaled to fit: rotation rescales and letterboxes, staying connected
-throughout, and the debug strip shows remote geometry and scale factor side by side so the
-difference is visible rather than mysterious. In the screenshots above the same 1080×2400
-session renders at 38% in portrait and 15% in landscape.
+Now rotation asks and the session obliges. The browser sends a `size` instruction
+mid-session, guacd turns it into a Display Control PDU, xorgxrdp does a RandR resize,
+openbox re-maximises and Firefox reflows. 1080×2400 becomes 2400×1080 and back, in about
+30 ms of server time, at 42% both ways — the scale no longer moves, because the session is
+the shape of the screen. The escape hatch is gone; there is nothing left for it to do.
 
-For a real geometry change there is an escape hatch:
+Three things that were not free:
 
-```sh
-mise run resize 2400 1080     # then reload the page
-```
+**The container is not short any more.** Xvnc was the X server and the VNC server in one
+process. xrdp is three moving parts — xrdp on 3389, `xrdp-sesman` authenticating through
+PAM, and an Xorg with the xorgxrdp driver started per session — which brings back exactly
+what the VNC version was chosen to avoid: a session manager, PAM, a Unix password,
+`Xwrapper.config`, generated RSA and TLS keys, and a container that runs as root. Rootless
+Podman maps that root to an ordinary host user, which is the only reason it is tolerable.
 
-That recreates the Firefox container. Doing it in place with `xrandr --fb` *does* resize
-the framebuffer and Firefox *does* reflow, but it leaves the RandR output marked
-disconnected, and Xvnc has no modeline generator aboard to do it properly — `cvt` ships
-with `xserver-xorg-core`, which is precisely what using Xvnc avoids.
+**Firefox no longer runs until someone connects.** sesman starts the session on the first
+RDP login, so `mise run up` leaves a pod with no browser in it. That also inverts where
+geometry comes from: the framebuffer is negotiated by the client rather than configured,
+so `SCREEN_WIDTH`/`SCREEN_HEIGHT` are now only a fallback, and `startwm.sh` reads the real
+size back out of `xdpyinfo` to seed Firefox's window rather than computing it from
+environment variables that no longer decide anything.
 
-Choosing Xvnc over xrdp is what made the Firefox container short: Xvnc is both the X
-server and the VNC server in one process, so there is no session manager, no PAM, no
-`Xwrapper.config`, no RSA keygen, and nothing that needs to be root.
+**A resize sent too early is dropped in silence.** If the request arrives while the
+session is still coming up, xorgxrdp discards it and says nothing — and the first rotation
+after opening the page is precisely when that happens, reproducibly. The client repeats
+the request until the session reports the size it asked for, or four attempts run out.
+Giving up is safe, because `fit()` still letterboxes; that is only what the VNC version
+always did.
+
+One thing that did not change: the requested width is clamped to 1080 physical pixels,
+because Firefox will not size its window below 450 CSS px and 450 × 2.4 is 1080. A phone
+with a device pixel ratio of 2 would otherwise ask for a session too narrow to render
+into, and clip the right edge of every page. Below the clamp, the display letterboxes
+again — the old behaviour, kept for the case that still needs it.
 
 ## Limits
 
-- **No auth, anywhere.** Anyone on the LAN who opens the URL gets a live browser. That is
-  a deliberate choice for an experiment, not an oversight.
+- **No auth on the way in.** Anyone on the LAN who opens the URL gets a live browser. That
+  is a deliberate choice for an experiment, not an oversight. The RDP credential between
+  the tunnel and xrdp is not an exception to that: it is a fixed value in `mise.toml`,
+  required because xrdp has no passwordless mode, and it protects a port that never leaves
+  the pod.
 - **HTTP only**, so no secure context: `navigator.clipboard` is unavailable and the page
   cannot be installed as a PWA. Touch, fullscreen and rotation all work fine over HTTP.
 - **One session, hardcoded.** No connection list, no multi-user, no session management —
@@ -265,9 +318,9 @@ app/                      the tunnel service (uv + starlette)
     bridge.py             the two asyncio pumps
     app.py                routes
     static/               the mobile client and the diagnostic page
-  tests/                  65 tests, including a guacd stand-in on a real socket
+  tests/                  74 tests, including a guacd stand-in on a real socket
 containers/
-  firefox/                Xvnc + openbox + a normal Firefox
+  firefox/                xrdp + Xorg + openbox + a normal Firefox
   tunnel/                 the Python service
 mise.toml                 tools, env and every task
 ```
@@ -279,6 +332,5 @@ mise.toml                 tools, env and every task
 | `build` · `build:firefox` · `build:tunnel` | images; `js:vendor` fetches guacamole-common-js |
 | `up` · `down` · `restart` · `status` · `url` | the pod |
 | `logs` · `logs:firefox` · `logs:guacd` · `logs:tunnel` | following output |
-| `shell:firefox` · `shell:tunnel` · `vnc` | poking inside |
-| `resize <w> <h>` | change the remote geometry |
+| `shell:firefox` · `shell:tunnel` · `rdp` | poking inside |
 | `test` · `lint` · `format` · `dev` | the Python side |
