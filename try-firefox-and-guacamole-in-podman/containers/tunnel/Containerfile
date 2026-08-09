@@ -23,11 +23,9 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PORT=8080 \
     GUACD_HOST=127.0.0.1 \
     GUACD_PORT=4822 \
-    REMOTE_PROTOCOL=rdp \
+    REMOTE_PROTOCOL=vnc \
     REMOTE_HOST=127.0.0.1 \
-    REMOTE_PORT=3389 \
-    RDP_USERNAME=firefox \
-    RDP_PASSWORD=firefox
+    REMOTE_PORT=5900
 
 EXPOSE 8080
 

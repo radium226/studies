@@ -1,12 +1,13 @@
 #!/bin/bash
-# Start xrdp and its session manager, and wait for 3389 to actually answer.
+# Start the compositor, publish it, then run the browser on it.
 #
-# Nothing X-related happens here. Under RDP the session -- Xorg, openbox and
-# Firefox -- is spawned by sesman when a client connects, so this container is
-# running long before there is anything to look at. See startwm.sh.
+# All three outlive any connection, which is the whole reason this container is
+# built the way it is. wlroots owns one seat from the moment it starts, so a
+# client that connects an hour later types into the same session -- and a client
+# that disconnects takes nothing with it.
 set -euo pipefail
 
-readonly RDP_PORT=3389
+readonly VNC_PORT=5900
 
 log() { printf '[firefox] %s\n' "$*" >&2; }
 
@@ -20,52 +21,60 @@ wait_for() {
 }
 
 # Reading the kernel's socket table rather than connecting to the port: a probe
-# that opens a connection and immediately drops it makes xrdp log a failed X.224
-# handshake, so every startup would end in six ERROR lines that mean nothing.
+# that opens a connection and immediately drops it is a failed RFB handshake at
+# the other end, and every startup would log one.
 # 0A is TCP_LISTEN; the port is hex in that file.
-rdp_listening() {
-    awk -v port="$(printf ':%04X$' "$RDP_PORT")" \
+vnc_listening() {
+    awk -v port="$(printf ':%04X$' "$VNC_PORT")" \
         '$4 == "0A" && $2 ~ port { found = 1 } END { exit found ? 0 : 1 }' \
         /proc/net/tcp /proc/net/tcp6
 }
 
 cleanup() {
     log "shutting down"
-    kill "${SESMAN_PID:-}" "${XRDP_PID:-}" 2>/dev/null || true
+    kill "${SESSION_PID:-}" "${WAYVNC_PID:-}" "${SWAY_PID:-}" "${DBUS_PID:-}" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
-# sesman authenticates through PAM against /etc/shadow, so there is no
-# equivalent of Xvnc's -SecurityTypes None: the session needs a real password.
-# Setting it here rather than at build time keeps mise.toml the single source of
-# truth for a credential the tunnel container has to match.
-log "setting the session password for ${RDP_USERNAME}"
-echo "${RDP_USERNAME}:${RDP_PASSWORD}" | chpasswd
+# sway's config file cannot read the environment, so the environment is written
+# into a copy of it instead.
+sed -e "s|@SCREEN_WIDTH@|${SCREEN_WIDTH}|g" \
+    -e "s|@SCREEN_HEIGHT@|${SCREEN_HEIGHT}|g" \
+    -e "s|@KEYBOARD_LAYOUT@|${KEYBOARD_LAYOUT}|g" \
+    /etc/sway/config > "${XDG_RUNTIME_DIR}/sway-config"
 
-# sesman starts the session with a sanitised environment, so none of the
-# container's own variables reach startwm.sh by inheritance. This file is how
-# they cross that gap.
-cat > /etc/xrdp/session-env.sh <<ENV
-export DEVICE_PIXEL_RATIO='${DEVICE_PIXEL_RATIO}'
-export USER_AGENT='${USER_AGENT}'
-export START_URL='${START_URL}'
-ENV
-chmod 644 /etc/xrdp/session-env.sh
+# Firefox looks for a session bus and spends a noticeable part of its startup
+# failing to find one.
+log "starting a session bus"
+dbus-daemon --session --address="unix:path=${XDG_RUNTIME_DIR}/bus" --nofork --nopidfile &
+DBUS_PID=$!
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
 
-log "starting xrdp-sesman"
-xrdp-sesman --nodaemon &
-SESMAN_PID=$!
+# The headless backend needs no DRM device, no VT and no seat manager, which is
+# what lets all of this run as an ordinary user. WLR_LIBINPUT_NO_DEVICES stops
+# wlroots refusing to start for want of a keyboard that a container will never
+# have.
+log "starting sway at ${SCREEN_WIDTH}x${SCREEN_HEIGHT}"
+WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+    sway --config "${XDG_RUNTIME_DIR}/sway-config" &
+SWAY_PID=$!
 
-log "starting xrdp on ${RDP_PORT}"
-xrdp --nodaemon &
-XRDP_PID=$!
+wait_for "the Wayland socket" "[ -S ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY} ]"
 
-# A container that is running but not yet accepting connections looks identical
-# to a broken one from the outside, and guacd's first attempt is what would find
-# out.
-wait_for "the RDP port" rdp_listening
+# No --render-cursor: guacd draws the pointer itself from the RFB cursor
+# pseudo-encoding, and a second one painted into the framebuffer would trail
+# behind it.
+log "starting wayvnc on ${VNC_PORT}"
+wayvnc 0.0.0.0 "${VNC_PORT}" &
+WAYVNC_PID=$!
 
-# Exit as soon as either half dies, rather than lingering as a container that is
-# running but can never start a session.
-wait -n "$SESMAN_PID" "$XRDP_PID"
+wait_for "the VNC port" vnc_listening
+
+log "starting the session"
+/usr/local/bin/session.sh &
+SESSION_PID=$!
+
+# Exit as soon as any of them dies, rather than lingering as a container that
+# is running but has nothing to show.
+wait -n "$DBUS_PID" "$SWAY_PID" "$WAYVNC_PID" "$SESSION_PID"
 log "a child exited; stopping the container"

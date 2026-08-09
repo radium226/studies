@@ -93,10 +93,9 @@ async def tunnel(websocket: WebSocket) -> None:
             await websocket.send_text(buffered)
 
         # A successful handshake does not mean the remote desktop is up: guacd
-        # answers `ready` before it has reached xrdp, and under RDP it does not
-        # even mean the session exists -- sesman has still to authenticate and
-        # start one. A failure there surfaces as an `error` instruction *inside*
-        # the session stream. The browser reports that; nothing to catch here.
+        # answers `ready` before it has reached weston. A failure there surfaces
+        # as an `error` instruction *inside* the session stream. The browser
+        # reports that; nothing to catch here.
         await bridge(connection, websocket)
 
     except (HandshakeError, ProtocolError) as error:

@@ -20,22 +20,35 @@ class TestConnectionParameters:
 
         Without it the session simply never changes shape, and rotating the
         phone goes back to letterboxing with nothing to say why.
+
+        Not `display-update`: weston never opens the Display Control channel,
+        so guacd's mid-session PDU ends the connection rather than resizing it.
         """
-        assert Settings().connection_parameters()["resize-method"] == "display-update"
+        assert Settings().connection_parameters()["resize-method"] == "reconnect"
 
-    def test_carries_the_session_credentials(self):
-        settings = Settings(rdp_username="someone", rdp_password="secret")
-        parameters = settings.connection_parameters()
+    def test_sends_no_password(self):
+        """weston has no accounts, so there is no credential to protect."""
+        assert "password" not in Settings().connection_parameters()
 
-        # xrdp authenticates through PAM; there is no passwordless mode.
-        assert parameters["username"] == "someone"
-        assert parameters["password"] == "secret"
+    def test_names_the_keymap_weston_was_configured_with(self):
+        """The two have to agree, and nothing at runtime checks that they do.
+
+        guacd translates keysyms through this keymap and falls back to an RDP
+        unicode event for whatever it does not cover -- which weston logs and
+        drops. A mismatch here is a keyboard that types some characters and
+        silently ignores others.
+        """
+        settings = Settings(rdp_server_layout="en-us-qwerty")
+
+        assert settings.connection_parameters()["server-layout"] == "en-us-qwerty"
 
     def test_accepts_the_self_signed_certificate(self):
         parameters = Settings().connection_parameters()
 
         # Generated at image build, so it is self-signed by construction.
-        assert parameters["security"] == "any"
+        # Named rather than `any`: weston does not do NLA, so trying it first
+        # only buys a failed round trip.
+        assert parameters["security"] == "tls"
         assert parameters["ignore-cert"] == "true"
 
     def test_points_at_the_configured_remote(self):
@@ -60,11 +73,29 @@ class TestDefaults:
         """
         assert Settings().default_dpi == 96
 
-    def test_reads_the_credentials_from_the_environment(self, monkeypatch):
+    def test_reads_the_session_settings_from_the_environment(self, monkeypatch):
         monkeypatch.setenv("RDP_USERNAME", "from-env")
-        monkeypatch.setenv("RDP_PASSWORD", "also-from-env")
+        monkeypatch.setenv("RDP_SERVER_LAYOUT", "also-from-env")
 
         settings = Settings.from_env()
 
         assert settings.rdp_username == "from-env"
-        assert settings.rdp_password == "also-from-env"
+        assert settings.rdp_server_layout == "also-from-env"
+
+    def test_the_defaults_survive_an_empty_environment(self, monkeypatch):
+        """`slots=True` turns every class attribute into a slot descriptor.
+
+        Reading the fallbacks off the class rather than off an instance sends
+        guacd a protocol named `<member 'remote_protocol' of 'Settings'
+        objects>`, which it answers with "Support for protocol ... is not
+        installed" -- and only when a variable is unset, which is to say only
+        outside the container.
+        """
+        for name in ("GUACD_HOST", "REMOTE_PROTOCOL", "RDP_USERNAME", "RDP_SERVER_LAYOUT"):
+            monkeypatch.delenv(name, raising=False)
+
+        settings = Settings.from_env()
+
+        assert settings.remote_protocol == "rdp"
+        assert settings.guacd_host == "127.0.0.1"
+        assert isinstance(settings.rdp_server_layout, str)
