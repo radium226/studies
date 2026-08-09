@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run the legacy monolithic app/ (video-streamer) - see webapp/ for the kernel/core-based rebuild"
+set -euxo pipefail
+
+# The app starts idle; enter a source URL (and tick "loop") in the web UI.
+uv --directory="${MISE_PROJECT_ROOT}/app" run video-streamer \
+    --speed-factor=1 \
+    --scrfd-batch-frames=16 \
+    --max-batch-lag-ms=5000

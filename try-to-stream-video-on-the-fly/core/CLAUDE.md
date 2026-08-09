@@ -1,0 +1,193 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this
+subproject. See the repo root `CLAUDE.md` for how this fits alongside `app/` and `kernel/`.
+
+## What this is
+
+`video-analyzer-core` (importable as `video_analyzer.core`) — concrete, real-backend
+implementations of [`kernel`](../kernel)'s service ABCs: SCRFD face detection, ArcFace face
+embedding, ByteTrack multi-object tracking, PCHIP/cubic/linear spline interpolation,
+histogram-correlation scene-cut detection, and ffmpeg-backed frame I/O. Most of it was ported
+from `app/src/video_streamer/*` and adapted to satisfy `kernel`'s (async) contracts and richer
+`Detection`/`Face`/`TrackedFace` models.
+
+`kernel` stays dependency-free by design (see its own `CLAUDE.md`) — every numpy/scipy/opencv/
+onnxruntime-touching algorithm lives here instead, even when the algorithm itself is pure math
+(e.g. SCRFD box/landmark decoding, NMS, ByteTrack IoU re-association, spline dispatch).
+
+Depends on `kernel` via a `uv` path source (`../kernel`, editable) — not a workspace, matching
+the standalone-project style `app/` and `kernel/` already use.
+
+## Commands
+
+All commands run from this directory (a `uv`-managed Python project).
+
+```bash
+uv sync                        # install/update dependencies from uv.lock (resolves the
+                                # ../kernel path dependency too)
+uv run pytest                  # unit tests — pure-Python/numpy only, no ffmpeg/ONNX process
+uv run ruff check src tests    # lint
+uv run ty check src tests      # type check
+```
+
+## Architecture
+
+```
+src/video_analyzer/core/
+├── _onnx_model.py          OnnxModel — shared ONNX session lifecycle (lazy load in
+│                           __enter__, released in __exit__); base for both ONNX classes below
+├── onnx_face_detector.py   OnnxFaceDetector(kernel.FaceDetector) — SCRFD: letterbox
+│                           preprocessing, multi-stride decode, NMS, all pure numpy/cv2;
+│                           only session.run() is offloaded via run_in_executor
+├── onnx_face_embedder.py   OnnxFaceEmbedder(kernel.FaceEmbedder) — ArcFace: 5-point landmark
+│                           affine alignment to a 112x112 canonical crop, batched embedding
+├── bytetrack_tracker.py    ByteTrackTracker(kernel.Tracker) — wraps trackers.ByteTrackTracker
+│                           (buffered IoU, since detection cadence << video fps); re-associates
+│                           ByteTrack's Kalman-smoothed box back to the matched input detection
+│                           via hand-rolled IoU (_best_iou_match, each face claimed at most once)
+│                           so drawn boxes/landmarks stay consistent — cheap bookkeeping, no
+│                           executor offload needed. Implements reset() (scene cuts) by
+│                           delegating to the vendored tracker's own reset; the ByteTrack knobs
+│                           live in ByteTrackTrackerConfig. NB: `fps` is a ctor arg and
+│                           bookkeeping only — lost_track_buffer counts *updates* (detection
+│                           passes), not video frames
+├── spline_interpolator.py  SplineInterpolator(kernel.Interpolator) — pchip/cubic/linear *point
+│                           query* via scipy (evaluate one position of the window, per the
+│                           kernel contract), generic over anything implementing
+│                           kernel.Interpolable (to_vector/with_vector) — knows nothing about
+│                           faces or tracks
+├── config.py               every core class's <ClassName>Config, on kernel's `Config` base
+│                           (so they parse/serialize the same strict way, and compose into a
+│                           bigger document — see cli/). Also owns the InterpolationMethod alias
+│                           and StopStrategyConfig, which groups every early-stop strategy's
+│                           config into one always-present section (see the bullet below)
+├── histogram_scene_detector.py HistogramSceneDetector(kernel.SceneDetector) — per-channel
+│                           histogram correlation of consecutive frames; a cut is a correlation
+│                           below the configured threshold. Cheap enough to run inline per pair
+├── ffmpeg_frame_source.py  FfmpegFrameSource(kernel.FrameSource) — spawns the decoder ffmpeg
+│                           subprocess, probes video info, reshapes raw BGR24 bytes to
+│                           (H, W, 3) numpy frames
+├── ffmpeg_frame_sink.py    FfmpegFrameSink(kernel.FrameSink) — spawns the encoder ffmpeg
+│                           subprocess, writes raw BGR24 bytes to its stdin. The encoder's
+│                           *output* side (fMP4 fragments, box parsing, broadcasting to
+│                           viewers) is NOT part of any kernel contract — read
+│                           read_output_chunk() yourself and wire it up downstream, same as
+│                           app/orchestrator.py does today
+├── overlay.py               draw_caption_text / draw_dashed_rect — pure cv2 helpers, no ABC to
+│                           satisfy; draw onto annotated_frame.frame.content before it reaches
+│                           a FrameSink if you want boxes burned into the video
+├── metrics.py              MetricsCollector — trailing time-window (MetricsCollectorConfig
+│                           .window_s, default 5 s) moving averages of live pipeline stats, plus
+│                           the three decorators that feed it: MeteredFaceDetector (times a
+│                           detection pass, records its batch size and per-frame face counts),
+│                           MeteredFaceEmbedder (times an embedding pass, records its crop
+│                           count), MeteredFrameBroadcaster (counts rendered frames, records the
+│                           latest frame's face count as active_tracks). Ported from
+│                           app/metrics.py, which recorded all of it from one monolithic
+│                           Engine.process; the numbers live in three separate kernel.Pipeline
+│                           stages here, so decorators are the only way to reach them without a
+│                           new kernel contract. Generic and numpy-free, same as the stop
+│                           strategies below
+├── stop_after_frame_count.py StopAfterFrameCount(kernel.FrameSource) — decorates a FrameSource,
+│                           requests an early kernel.StopToken stop once the Nth frame has been
+│                           read (still returns that frame). Generic, no numpy — lives here only
+│                           because kernel exposes the StopToken primitive but no concrete
+│                           condition for what should set it. Reachable from a config document
+│                           as StopStrategyConfig.after_frame_count
+├── stop_on_first_track.py  StopOnFirstTrack(kernel.FrameBroadcaster) — decorates a
+│                           FrameBroadcaster, requests an early kernel.StopToken stop once one
+│                           same track id has appeared in `config.min_track_frames` *rendered*
+│                           frames (default 1). The definition of a track in video frames — exact,
+│                           interpolated, and held appearances all count, which is why it sits
+│                           on the output side: interpolated frames only exist downstream of
+│                           the render cursor. Per-track counts reset at scene-start frames
+│                           (ByteTrack may reuse ids after its own reset). Also generic.
+│                           Reachable as StopStrategyConfig.on_first_track
+├── yt_dlp_url_resolver.py  resolve_direct_media_url — resolves a page URL (YouTube, etc.) to a
+│                           direct media URL via the `yt-dlp` CLI (a subprocess on PATH, like
+│                           ffmpeg/ffprobe — not a Python package), so it can be handed to
+│                           FfmpegFrameSource like any other source string. Ported from
+│                           app/input_video.py's _resolve_direct_media_url
+├── pipe_io.py              **public** asyncio subprocess-pipe helpers, shared by the two ffmpeg
+    wrappers and reused downstream (cli's FfplayFrameSink): read_exact, drain_stderr,
+    drain_and_discard, terminate_and_wait, shutdown_process — mind the drain-during-shutdown
+    requirement documented inline, or Process.wait() hangs
+```
+
+`FrameBroadcaster` has no concrete implementation here — it's meant to be supplied by whatever
+application wires the pipeline together (e.g. push `AnnotatedFrame` metadata over a websocket); `core` has no opinion
+on transport.
+
+ONNX model weights are **not** bundled — `OnnxFaceDetector`/`OnnxFaceEmbedder` take a
+`model_path: Path` constructor argument (a resource, not a tunable, so it stays out of the
+config); point it at `app/models/scrfd_10g_kps_dynamic.onnx` /
+`app/models/arcface_w600k_r50_batch.onnx` (or your own weights) when wiring up a real pipeline.
+
+## Working in this codebase
+
+- **Every tunable class here owns a `<ClassName>Config`** in `config.py`, on `kernel`'s
+  `Config` base — see `kernel/CLAUDE.md` for the rule that decides what goes in one. Frame rates
+  and model paths stay constructor arguments: `ByteTrackTracker(fps, config=...)`,
+  `FfmpegFrameSink(width, height, fps, config=...)`, `OnnxFaceDetector(model_path, config=...)`.
+- **`StopStrategyConfig` groups every early-stop strategy into one always-present section**, each
+  strategy carrying its own `enabled: bool = False` rather than the `X | None` "absent means off"
+  idiom used elsewhere. The point is visibility: dumping a config document then shows what each
+  strategy can be told (`max_frames: 300`, `min_track_frames: 1`) instead of a bare `null` you
+  have to read the source to decode. Two consequences worth knowing:
+  - `enabled` is **composition metadata** — the decorators never read it. `StopAfterFrameCount`/
+    `StopOnFirstTrack` are told what to do by being constructed at all, so it's whoever wires the
+    pipeline (`cli/main.py`) that branches on the flag. A config field its own class ignores is
+    the price of showing every strategy's defaults; don't "fix" it by making the decorators
+    self-disable.
+  - The strategies are **not** alternatives: any combination may be enabled, they share the one
+    `kernel.StopToken`, and the first to set it ends the run — including stops the composing
+    application adds of its own (`cli`'s closed ffplay window). Adding a strategy means a new
+    decorator here plus a new field on `StopStrategyConfig`.
+  `StopAfterFrameCountConfig.max_frames` used to have no default at all, on the grounds that
+  picking the number is the whole reason to use it; it now defaults to `300` (~10 s at 30 fps)
+  because a section that shows every strategy's knobs has to have a number to show. It only
+  means anything once `enabled`, so nothing inherits it silently.
+- What deliberately did **not** become configuration: the SCRFD/ArcFace geometry constants (input
+  sizes, strides, normalization mean/std, the canonical reference landmarks) and the encoder's
+  codec/profile/movflags settings including `_KEYFRAME_INTERVAL_SECONDS`. Those are model and
+  container-format invariants — changing them doesn't tune the pipeline, it breaks it (and the
+  keyframe interval is additionally baked into the literal in
+  `-force_key_frames expr:gte(t,n_forced*2)`). If you promote one, promote its twin too.
+- This is where new algorithm **backends** go — a different detector model, a different
+  tracker, a GPU execution provider, etc. — as long as they implement one of `kernel`'s ABCs.
+  New *contracts* (a new kind of service, a new data shape) belong in `kernel` instead.
+  Only `kernel`'s `Interpolator`/`Interpolable` protocol should stay generic; everything that
+  actually computes numbers belongs here.
+- Testing boundary matches `app/`'s own convention (see the repo root `CLAUDE.md`): tests are
+  pure-Python/numpy units with no ffmpeg subprocess or ONNX model file required.
+  `ByteTrackTracker`/`trackers`/`supervision` are lightweight enough to exercise directly (see
+  `tests/test_bytetrack_tracker.py`); `OnnxFaceDetector`/`OnnxFaceEmbedder`/
+  `FfmpegFrameSource`/`FfmpegFrameSink` have no unit tests for the same reason `app/detection.py`,
+  `engine.py`, `reader.py`, `writer.py` don't — they need real model weights / an `ffmpeg` binary.
+  If you add coverage for those, gate it behind the weights/binary actually being present rather
+  than making it a hard requirement to run `pytest`. `resolve_direct_media_url` *is* tested
+  (`tests/test_yt_dlp_url_resolver.py`) despite spawning yt-dlp in production — the tests swap
+  `asyncio.create_subprocess_exec` for a fake, so no binary or network is ever needed.
+- `OnnxFaceDetector`/`OnnxFaceEmbedder` offload `session.run()` via `run_in_executor` (an
+  injectable `Executor`, defaulting to the loop's default thread pool) — `ByteTrackTracker.update`
+  deliberately does not, since ByteTrack's update is cheap bookkeeping, not inference; don't add
+  executor offloading there without a reason.
+- `StopAfterFrameCount`/`StopOnFirstTrack` and the three `Metered*` decorators in `metrics.py`
+  are the only generic classes in `core` — an intentional exception to "everything that computes
+  numbers belongs here, only `kernel`'s `Interpolator`/`Interpolable` stays generic": none of
+  them touches frame content at all (they count reads, rendered frames per track id, batch sizes,
+  and elapsed time), so pinning them to `NDArray[np.uint8]` like every other backend here would
+  just be dishonest about what they depend on.
+- **Observing the pipeline is a decorator, not a new `kernel` service.** `metrics.py` follows the
+  exact rule the stop strategies do (`kernel/CLAUDE.md` states it for `StopToken`): the timings
+  worth reporting live inside `kernel.Pipeline`'s stages, and the way a composing application
+  reaches them is by wrapping the service the stage calls — never by adding an observer ABC to
+  `kernel`. If you want a metric the three `Metered*` decorators can't see (`BatchGate`'s own
+  firing decisions, say), that is a real limit of this approach, not a reason to punch a hole in
+  the kernel contract. Note also that `MetricsCollector` is fed from the event loop on every
+  path (the decorators time the `await`; they do not run inside the detector's executor), which
+  is what lets it stay lock-free — keep it that way.
+- `app/` was not touched when this project was created and still has its own inline
+  `engine.py`/`detection.py`/`tracking.py`/`interpolation.py`/`reader.py`/`writer.py` copies —
+  migrating `app/` to depend on `core`+`kernel` instead is a separate, not-yet-done task.

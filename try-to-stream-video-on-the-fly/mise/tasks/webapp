@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run the video-analyzer-webapp (kernel/core-based rebuild of app/)"
+set -euxo pipefail
+
+# The app starts idle; pick a file and a stop strategy from the web UI.
+uv --directory="${MISE_PROJECT_ROOT}/webapp" run video-analyzer-webapp

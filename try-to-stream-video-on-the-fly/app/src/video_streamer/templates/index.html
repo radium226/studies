@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>video-streamer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="player-wrap">
+    <video id="player" autoplay muted playsinline></video>
+    <div id="progress-bar" class="progress-bar">
+      <div class="progress-bar-fill"></div>
+    </div>
+    <div id="stats" class="stats">
+      <div class="stats-title">pipeline</div>
+      <table class="stats-table"><tbody id="stats-body"></tbody></table>
+    </div>
+    <form id="source-form" class="source-form">
+      <input id="source-url" type="text" placeholder="Paste a video URL…" autocomplete="off" />
+      <label class="source-loop"><input id="source-loop" type="checkbox" /> loop</label>
+      <button type="submit">Load</button>
+      <button id="source-synthetic" type="button">Test pattern</button>
+      <button id="source-stop" type="button">Stop</button>
+    </form>
+    <div id="source-error" class="source-error" hidden>
+      <div class="source-error-header">
+        <span class="source-error-title">source failed</span>
+        <button id="source-error-close" type="button" aria-label="Dismiss">&times;</button>
+      </div>
+      <pre id="source-error-text"></pre>
+    </div>
+    <p id="status"></p>
+  </div>
+  <script src="/static/player.js"></script>
+  <script src="/static/metrics.js"></script>
+  <script src="/static/source.js"></script>
+</body>
+</html>

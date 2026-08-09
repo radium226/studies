@@ -1,0 +1,22 @@
+# Replay each discovered face track through its own ffplay window.
+#
+#   uv run video-analyzer-cli <video-with-faces> --config configs/run.yaml
+#
+# Everything omitted here keeps its library default; `--dump-config` prints the
+# full document if you want to start from every knob instead.
+
+# Buffer each tracked face's crops during the run, then play them back one
+# track at a time, in track-id order, after the main window closes. Note the
+# bound is per track, not global: ~max_crops_per_track * crop_size^2 * 3 bytes
+# each (~22 MB at these values), and a long video keeps finding new track ids.
+track_recording:
+  crop_size: 160          # side length each face crop is resized to
+  max_crops_per_track: 300  # a track's *first* N rendered frames; null = unbounded
+
+# End the main run once a face has held for 30 rendered frames, so the replay
+# starts without watching the whole video. Closing the main window yourself
+# would skip the replay entirely — that means "stop the whole run".
+stop_strategy:
+  on_first_track:
+    enabled: true
+    min_track_frames: 90
