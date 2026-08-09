@@ -54,6 +54,14 @@ class Settings:
     #: to allocate an absurd framebuffer.
     max_dimension: int = 4096
 
+    #: sway's IPC socket, shared in from the session container, and the output
+    #: to reshape through it. This is how the session changes size at all --
+    #: see session.py for why it cannot be done over the VNC connection.
+    #: Missing is not an error: without it the session keeps whatever size it
+    #: has, which is what happens when the tunnel runs on the host.
+    session_socket: str = "/control/sway.sock"
+    session_output: str = "HEADLESS-1"
+
     @classmethod
     def from_env(cls) -> Settings:
         # Through an instance, not through `cls`: `slots=True` replaces every
@@ -73,6 +81,8 @@ class Settings:
             default_width=_env_int("SCREEN_WIDTH", fallback.default_width),
             default_height=_env_int("SCREEN_HEIGHT", fallback.default_height),
             default_dpi=_env_int("SCREEN_DPI", fallback.default_dpi),
+            session_socket=_env("SESSION_SOCKET", fallback.session_socket),
+            session_output=_env("SESSION_OUTPUT", fallback.session_output),
         )
 
     def connection_parameters(self) -> dict[str, str]:

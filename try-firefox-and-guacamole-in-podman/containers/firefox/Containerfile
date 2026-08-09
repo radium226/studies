@@ -35,9 +35,17 @@ RUN apt-get update \
 # whoever connects, so there is no password, no PAM and no /etc/shadow in the
 # picture. It exists only to own XDG_RUNTIME_DIR and to not be root.
 RUN useradd --create-home --uid 1000 --shell /bin/bash firefox \
-    && mkdir -p /run/user/1000 \
-    && chown firefox:firefox /run/user/1000 \
+    && mkdir -p /run/user/1000 /control \
+    && chown firefox:firefox /run/user/1000 /control \
     && chmod 700 /run/user/1000
+
+# /control is a volume shared with the tunnel container, and sway's IPC socket
+# is what crosses it. The tunnel is what reshapes this session -- it is the only
+# process that knows when nothing is connected, which is the only moment a VNC
+# desktop can change size. See app/src/guac_tunnel/session.py.
+#
+# The path is pinned rather than left to sway, which would otherwise put the
+# socket at a name containing its own pid.
 
 COPY entrypoint.sh session.sh /usr/local/bin/
 COPY sway-config /etc/sway/config
@@ -53,6 +61,8 @@ WORKDIR /home/firefox
 # viewport -- see firefox-user.js for why 2.4 and not something rounder.
 ENV LANG=C.UTF-8 \
     XDG_RUNTIME_DIR=/run/user/1000 \
+    SWAYSOCK=/control/sway.sock \
+    WAYVNC_SOCKET=/control/wayvnc.sock \
     WAYLAND_DISPLAY=wayland-1 \
     MOZ_ENABLE_WAYLAND=1 \
     GDK_BACKEND=wayland \

@@ -64,8 +64,13 @@ wait_for "the Wayland socket" "[ -S ${XDG_RUNTIME_DIR}/${WAYLAND_DISPLAY} ]"
 # No --render-cursor: guacd draws the pointer itself from the RFB cursor
 # pseudo-encoding, and a second one painted into the framebuffer would trail
 # behind it.
+#
+# --socket puts wayvnc's control socket next to sway's, on the volume the
+# tunnel can see. The tunnel needs it to answer one question before every
+# reshape -- is anybody still connected? -- because resizing the output under a
+# connected client segfaults wayvnc 0.9.1 and takes this container with it.
 log "starting wayvnc on ${VNC_PORT}"
-wayvnc 0.0.0.0 "${VNC_PORT}" &
+wayvnc --socket="${WAYVNC_SOCKET}" 0.0.0.0 "${VNC_PORT}" &
 WAYVNC_PID=$!
 
 wait_for "the VNC port" vnc_listening

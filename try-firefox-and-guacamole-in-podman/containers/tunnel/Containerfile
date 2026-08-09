@@ -15,7 +15,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY app/src ./src
 RUN uv sync --frozen --no-dev
 
-RUN useradd --create-home tunnel
+# uid 1000 to match the session container's user: sway's IPC socket is shared
+# between the two through /control, and only its owner may connect to it.
+RUN useradd --create-home --uid 1000 tunnel \
+    && mkdir -p /control \
+    && chown tunnel:tunnel /control
 USER tunnel
 
 ENV PATH="/app/.venv/bin:${PATH}" \
@@ -25,7 +29,9 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     GUACD_PORT=4822 \
     REMOTE_PROTOCOL=vnc \
     REMOTE_HOST=127.0.0.1 \
-    REMOTE_PORT=5900
+    REMOTE_PORT=5900 \
+    SESSION_SOCKET=/control/sway.sock \
+    SESSION_OUTPUT=HEADLESS-1
 
 EXPOSE 8080
 

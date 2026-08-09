@@ -15,6 +15,7 @@ from .bridge import GuacdConnection, bridge, tunnel_uuid_frame
 from .config import STATIC_ROOT, Settings
 from .handshake import Display, HandshakeError, perform_handshake
 from .protocol import ProtocolError
+from .session import SessionError, reshape
 
 
 def _page(name: str):
@@ -58,6 +59,22 @@ async def tunnel(websocket: WebSocket) -> None:
     display = _requested_display(websocket, settings)
 
     await websocket.accept(subprotocol="guacamole")
+
+    # Before guacd, not after: this is the only moment the session can change
+    # shape, because neither guacd nor wayvnc will resize a live VNC connection
+    # and there is no live one yet. A rotation in the browser is a reconnect,
+    # and this is the half of it that does the work. See session.py.
+    try:
+        await reshape(
+            settings.session_socket,
+            settings.session_output,
+            display.width,
+            display.height,
+        )
+    except SessionError as error:
+        # Worth saying out loud, but not worth refusing a session over: the
+        # client letterboxes whatever size it is actually given.
+        logger.warning("could not reshape the session: {}", error)
 
     try:
         connection = await GuacdConnection.open(settings.guacd_host, settings.guacd_port)

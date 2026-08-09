@@ -27,26 +27,12 @@ const MIN_REMOTE_WIDTH = 1080;
 /** Matches `Settings.max_dimension`; the tunnel clamps to it regardless. */
 const MAX_REMOTE_DIMENSION = 4096;
 
-/** Quiet period before asking the session to resize. See requestSize(). */
+/** Quiet period before reconnecting at a new size. See requestSize(). */
 const RESIZE_SETTLE_MS = 250;
 
-/**
- * How long to leave a resize request unanswered before repeating it.
- *
- * Comfortably longer than a resize takes. A resize here is a whole RDP
- * reconnect -- measured at 1.1 to 2.1 seconds -- so a retry timed for the old
- * display-update round trip would fire while the first one was still in
- * flight, and buy a second reconnect for nothing.
- */
-const RESIZE_RETRY_MS = 3000;
-
-/** Times to ask before settling for a letterbox. */
-const RESIZE_ATTEMPTS = 2;
-
 // The remote geometry, as reported by guacd once the session has actually
-// resized. What we asked for is only a request: the round trip is an RDP
-// reconnect and a full Firefox reflow, so this always lags and is never
-// assumed.
+// resized. What we asked for is only a request: the round trip is a reconnect
+// and a full Firefox reflow, so this always lags and is never assumed.
 let remote = { width: 0, height: 0 };
 let scale = 1;
 let client = null;
@@ -65,12 +51,14 @@ function noteInput(what) {
 
 // --- geometry -------------------------------------------------------------
 //
-// Rotation asks the remote session to change shape. guacd carries that by
-// remaking the RDP connection at the new size -- weston takes its geometry from
-// capability exchange and offers no channel to change it mid-session -- and
-// weston resizes the output, kiosk-shell reconfigures Firefox, Firefox reflows.
+// Rotation reconnects. There is no instruction for it: neither guacd nor wayvnc
+// will change the size of a live VNC connection, so the session is reshaped in
+// the gap between two of them -- the tunnel resizes sway's output while nothing
+// is connected, and this reconnects into a session that is already the right
+// shape. sway and Firefox never restart, so the page survives it.
+//
 // Scaling stays as the fallback: something has to be on screen for the second
-// or two that takes, and the request is not always granted in full.
+// or so that takes, and the request is not always granted in full.
 
 /**
  * The session size this viewport wants, in physical pixels.
@@ -114,39 +102,32 @@ function fit() {
 }
 
 /**
- * Ask the remote session to become the shape of this viewport.
+ * Make the remote session the shape of this viewport, by reconnecting.
  *
- * Repeated once, because the session it is asking is not always ready to be
- * asked. Fewer repeats than the xorgxrdp version needed: that one dropped an
- * early resize in silence, whereas a reconnect either happens or ends the
- * connection loudly. Giving up is safe: fit() letterboxes, which is only what
- * the VNC version always did.
+ * No retry loop: the reshape happens before guacd is even dialled, so by the
+ * time there is a session to draw it is already the right size. If it is not,
+ * fit() letterboxes -- which is only what the VNC version always did.
  */
 function requestSize() {
   if (!client) return;
 
   // Same reason fit() bows out: the on-screen keyboard shrinks the visual
-  // viewport, and reflowing the *remote session* down to the sliver above the
-  // keys -- on every keypress -- is far worse than rescaling ever was.
+  // viewport, and reconnecting the session down to the sliver above the keys --
+  // on every keypress -- is far worse than rescaling ever was.
   if (document.activeElement === sink) return;
 
   const wanted = wantedSize();
   if (wanted.width === remote.width && wanted.height === remote.height) return;
 
-  client.sendSize(wanted.width, wanted.height);
-
-  if (--attemptsLeft > 0) {
-    resizeTimer = setTimeout(requestSize, RESIZE_RETRY_MS);
-  }
+  connect();
 }
 
 // A phone reports a resize for every keyboard show/hide and every scroll of
 // the URL bar. Rescaling is cheap, so it happens once a frame; resizing is not
-// -- each request costs an RDP reconnect and a full Firefox reflow, a second or
-// two of it -- so it waits for the viewport to hold still first.
+// -- it drops the session and dials it again -- so it waits for the viewport to
+// hold still first.
 let pendingFit = null;
 let resizeTimer = null;
-let attemptsLeft = 0;
 function scheduleGeometry() {
   if (pendingFit === null) {
     pendingFit = requestAnimationFrame(() => {
@@ -155,7 +136,6 @@ function scheduleGeometry() {
     });
   }
 
-  attemptsLeft = RESIZE_ATTEMPTS;
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(requestSize, RESIZE_SETTLE_MS);
 }

@@ -33,6 +33,10 @@ START_URL = "http://localhost:8080/diagnostics"
 
 # --- podman -----------------------------------------------------------------
 POD_NAME = "firefox-guac"
+
+# A volume, not a port: the tunnel reshapes the session over sway's IPC socket,
+# and the socket is the only thing that crosses between the two containers.
+CONTROL_VOLUME = "firefox-guac-control"
 HOST_PORT = "8080"
 # 1.6.0 and not 1.5.5, and not for its own sake: client-driven resize over VNC
 # is a 1.6 feature (GUACAMOLE-1196), and it is the whole reason this study can
@@ -139,6 +143,11 @@ podman pod exists "${POD_NAME}" && { echo "already up; run 'mise run down' first
 # reasonable thing to run rather than a hole.
 podman pod create --name "${POD_NAME}" --publish "${HOST_PORT}:8080" >/dev/null
 
+# Recreated every time. A socket from a sway that no longer exists is worse
+# than no socket at all: the tunnel would connect to it and hang.
+podman volume rm --force "${CONTROL_VOLUME}" >/dev/null 2>&1 || true
+podman volume create "${CONTROL_VOLUME}" >/dev/null
+
 # SCREEN_* is what sway starts the output at; the browser replaces it on the
 # first connection.
 podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
@@ -147,6 +156,7 @@ podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
     --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
     --env KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT}" \\
     --env START_URL="${START_URL}" \\
+    --volume "${CONTROL_VOLUME}:/control" \\
     "${FIREFOX_IMAGE}" >/dev/null
 
 podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-guacd" \\
@@ -156,6 +166,7 @@ podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-tunnel" \\
     --env SCREEN_WIDTH="${SCREEN_WIDTH}" \\
     --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
     --env SCREEN_DPI="${SCREEN_DPI}" \\
+    --volume "${CONTROL_VOLUME}:/control" \\
     "${TUNNEL_IMAGE}" >/dev/null
 
 mise run url
@@ -163,7 +174,10 @@ mise run url
 
 [tasks.down]
 description = "Stop the pod and remove its containers"
-run = "podman pod rm --force --ignore ${POD_NAME}"
+run = [
+    "podman pod rm --force --ignore ${POD_NAME}",
+    "podman volume rm --force ${CONTROL_VOLUME}",
+]
 
 [tasks.restart]
 description = "Recreate the pod"
@@ -235,6 +249,11 @@ podman exec "${POD_NAME}-firefox" wayland-info --interface wl_output \\
 echo
 podman exec "${POD_NAME}-firefox" swaymsg -t get_tree \\
     | grep -E '"name"|"app_id"|"rect"' | head -20 || true
+
+echo
+# Worth knowing when a rotation does nothing: wayvnc takes a flat ten seconds
+# to admit a client has gone, so this lags reality by that much.
+podman exec "${POD_NAME}-firefox" wayvncctl --socket=/control/wayvnc.sock client-list || true
 
 echo
 echo "to look at it with a real VNC client:"
