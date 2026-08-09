@@ -9,12 +9,19 @@ node = "latest"
 # this gives Firefox a 450x1000 CSS viewport; 2.4 is not arbitrary, see
 # containers/firefox/firefox-user.js.
 #
-# Fixed for the life of the container: VNC has no dynamic resize (see README),
-# so this is the remote resolution and the browser scales it to fit.
+# Only a fallback. Under RDP the session is sized by the client, so these are
+# what the tunnel asks for when the browser sends no geometry of its own.
 SCREEN_WIDTH = "1080"
 SCREEN_HEIGHT = "2400"
 SCREEN_DPI = "420"
 DEVICE_PIXEL_RATIO = "2.4"
+
+# --- the RDP session --------------------------------------------------------
+# xrdp authenticates through PAM, so unlike Xvnc there is no passwordless mode.
+# Set on the session user by the Firefox container's entrypoint and handed to
+# guacd by the tunnel, so both sides read it from here and cannot drift.
+RDP_USERNAME = "firefox"
+RDP_PASSWORD = "firefox"
 
 # --- what Firefox opens on start --------------------------------------------
 # Defaults to the diagnostic page served by the tunnel container itself, so the
@@ -97,7 +104,7 @@ run = "uv run guac-tunnel"
 # ============================================================================
 
 [tasks."build:firefox"]
-description = "Build the Firefox + Xvnc image"
+description = "Build the Firefox + xrdp image"
 run = "podman build -t ${FIREFOX_IMAGE} containers/firefox"
 
 [tasks."build:tunnel"]
@@ -121,16 +128,17 @@ set -euo pipefail
 
 podman pod exists "${POD_NAME}" && { echo "already up; run 'mise run down' first"; exit 1; }
 
-# Only the tunnel is published. guacd (4822) and Xvnc (5900) stay on the pod's
-# private loopback, which is the only reason Xvnc can run with no password.
+# Only the tunnel is published. guacd (4822) and xrdp (3389) stay on the pod's
+# private loopback, which is what makes a fixed, committed RDP password a
+# reasonable thing to do rather than a hole.
 podman pod create --name "${POD_NAME}" --publish "${HOST_PORT}:8080" >/dev/null
 
+# No SCREEN_* here: the session is sized by whatever the browser negotiates.
 podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
-    --env SCREEN_WIDTH="${SCREEN_WIDTH}" \\
-    --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
-    --env SCREEN_DPI="${SCREEN_DPI}" \\
     --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
     --env START_URL="${START_URL}" \\
+    --env RDP_USERNAME="${RDP_USERNAME}" \\
+    --env RDP_PASSWORD="${RDP_PASSWORD}" \\
     "${FIREFOX_IMAGE}" >/dev/null
 
 podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-guacd" \\
@@ -140,6 +148,8 @@ podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-tunnel" \\
     --env SCREEN_WIDTH="${SCREEN_WIDTH}" \\
     --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
     --env SCREEN_DPI="${SCREEN_DPI}" \\
+    --env RDP_USERNAME="${RDP_USERNAME}" \\
+    --env RDP_PASSWORD="${RDP_PASSWORD}" \\
     "${TUNNEL_IMAGE}" >/dev/null
 
 mise run url
@@ -197,44 +207,36 @@ run = "podman exec --interactive --tty ${POD_NAME}-firefox bash"
 description = "Open a shell in the tunnel container"
 run = "podman exec --interactive --tty ${POD_NAME}-tunnel bash"
 
-[tasks.resize]
-description = "Change the remote resolution, e.g. `mise run resize 2400 1080`"
-usage = '''
-arg "<width>" help="Framebuffer width in physical pixels"
-arg "<height>" help="Framebuffer height in physical pixels"
-'''
-run = """
-set -euo pipefail
-width=${usage_width}
-height=${usage_height}
-
-# The escape hatch for VNC having no dynamic resize. Doing it in place with
-# `xrandr --fb` does resize the framebuffer and Firefox does reflow, but it
-# leaves the RandR output marked disconnected, and Xvnc has no modeline
-# generator on board to do it properly. Recreating the container is the honest
-# version: a reconnect was always the price.
-podman rm --force "${POD_NAME}-firefox" >/dev/null
-
-podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
-    --env SCREEN_WIDTH="${width}" \\
-    --env SCREEN_HEIGHT="${height}" \\
-    --env SCREEN_DPI="${SCREEN_DPI}" \\
-    --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
-    --env START_URL="${START_URL}" \\
-    "${FIREFOX_IMAGE}" >/dev/null
-
-echo "remote display is now ${width}x${height}; reload the page to reconnect"
-"""
-
-[tasks.vnc]
-description = "Check Xvnc directly, bypassing guacd"
+[tasks.rdp]
+description = "Check the xrdp session directly, bypassing guacd"
 run = """
 set -euo pipefail
 # Answers "is Firefox even rendering?" before the tunnel or guacd get blamed
 # for a blank canvas.
-podman exec "${POD_NAME}-firefox" xdpyinfo -display :0 | grep -E 'dimensions|resolution'
-podman exec "${POD_NAME}-firefox" xwininfo -root -tree -display :0 | grep -i navigator || true
+#
+# There is no session until somebody connects: sesman starts Xorg and the
+# session on the first RDP login, on the display given by X11DisplayOffset.
+display=:10
+
+podman exec "${POD_NAME}-firefox" ps -o comm= -C Xorg -C firefox-esr || {
+    echo "no session yet -- open the page and run this again"
+    exit 0
+}
 echo
-echo "to look at it with a real VNC viewer:"
-echo "  podman run --rm --pod ${POD_NAME} -p 5900:5900 alpine/socat tcp-listen:5900,fork,reuseaddr tcp:127.0.0.1:5900"
+
+# As the session user, with its cookie: the container's own root has no
+# authority on a display sesman started for somebody else.
+inspect() {
+    podman exec --user "${RDP_USERNAME}" \\
+        --env DISPLAY="$display" \\
+        --env XAUTHORITY="/home/${RDP_USERNAME}/.Xauthority" \\
+        "${POD_NAME}-firefox" "$@"
+}
+
+inspect xdpyinfo | grep -E 'dimensions|resolution'
+inspect xwininfo -root -tree | grep -i navigator || true
+echo
+echo "to look at it with a real RDP client:"
+echo "  podman run --rm --pod ${POD_NAME} -p 3389:3389 alpine/socat tcp-listen:3389,fork,reuseaddr tcp:127.0.0.1:3389"
+echo "  xfreerdp /v:localhost /u:${RDP_USERNAME} /p:${RDP_PASSWORD} /cert:ignore /dynamic-resolution"
 """
