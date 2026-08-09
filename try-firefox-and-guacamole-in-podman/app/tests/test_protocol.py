@@ -15,7 +15,7 @@ def parse_all(wire: str) -> list[Instruction]:
 
 class TestEncoding:
     def test_encodes_opcode_and_args(self):
-        assert encode("select", "vnc") == "6.select,3.vnc;"
+        assert encode("select", "rdp") == "6.select,3.rdp;"
 
     def test_encodes_a_bare_opcode(self):
         assert encode("nop") == "3.nop;"
@@ -51,7 +51,7 @@ class TestCharacterLengths:
 
 class TestParsing:
     def test_parses_a_single_instruction(self):
-        assert parse_all("6.select,3.vnc;") == [Instruction("select", ("vnc",))]
+        assert parse_all("6.select,3.rdp;") == [Instruction("select", ("rdp",))]
 
     def test_parses_several_instructions_from_one_chunk(self):
         wire = encode("nop") + encode("sync", 1234)
@@ -65,13 +65,13 @@ class TestParsing:
 
     def test_returns_nothing_until_an_instruction_completes(self):
         parser = InstructionParser()
-        assert parser.feed("6.select,3.vn") == []
-        assert parser.feed("c;") == [Instruction("select", ("vnc",))]
+        assert parser.feed("6.select,3.rd") == []
+        assert parser.feed("p;") == [Instruction("select", ("rdp",))]
 
     def test_survives_being_fed_one_character_at_a_time(self):
         """TCP read boundaries have nothing to do with instruction boundaries."""
         instructions = [
-            Instruction("select", ("vnc",)),
+            Instruction("select", ("rdp",)),
             Instruction("size", ("412", "915", "192")),
             Instruction("clipboard", ("héllo 🦊",)),
         ]
@@ -114,7 +114,7 @@ class TestForwarding:
     def test_releases_the_tail_once_it_completes(self):
         parser = InstructionParser()
         parser.feed_complete("3.nop;6.sel")
-        assert parser.feed_complete("ect,3.vnc;") == "6.select,3.vnc;"
+        assert parser.feed_complete("ect,3.rdp;") == "6.select,3.rdp;"
 
     def test_returns_nothing_when_no_instruction_is_complete(self):
         assert InstructionParser().feed_complete("6.sel") == ""

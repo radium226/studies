@@ -46,8 +46,8 @@ def guacd_1_5(*names: str) -> FakeGuacd:
 
 async def connect(guacd: FakeGuacd, **overrides):
     options = {
-        "protocol": "vnc",
-        "parameters": {"hostname": "127.0.0.1", "port": "5900"},
+        "protocol": "rdp",
+        "parameters": {"hostname": "127.0.0.1", "port": "3389"},
         "display": Display(412, 915, 192),
     } | overrides
     return await perform_handshake(guacd, **options)
@@ -91,7 +91,7 @@ class TestHandshakeSequence:
     async def test_selects_the_requested_protocol(self):
         guacd = guacd_1_5("hostname")
         await connect(guacd)
-        assert guacd.sent("select") == Instruction("select", ("vnc",))
+        assert guacd.sent("select") == Instruction("select", ("rdp",))
 
     async def test_sends_the_display_geometry(self):
         guacd = guacd_1_5("hostname")
@@ -108,17 +108,17 @@ class TestHandshakeSequence:
 class TestConnectIsPositional:
     async def test_values_line_up_with_the_names_guacd_asked_for(self):
         guacd = guacd_1_5("hostname", "port", "password")
-        await connect(guacd, parameters={"port": "5900", "hostname": "127.0.0.1"})
+        await connect(guacd, parameters={"port": "3389", "hostname": "127.0.0.1"})
 
         # Version first, then values in guacd's order -- not ours, and not sorted.
-        assert guacd.sent("connect").args == ("VERSION_1_5_0", "127.0.0.1", "5900", "")
+        assert guacd.sent("connect").args == ("VERSION_1_5_0", "127.0.0.1", "3389", "")
 
     async def test_unsupplied_parameters_become_empty_strings(self):
-        guacd = guacd_1_5("hostname", "swap-red-blue", "cursor")
+        guacd = guacd_1_5("hostname", "enable-wallpaper", "client-name")
         connection = await connect(guacd, parameters={"hostname": "127.0.0.1"})
 
         assert guacd.sent("connect").args == ("VERSION_1_5_0", "127.0.0.1", "", "")
-        assert connection.unset == ("swap-red-blue", "cursor")
+        assert connection.unset == ("enable-wallpaper", "client-name")
 
     async def test_reports_what_guacd_asked_for(self):
         guacd = guacd_1_5("hostname", "port")
@@ -151,7 +151,7 @@ class TestVersionNegotiation:
 
         assert connection.version == (1, 0, 0)
         # No version slot, and no timezone: both post-date 1.0.0.
-        assert guacd.sent("connect").args == ("127.0.0.1", "5900")
+        assert guacd.sent("connect").args == ("127.0.0.1", "3389")
         assert "timezone" not in guacd.opcodes
 
     async def test_skips_timezone_before_1_1_0(self):

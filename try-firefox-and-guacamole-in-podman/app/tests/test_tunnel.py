@@ -84,27 +84,27 @@ class TestHandshakeThroughTheTunnel:
     def test_selects_the_configured_protocol(self):
         with (
             fake_guacd() as guacd,
-            client_for(guacd, remote_protocol="vnc") as client,
+            client_for(guacd, remote_protocol="rdp") as client,
             session(client),
         ):
             pass
 
-        assert guacd.last_session.sent("select") == Instruction("select", ("vnc",))
+        assert guacd.last_session.sent("select") == Instruction("select", ("rdp",))
 
     def test_passes_the_configured_remote_to_guacd(self):
         with (
             fake_guacd(parameters=("hostname", "port")) as guacd,
-            client_for(guacd, remote_host="10.0.0.5", remote_port=5901) as client,
+            client_for(guacd, remote_host="10.0.0.5", remote_port=3390) as client,
             session(client),
         ):
             pass
 
-        assert guacd.last_session.sent("connect").args == ("VERSION_1_5_0", "10.0.0.5", "5901")
+        assert guacd.last_session.sent("connect").args == ("VERSION_1_5_0", "10.0.0.5", "3390")
 
     def test_unknown_parameters_are_sent_empty_not_skipped(self):
         with (
             fake_guacd(parameters=("hostname", "wobble", "port")) as guacd,
-            client_for(guacd, remote_host="10.0.0.5", remote_port=5901) as client,
+            client_for(guacd, remote_host="10.0.0.5", remote_port=3390) as client,
             session(client),
         ):
             pass
@@ -113,17 +113,17 @@ class TestHandshakeThroughTheTunnel:
             "VERSION_1_5_0",
             "10.0.0.5",
             "",
-            "5901",
+            "3390",
         )
 
     @pytest.mark.parametrize(
         ("query", "expected"),
         [
             ("?width=800&height=600&dpi=96", ("800", "600", "96")),
-            ("", ("412", "915", "192")),
-            ("?width=nonsense", ("412", "915", "192")),
-            ("?width=999999", ("4096", "915", "192")),
-            ("?width=0", ("1", "915", "192")),
+            ("", ("412", "915", "96")),
+            ("?width=nonsense", ("412", "915", "96")),
+            ("?width=999999", ("4096", "915", "96")),
+            ("?width=0", ("1", "915", "96")),
         ],
     )
     def test_the_browser_chooses_the_geometry_within_limits(self, query, expected):
@@ -223,7 +223,7 @@ class TestPages:
         with fake_guacd() as guacd, client_for(guacd, remote_host="10.0.0.5") as client:
             body = client.get("/health").json()
 
-        assert body["remote"] == "vnc://10.0.0.5:5900"
+        assert body["remote"] == "rdp://10.0.0.5:3389"
 
     @pytest.mark.parametrize("path", ["/", "/diagnostics"])
     def test_serves_the_pages(self, path):
