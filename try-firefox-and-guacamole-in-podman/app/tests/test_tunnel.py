@@ -225,7 +225,7 @@ class TestPages:
 
         assert body["remote"] == "vnc://10.0.0.5:5900"
 
-    @pytest.mark.parametrize("path", ["/", "/kiosk"])
+    @pytest.mark.parametrize("path", ["/", "/diagnostics"])
     def test_serves_the_pages(self, path):
         with fake_guacd() as guacd, client_for(guacd) as client:
             assert client.get(path).status_code == 200

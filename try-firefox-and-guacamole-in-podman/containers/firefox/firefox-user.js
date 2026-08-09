@@ -8,9 +8,9 @@
 // this divides it down to a CSS viewport: 1080 / 2.4 = 450 CSS px.
 //
 // The ratio is not free to choose. Firefox refuses to make its window narrower
-// than 450 CSS px, and --kiosk does not override that: pick a ratio that
-// implies less and the window ends up *wider* than the screen, with the right
-// edge of every page cut off. 1080x2400 at 2.4 lands exactly on the floor.
+// than 450 CSS px, whether maximised or not: pick a ratio that implies less and
+// the window ends up *wider* than the screen, with the right edge of every page
+// cut off. 1080x2400 at 2.4 lands exactly on the floor.
 user_pref("layout.css.devPixelsPerPx", "@DEVICE_PIXEL_RATIO@");
 
 // Sites gate mobile layout on input capability, not on width. 1 is Coarse

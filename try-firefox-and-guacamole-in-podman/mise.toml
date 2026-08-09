@@ -16,16 +16,16 @@ SCREEN_HEIGHT = "2400"
 SCREEN_DPI = "420"
 DEVICE_PIXEL_RATIO = "2.4"
 
-# --- what Firefox opens in kiosk mode ---------------------------------------
+# --- what Firefox opens on start --------------------------------------------
 # Defaults to the diagnostic page served by the tunnel container itself, so the
 # mobile tuning and scaling are visibly verifiable with no internet access.
-KIOSK_URL = "http://localhost:8080/kiosk"
+START_URL = "http://localhost:8080/diagnostics"
 
 # --- podman -----------------------------------------------------------------
 POD_NAME = "firefox-guac"
 HOST_PORT = "8080"
 GUACD_IMAGE = "docker.io/guacamole/guacd:1.5.5"
-FIREFOX_IMAGE = "localhost/firefox-kiosk:latest"
+FIREFOX_IMAGE = "localhost/firefox-remote:latest"
 TUNNEL_IMAGE = "localhost/guac-tunnel:latest"
 
 # guacamole-common-js lags guacd on npm; matching majors keeps the 1.5+
@@ -130,7 +130,7 @@ podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
     --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
     --env SCREEN_DPI="${SCREEN_DPI}" \\
     --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
-    --env KIOSK_URL="${KIOSK_URL}" \\
+    --env START_URL="${START_URL}" \\
     "${FIREFOX_IMAGE}" >/dev/null
 
 podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-guacd" \\
@@ -220,7 +220,7 @@ podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
     --env SCREEN_HEIGHT="${height}" \\
     --env SCREEN_DPI="${SCREEN_DPI}" \\
     --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
-    --env KIOSK_URL="${KIOSK_URL}" \\
+    --env START_URL="${START_URL}" \\
     "${FIREFOX_IMAGE}" >/dev/null
 
 echo "remote display is now ${width}x${height}; reload the page to reconnect"

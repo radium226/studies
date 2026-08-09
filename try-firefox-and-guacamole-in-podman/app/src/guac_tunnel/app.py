@@ -111,7 +111,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
     app = Starlette(
         routes=[
             Route("/", _page("index.html")),
-            Route("/kiosk", _page("kiosk.html")),
+            Route("/diagnostics", _page("diagnostics.html")),
             Route("/health", health),
             WebSocketRoute("/tunnel", tunnel),
             Mount("/static", StaticFiles(directory=STATIC_ROOT), name="static"),

@@ -1,4 +1,4 @@
-# Firefox on a headless X server, exposed over VNC.
+# A normal Firefox on a headless X server, exposed over VNC.
 #
 # Xvnc is both the X server and the VNC server in one process, which is what
 # makes this image short: no display manager, no session manager, no PAM, and
@@ -23,7 +23,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Nothing here needs privileges, so nothing here gets them.
-RUN useradd --create-home --shell /bin/bash kiosk
+RUN useradd --create-home --shell /bin/bash firefox
 
 # Xvnc runs unprivileged and so cannot create this itself:
 #   _XSERVTransmkdir: ERROR: euid != 0, directory /tmp/.X11-unix will not be created
@@ -31,10 +31,11 @@ RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 
 COPY entrypoint.sh session.sh /usr/local/bin/
 COPY firefox-user.js /opt/firefox-user.js
+COPY openbox-rc.xml /opt/openbox-rc.xml
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/session.sh
 
-USER kiosk
-WORKDIR /home/kiosk
+USER firefox
+WORKDIR /home/firefox
 
 # Physical pixels, like a phone panel. Divided by DEVICE_PIXEL_RATIO this is a
 # 450x1000 CSS viewport -- see firefox-user.js for why 2.4 and not something
@@ -45,7 +46,7 @@ ENV LANG=C.UTF-8 \
     SCREEN_HEIGHT=2400 \
     SCREEN_DPI=420 \
     DEVICE_PIXEL_RATIO=2.4 \
-    KIOSK_URL=http://localhost:8080/kiosk \
+    START_URL=http://localhost:8080/diagnostics \
     USER_AGENT="Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0"
 
 EXPOSE 5900
