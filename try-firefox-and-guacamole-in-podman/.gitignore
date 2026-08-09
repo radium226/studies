@@ -1,1 +1,8 @@
+# Fetched by `mise run js:vendor`, not checked in.
 app/src/guac_tunnel/static/vendor/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
