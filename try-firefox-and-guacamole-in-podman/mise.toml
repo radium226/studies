@@ -33,6 +33,36 @@ TUNNEL_IMAGE = "localhost/guac-tunnel:latest"
 GUACAMOLE_JS_VERSION = "1.5.0"
 
 # ============================================================================
+# Client assets
+# ============================================================================
+
+[tasks."js:vendor"]
+description = "Vendor guacamole-common-js into the tunnel's static assets"
+run = """
+set -euo pipefail
+dest=app/src/guac_tunnel/static/vendor
+target="$dest/guacamole-common.min.js"
+
+if [ -f "$target" ]; then
+    echo "already vendored: $target"
+    exit 0
+fi
+
+# Fetched at build time and committed to nothing: the page must not depend on
+# a CDN at runtime, and the container must not depend on host state.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+(cd "$work" && npm pack --silent "guacamole-common-js@${GUACAMOLE_JS_VERSION}" >/dev/null && tar xzf ./*.tgz)
+
+mkdir -p "$dest"
+# The esm build ends in `export default Guacamole`, so the page can import it
+# directly -- no bundler, no build step.
+cp "$work/package/dist/esm/guacamole-common.min.js" "$target"
+cp "$work/package/LICENSE" "$dest/guacamole-common.LICENSE"
+echo "vendored guacamole-common-js ${GUACAMOLE_JS_VERSION}"
+"""
+
+# ============================================================================
 # Python
 # ============================================================================
 
@@ -55,3 +85,156 @@ run = ["uv run ruff check .", "uv run ruff format --check ."]
 description = "Format the tunnel sources"
 dir = "app"
 run = "uv run ruff format ."
+
+[tasks.dev]
+description = "Run the tunnel on the host, against guacd in the pod"
+depends = ["js:vendor"]
+dir = "app"
+run = "uv run guac-tunnel"
+
+# ============================================================================
+# Images
+# ============================================================================
+
+[tasks."build:firefox"]
+description = "Build the Firefox + Xvnc image"
+run = "podman build -t ${FIREFOX_IMAGE} containers/firefox"
+
+[tasks."build:tunnel"]
+description = "Build the tunnel image"
+depends = ["js:vendor"]
+run = "podman build -t ${TUNNEL_IMAGE} -f containers/tunnel/Containerfile ."
+
+[tasks.build]
+description = "Build every image"
+depends = ["build:firefox", "build:tunnel"]
+run = "podman pull -q ${GUACD_IMAGE}"
+
+# ============================================================================
+# The pod
+# ============================================================================
+
+[tasks.up]
+description = "Start the pod"
+run = """
+set -euo pipefail
+
+podman pod exists "${POD_NAME}" && { echo "already up; run 'mise run down' first"; exit 1; }
+
+# Only the tunnel is published. guacd (4822) and Xvnc (5900) stay on the pod's
+# private loopback, which is the only reason Xvnc can run with no password.
+podman pod create --name "${POD_NAME}" --publish "${HOST_PORT}:8080" >/dev/null
+
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
+    --env SCREEN_WIDTH="${SCREEN_WIDTH}" \\
+    --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
+    --env SCREEN_DPI="${SCREEN_DPI}" \\
+    --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
+    --env KIOSK_URL="${KIOSK_URL}" \\
+    "${FIREFOX_IMAGE}" >/dev/null
+
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-guacd" \\
+    "${GUACD_IMAGE}" >/dev/null
+
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-tunnel" \\
+    --env SCREEN_WIDTH="${SCREEN_WIDTH}" \\
+    --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
+    --env SCREEN_DPI="${SCREEN_DPI}" \\
+    "${TUNNEL_IMAGE}" >/dev/null
+
+mise run url
+"""
+
+[tasks.down]
+description = "Stop the pod and remove its containers"
+run = "podman pod rm --force --ignore ${POD_NAME}"
+
+[tasks.restart]
+description = "Recreate the pod"
+run = ["mise run down", "mise run up"]
+
+[tasks.status]
+description = "Show what is running"
+# No --format here: mise renders `{{ }}` as its own template syntax, so a Go
+# template format string never reaches podman.
+run = "podman ps --pod --filter pod=${POD_NAME}"
+
+[tasks.url]
+description = "Print the address to open on the phone"
+run = """
+address=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \\K\\S+' || echo localhost)
+echo
+echo "  desktop : http://localhost:${HOST_PORT}"
+echo "  phone   : http://${address}:${HOST_PORT}"
+echo
+"""
+
+# ============================================================================
+# Poking at a running pod
+# ============================================================================
+
+[tasks.logs]
+description = "Follow every container's logs"
+run = "podman pod logs --follow ${POD_NAME}"
+
+[tasks."logs:firefox"]
+description = "Follow the Firefox container's logs"
+run = "podman logs --follow ${POD_NAME}-firefox"
+
+[tasks."logs:guacd"]
+description = "Follow guacd's logs"
+run = "podman logs --follow ${POD_NAME}-guacd"
+
+[tasks."logs:tunnel"]
+description = "Follow the tunnel's logs"
+run = "podman logs --follow ${POD_NAME}-tunnel"
+
+[tasks."shell:firefox"]
+description = "Open a shell in the Firefox container"
+run = "podman exec --interactive --tty ${POD_NAME}-firefox bash"
+
+[tasks."shell:tunnel"]
+description = "Open a shell in the tunnel container"
+run = "podman exec --interactive --tty ${POD_NAME}-tunnel bash"
+
+[tasks.resize]
+description = "Change the remote resolution, e.g. `mise run resize 2400 1080`"
+usage = '''
+arg "<width>" help="Framebuffer width in physical pixels"
+arg "<height>" help="Framebuffer height in physical pixels"
+'''
+run = """
+set -euo pipefail
+width=${usage_width}
+height=${usage_height}
+
+# The escape hatch for VNC having no dynamic resize. Doing it in place with
+# `xrandr --fb` does resize the framebuffer and Firefox does reflow, but it
+# leaves the RandR output marked disconnected, and Xvnc has no modeline
+# generator on board to do it properly. Recreating the container is the honest
+# version: a reconnect was always the price.
+podman rm --force "${POD_NAME}-firefox" >/dev/null
+
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
+    --env SCREEN_WIDTH="${width}" \\
+    --env SCREEN_HEIGHT="${height}" \\
+    --env SCREEN_DPI="${SCREEN_DPI}" \\
+    --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
+    --env KIOSK_URL="${KIOSK_URL}" \\
+    "${FIREFOX_IMAGE}" >/dev/null
+
+echo "remote display is now ${width}x${height}; reload the page to reconnect"
+"""
+
+[tasks.vnc]
+description = "Check Xvnc directly, bypassing guacd"
+run = """
+set -euo pipefail
+# Answers "is Firefox even rendering?" before the tunnel or guacd get blamed
+# for a blank canvas.
+podman exec "${POD_NAME}-firefox" xdpyinfo -display :0 | grep -E 'dimensions|resolution'
+podman exec "${POD_NAME}-firefox" xwininfo -root -tree -display :0 | grep -i navigator || true
+echo
+echo "to look at it with a real VNC viewer:"
+echo "  podman run --rm --pod ${POD_NAME} -p 5900:5900 alpine/socat tcp-listen:5900,fork,reuseaddr tcp:127.0.0.1:5900"
+"""

@@ -170,6 +170,40 @@ class TestPassthrough:
             ]
 
 
+class TestMessageBoundaries:
+    """Every WebSocket message must stand alone as complete instructions.
+
+    guacamole-common-js keeps no buffer between messages: one that ends
+    mid-instruction fails the whole connection with "Incomplete instruction.".
+    So no matter how guacd's stream is chopped up by TCP, what reaches the
+    browser has to be re-split on instruction boundaries.
+    """
+
+    def test_no_message_ever_ends_mid_instruction(self):
+        wire = (
+            encode("img", 1, 2, "image/png", "héllo 🦊")
+            + encode("blob", 1, "QUFBQQ==")
+            + encode("end", 1)
+            + encode("sync", 4242)
+        )
+
+        with (
+            fake_guacd() as guacd,
+            client_for(guacd) as client,
+            session(client) as (websocket, _),
+        ):
+            guacd.push(wire, chunk_size=3)  # a pathological but legal split
+
+            messages: list[str] = []
+            while "".join(messages) != wire:
+                messages.append(websocket.receive_text())
+
+        for message in messages:
+            # Parsing each message on its own is what the browser does.
+            assert InstructionParser().feed(message), f"not self-contained: {message!r}"
+            assert InstructionParser().feed_complete(message) == message
+
+
 class TestFailures:
     def test_closes_the_socket_when_guacd_is_unreachable(self):
         settings = Settings(guacd_host="127.0.0.1", guacd_port=1)

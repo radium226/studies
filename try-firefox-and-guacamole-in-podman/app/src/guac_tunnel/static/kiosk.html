@@ -2,9 +2,148 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Kiosk diagnostics</title>
+    <style>
+      /* This page is rendered *inside* the container, by the Firefox being
+         remoted. It exists so the mobile tuning can be read off the screen
+         instead of assumed. */
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #101014;
+        color: #e8e8ea;
+        font: 15px/1.5 ui-monospace, Menlo, Consolas, monospace;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 20px;
+      }
+
+      p.sub {
+        margin: 0 0 16px;
+        color: #8f8f99;
+        font-size: 13px;
+      }
+
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 12px;
+        margin: 0 0 16px;
+      }
+
+      dt {
+        color: #8f8f99;
+      }
+
+      dd {
+        margin: 0;
+      }
+
+      .ok {
+        color: #46d17f;
+      }
+
+      .no {
+        color: #e2564e;
+      }
+
+      #pad {
+        height: 140px;
+        margin-bottom: 16px;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        color: #8f8f99;
+        background: #17171d;
+        border: 1px dashed #33333d;
+        border-radius: 12px;
+        touch-action: none;
+      }
+
+      input {
+        width: 100%;
+        padding: 12px;
+        font: inherit;
+        color: inherit;
+        background: #17171d;
+        border: 1px solid #33333d;
+        border-radius: 12px;
+      }
+
+      #scroll {
+        height: 120px;
+        margin-top: 16px;
+        padding: 8px 12px;
+        overflow-y: auto;
+        background: #17171d;
+        border-radius: 12px;
+      }
+    </style>
   </head>
   <body>
-    <p>Placeholder — the diagnostic page lands in phase 4.</p>
+    <h1>kiosk diagnostics</h1>
+    <p class="sub">Served by the tunnel, rendered by the Firefox you are looking at.</p>
+
+    <dl>
+      <dt>viewport</dt><dd id="viewport">–</dd>
+      <dt>screen</dt><dd id="screen">–</dd>
+      <dt>dpr</dt><dd id="dpr">–</dd>
+      <dt>pointer</dt><dd id="pointer">–</dd>
+      <dt>hover</dt><dd id="hover">–</dd>
+      <dt>touch events</dt><dd id="touch">–</dd>
+      <dt>user agent</dt><dd id="ua">–</dd>
+      <dt>resizes</dt><dd id="resizes">0</dd>
+    </dl>
+
+    <div id="pad">touch here — <span id="points">0</span> point(s)</div>
+
+    <input id="typing" placeholder="type here to test the keyboard" />
+
+    <div id="scroll">
+      <p>Scrollable, to check that a drag scrolls rather than selects.</p>
+      <p>one</p><p>two</p><p>three</p><p>four</p><p>five</p>
+      <p>six</p><p>seven</p><p>eight</p><p>nine</p><p>ten</p>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const yes = (value) =>
+        `<span class="${value ? 'ok' : 'no'}">${value ? 'yes' : 'no'}</span>`;
+
+      let resizes = 0;
+
+      function report() {
+        $('viewport').textContent = `${innerWidth}×${innerHeight} css px`;
+        $('screen').textContent = `${screen.width}×${screen.height} css px`;
+        $('dpr').textContent = devicePixelRatio;
+        $('pointer').innerHTML = matchMedia('(pointer: coarse)').matches
+          ? '<span class="ok">coarse</span>'
+          : '<span class="no">fine</span>';
+        $('hover').innerHTML = yes(matchMedia('(hover: hover)').matches);
+        $('touch').innerHTML = yes('ontouchstart' in window);
+        $('ua').textContent = navigator.userAgent;
+        $('resizes').textContent = resizes;
+      }
+
+      addEventListener('resize', () => {
+        resizes += 1;
+        report();
+      });
+
+      for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+        addEventListener(type, (event) => {
+          $('points').textContent = event.touches.length;
+        });
+      }
+
+      report();
+    </script>
   </body>
 </html>

@@ -1,0 +1,32 @@
+# The tunnel service. Build context is the repository root, so that `app/`
+# comes in with its vendored client assets already in place.
+FROM docker.io/library/python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Dependencies first: they change far less often than the code, so this layer
+# survives most rebuilds.
+COPY app/pyproject.toml app/uv.lock app/README.md ./
+COPY app/src/guac_tunnel/__init__.py ./src/guac_tunnel/
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY app/src ./src
+RUN uv sync --frozen --no-dev
+
+RUN useradd --create-home tunnel
+USER tunnel
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    HOST=0.0.0.0 \
+    PORT=8080 \
+    GUACD_HOST=127.0.0.1 \
+    GUACD_PORT=4822 \
+    REMOTE_PROTOCOL=vnc \
+    REMOTE_HOST=127.0.0.1 \
+    REMOTE_PORT=5900
+
+EXPOSE 8080
+
+CMD ["guac-tunnel"]

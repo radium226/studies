@@ -94,6 +94,52 @@ class TestParsing:
         assert parse_all(original.encode()) == [original]
 
 
+class TestForwarding:
+    """`feed_complete` exists because the browser's tunnel has no buffer.
+
+    guacamole-common-js parses each WebSocket message on its own and fails the
+    connection with "Incomplete instruction." on one that ends mid-instruction,
+    so whole instructions are the only safe unit to forward.
+    """
+
+    def test_returns_whole_instructions_verbatim(self):
+        wire = encode("nop") + encode("sync", 1234)
+        assert InstructionParser().feed_complete(wire) == wire
+
+    def test_holds_back_a_partial_tail(self):
+        parser = InstructionParser()
+        assert parser.feed_complete("3.nop;6.sel") == "3.nop;"
+        assert parser.pending == "6.sel"
+
+    def test_releases_the_tail_once_it_completes(self):
+        parser = InstructionParser()
+        parser.feed_complete("3.nop;6.sel")
+        assert parser.feed_complete("ect,3.vnc;") == "6.select,3.vnc;"
+
+    def test_returns_nothing_when_no_instruction_is_complete(self):
+        assert InstructionParser().feed_complete("6.sel") == ""
+
+    def test_never_splits_an_instruction_however_the_stream_arrives(self):
+        instructions = [
+            Instruction("img", ("1", "2", "image/png", "héllo 🦊")),
+            Instruction("blob", ("1", "AAAA")),
+            Instruction("sync", ("42",)),
+        ]
+        wire = "".join(i.encode() for i in instructions)
+
+        # Feed in awkward slices, and check every forwarded piece is parseable
+        # on its own -- which is exactly what the browser will try to do.
+        parser = InstructionParser()
+        for size in (1, 3, 7, 13):
+            parser = InstructionParser()
+            forwarded = [
+                parser.feed_complete(wire[at : at + size]) for at in range(0, len(wire), size)
+            ]
+            for message in forwarded:
+                InstructionParser().feed(message)  # must not raise
+            assert "".join(forwarded) == wire
+
+
 class TestMalformedInput:
     def test_rejects_a_non_numeric_length(self):
         with pytest.raises(ProtocolError, match="element length"):

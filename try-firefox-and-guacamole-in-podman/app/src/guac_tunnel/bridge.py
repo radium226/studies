@@ -57,9 +57,16 @@ class GuacdConnection:
             self._queued.extend(self._parser.feed(await self._read_chunk()))
         return self._queued.popleft()
 
-    async def read_raw(self) -> str:
-        """Read whatever guacd has to say, without parsing it."""
-        return await self._read_chunk()
+    async def read_forwardable(self) -> str:
+        """Read from guacd, returning only whole instructions.
+
+        Never a raw chunk: TCP splits wherever it likes, and the browser's
+        tunnel rejects a WebSocket message that ends mid-instruction. Any
+        partial tail stays buffered until the rest of it arrives.
+        """
+        while not (complete := self._parser.feed_complete(await self._read_chunk())):
+            continue
+        return complete
 
     def drain_buffered(self) -> str:
         """Anything read from guacd during the handshake but not consumed.
@@ -69,7 +76,7 @@ class GuacdConnection:
         to reach the browser before the pumps start, or the session opens on a
         blank canvas that only repaints on the next change.
         """
-        buffered = "".join(i.encode() for i in self._queued) + self._parser.pending
+        buffered = "".join(i.encode() for i in self._queued)
         self._queued.clear()
         return buffered
 
@@ -108,7 +115,7 @@ async def bridge(connection: GuacdConnection, socket: ClientSocket) -> None:
 
     async def guacd_to_client() -> None:
         while True:
-            await socket.send_text(await connection.read_raw())
+            await socket.send_text(await connection.read_forwardable())
 
     async def client_to_guacd() -> None:
         while True:

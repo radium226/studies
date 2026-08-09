@@ -60,12 +60,23 @@ class FakeGuacd:
         assert self.sessions, "nothing ever connected to the fake guacd"
         return self.sessions[-1]
 
-    def push(self, text: str) -> None:
-        """Send unsolicited data to the connected client, as guacd would."""
+    def push(self, text: str, *, chunk_size: int | None = None) -> None:
+        """Send unsolicited data to the connected client, as guacd would.
+
+        ``chunk_size`` writes the text in pieces, reproducing TCP splitting an
+        instruction across reads.
+        """
         assert self._connected.wait(timeout=5), "no client connected"
         writer, loop = self._writer, self._loop
         assert writer is not None and loop is not None
-        loop.call_soon_threadsafe(writer.write, text.encode())
+
+        pieces = (
+            [text]
+            if chunk_size is None
+            else [text[at : at + chunk_size] for at in range(0, len(text), chunk_size)]
+        )
+        for piece in pieces:
+            loop.call_soon_threadsafe(writer.write, piece.encode())
 
     # -- lifecycle ----------------------------------------------------------
 

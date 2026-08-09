@@ -2,9 +2,55 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!-- viewport-fit=cover lets the canvas run under the notch; the controls
+         are pushed back inside with env(safe-area-inset-*). -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>Firefox</title>
+    <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <p>Placeholder — the mobile client lands in phase 4.</p>
+    <!-- The remote display is appended here by client.js. -->
+    <main id="stage" aria-label="Remote Firefox"></main>
+
+    <!-- Focusing this is what raises the phone's on-screen keyboard. It has to
+         be a real, focusable, on-screen input: a hidden or zero-sized one does
+         not reliably summon the keyboard on mobile. -->
+    <textarea
+      id="keyboard-sink"
+      autocapitalize="off"
+      autocomplete="off"
+      autocorrect="off"
+      spellcheck="false"
+      aria-label="Keyboard input"
+    ></textarea>
+
+    <div id="controls" class="controls">
+      <button id="keyboard" type="button" title="Keyboard" aria-label="Keyboard">⌨</button>
+      <button id="fullscreen" type="button" title="Fullscreen" aria-label="Fullscreen">⛶</button>
+      <button id="reconnect" type="button" title="Reconnect" aria-label="Reconnect">↻</button>
+    </div>
+
+    <button id="strip" class="strip" type="button" aria-expanded="false">
+      <span class="strip__line">
+        <span id="dot" class="dot" data-state="connecting"></span>
+        <span id="summary">connecting…</span>
+      </span>
+      <dl id="detail" class="strip__detail" hidden>
+        <dt>state</dt><dd id="d-state">–</dd>
+        <dt>remote</dt><dd id="d-remote">–</dd>
+        <dt>viewport</dt><dd id="d-viewport">–</dd>
+        <dt>scale</dt><dd id="d-scale">–</dd>
+        <dt>input→frame</dt><dd id="d-latency">–</dd>
+        <dt>last opcode</dt><dd id="d-opcode">–</dd>
+        <dt>instructions</dt><dd id="d-instructions">0</dd>
+      </dl>
+    </button>
+
+    <script type="module" src="/static/client.js"></script>
   </body>
 </html>

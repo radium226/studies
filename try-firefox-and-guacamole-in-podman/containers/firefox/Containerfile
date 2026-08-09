@@ -39,7 +39,8 @@ WORKDIR /home/kiosk
 # Physical pixels, like a phone panel. Divided by DEVICE_PIXEL_RATIO this is a
 # 450x1000 CSS viewport -- see firefox-user.js for why 2.4 and not something
 # rounder.
-ENV DISPLAY=:0 \
+ENV LANG=C.UTF-8 \
+    DISPLAY=:0 \
     SCREEN_WIDTH=1080 \
     SCREEN_HEIGHT=2400 \
     SCREEN_DPI=420 \
