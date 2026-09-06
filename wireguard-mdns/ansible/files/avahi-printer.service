@@ -1,0 +1,11 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">%h Fake Printer</name>
+  <service>
+    <type>_ipp._tcp</type>
+    <port>631</port>
+    <txt-record>rp=printers/fake</txt-record>
+    <txt-record>ty=Fake Printer 3000</txt-record>
+  </service>
+</service-group>

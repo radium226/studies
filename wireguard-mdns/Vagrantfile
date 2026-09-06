@@ -1,0 +1,104 @@
+# -*- mode: ruby -*-
+
+# archlinux/archlinux is currently fully revoked on Vagrant Cloud (no
+# active version for any provider), so we use generic/arch instead.
+BOX = "generic/arch"
+
+# Static addresses on the shared "underlay" LAN all 3 mesh VMs sit on.
+# This is NOT the WireGuard overlay -- it's just how the VMs reach each
+# other's WireGuard UDP endpoint, the same way 3 real hosts would reach
+# each other over the internet.
+NODE_IPS = {
+  "server"  => "192.168.56.10",
+  "client1" => "192.168.56.11",
+  "client2" => "192.168.56.12",
+}
+
+# A second, unrelated network -- representing e.g. a laptop that's on
+# WireGuard but also plugged into a home/office LAN with its own mDNS
+# devices. Only client1 (dual-homed) and the standalone `foreign` VM (not
+# part of WireGuard at all) attach to it, to check that mDNS keeps working
+# normally there, independent of the WireGuard-only mesh.
+FOREIGN_LAN_IPS = {
+  "client1" => "192.168.60.11",
+  "foreign" => "192.168.60.20",
+}
+
+ALL_NODES = NODE_IPS.keys + ["foreign"]
+
+Vagrant.configure("2") do |config|
+  config.vm.box = BOX
+
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = 512
+    lv.cpus = 1
+  end
+
+  ALL_NODES.each do |name|
+    config.vm.define name do |node|
+      node.vm.hostname = name
+
+      if NODE_IPS.key?(name)
+        node.vm.network "private_network",
+          ip: NODE_IPS[name],
+          libvirt__network_name: "wireguard_mdns_study",
+          libvirt__dhcp_enabled: false
+      end
+
+      if FOREIGN_LAN_IPS.key?(name)
+        node.vm.network "private_network",
+          ip: FOREIGN_LAN_IPS[name],
+          libvirt__network_name: "foreign_lan",
+          libvirt__dhcp_enabled: false
+      end
+
+      # Box images sit around unbuilt for a while, so by boot time: the
+      # pacman keyring is stale (every package fails signature verification
+      # otherwise), and enough packages have been split/renamed upstream
+      # (e.g. gcc-libs -> libgcc/libstdc++) that installing anything without
+      # a full -Syu first hits pacman's "partial upgrade" file-conflict
+      # errors. Ansible also needs python, which these boxes don't ship
+      # with. The full upgrade is a big download, so retry a few times in
+      # case of a transient mirror timeout.
+      node.vm.provision "bootstrap", type: "shell" do |shell|
+        shell.inline = <<~SHELL
+          set -e
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Sy --noconfirm archlinux-keyring
+
+          n=0
+          until pacman -Su --noconfirm; do
+            n=$((n + 1))
+            if [ "$n" -ge 5 ]; then
+              echo "pacman -Su failed after $n attempts" >&2
+              exit 1
+            fi
+            echo "pacman -Su failed, retrying ($n)..." >&2
+            sleep 5
+          done
+
+          pacman -S --noconfirm --needed python
+        SHELL
+      end
+
+      # The full upgrade above pulls in a new kernel package, which deletes
+      # the /lib/modules tree for the kernel that's still actually running
+      # -- including wireguard.ko. Reboot into the new kernel before
+      # anything tries to load it.
+      node.vm.provision :reload
+
+      # Run the playbook once, after every VM is up, against all of them at
+      # once -- the playbook needs every WireGuard host's public key to
+      # configure the others' peers, so a single run over a static
+      # inventory (not Vagrant's per-machine auto inventory) is required.
+      if name == ALL_NODES.last
+        node.vm.provision "configure-wireguard-and-mdns", type: "ansible" do |ansible|
+          ansible.playbook = "ansible/playbook.yml"
+          ansible.inventory_path = "ansible/inventory.ini"
+          ansible.limit = "all"
+        end
+      end
+    end
+  end
+end

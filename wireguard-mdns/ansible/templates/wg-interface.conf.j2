@@ -1,0 +1,32 @@
+[Interface]
+Address = {{ local_address }}
+PrivateKey = {{ wg_private_key }}
+{% if listen_port is defined and listen_port %}
+ListenPort = {{ listen_port }}
+{% endif %}
+# WireGuard interfaces don't carry the MULTICAST link flag by default, so
+# avahi silently treats them as unusable for mDNS (no relevant-interface
+# log line, no error either) unless it's turned on explicitly.
+PostUp = ip link set dev %i multicast on
+{% if disable_auto_routes is defined and disable_auto_routes %}
+# wg-quick's automatic routing can't be used here: every AllowedIPs entry
+# gets its own kernel route, and 224.0.0.0/4 is shared by both of this
+# host's WireGuard interfaces (one per spoke), which collides ("File
+# exists") on whichever interface comes up second. Multicast reflection
+# doesn't need a kernel route anyway (avahi binds per-interface sockets
+# directly), so routing is disabled and only the one unicast route this
+# interface actually needs is added by hand.
+Table = off
+PostUp = ip -4 route replace {{ peer_unicast_ip }} dev %i
+PostDown = ip -4 route del {{ peer_unicast_ip }} dev %i || true
+{% endif %}
+
+[Peer]
+PublicKey = {{ peer_pubkey }}
+AllowedIPs = {{ peer_allowed_ips }}
+{% if peer_endpoint is defined and peer_endpoint %}
+Endpoint = {{ peer_endpoint }}
+{% endif %}
+{% if persistent_keepalive is defined and persistent_keepalive %}
+PersistentKeepalive = {{ persistent_keepalive }}
+{% endif %}
