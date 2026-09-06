@@ -12,77 +12,113 @@ its own separate network, `foreign_lan`, which `client1` also has a
 second NIC on -- simulating a real dual-homed host (e.g. a laptop that's
 on WireGuard but also plugged into a home/office LAN). This checks that
 mDNS keeps working normally on that other network too, and that the two
-domains (WireGuard mesh vs. foreign_lan) stay fully separate: avahi's
-reflector is never enabled for `foreign_lan`, so nothing on it is
-reachable from `server`/`client2`, and vice versa.
+domains (WireGuard mesh vs. foreign_lan) stay fully separate: nothing
+bridges the two, so nothing on `foreign_lan` is reachable from
+`server`/`client2`, and vice versa.
 
-## Why a hub interface per spoke?
-
-WireGuard forwards a packet to exactly one peer per interface, chosen by
-longest-prefix match on the destination against each peer's `AllowedIPs`
--- including for a multicast destination like mDNS's `224.0.0.251`. Two
-peers can't both claim the same destination on one interface, so a single
-shared `wg0` on the server could reflect mDNS to at most one spoke.
-
-Instead, `server` runs two dedicated interfaces, `wg-c1` (to client1) and
-`wg-c2` (to client2), each a genuine point-to-point link. `avahi-daemon`'s
-reflector then repeats mDNS traffic between `wg-c1` and `wg-c2` the same
-way it would between any two ordinary NICs.
+## Topology
 
 ```
-              wg-c1 (10.0.1.0/24)
-   server ------------------------ client1 (wg0)
-     |
-     |    wg-c2 (10.0.2.0/24)
-     +--------------------------- client2 (wg0)
+                wg0 (10.0.0.0/24)
+   server  -------------------------  client1 (10.0.0.2/24)
+  (10.0.0.1)          |
+                       +--------------  client2 (10.0.0.3/24)
 ```
 
-`AllowedIPs` on every peer includes `224.0.0.0/4` in addition to the
-tunnel's unicast /32 or /16, so multicast mDNS packets get routed too.
-`net.ipv4.ip_forward=1` on the server also lets unicast traffic route
-client1 <-> client2 (e.g. an actual SSH connection to a host discovered
-via `avahi-browse`).
+ONE shared WireGuard interface on the server, with both spokes as peers
+-- not one dedicated interface per spoke. See "Why not one WireGuard
+interface per spoke?" below for why an earlier version of this study did
+exactly that, and why it doesn't scale.
 
-Each host's `avahi-daemon.conf` is restricted to its WireGuard
-interface(s) only (`allow-interfaces=...`), so mDNS is confined to the
-tunnel even though the VMs also share a plain underlay network -- proving
-the resolution genuinely happens over WireGuard, not the underlay LAN.
+## Why a unicast mDNS repeater?
 
-Two other WireGuard quirks needed working around (see
-`templates/wg-interface.conf.j2`):
+mDNS is not a routed protocol -- a host only ever hears mDNS traffic from
+others on the *same* link. `server`'s two spokes are each on their own
+WireGuard tunnel, so without something in the middle, `client1` and
+`client2` can never hear each other at all, even though both can reach
+`server`.
 
-- WireGuard interfaces don't carry the `MULTICAST` link flag by default,
-  so avahi silently ignores them -- `PostUp = ip link set dev %i
-  multicast on` turns it on.
+The obvious fix is a reflector on the hub: hear multicast traffic
+arriving on one link, repeat it out the other. That's what avahi's own
+`enable-reflector` does, and it's *exactly* why an earlier version of
+this study gave `server` two separate WireGuard interfaces (`wg-c1`,
+`wg-c2`) instead of one shared `wg0` -- avahi's reflector operates
+between distinct *interfaces*, and WireGuard's cryptokey routing can only
+ever deliver a given destination (including a multicast address like
+`224.0.0.251`) to a single peer per interface, so a shared interface with
+multiple peers can't have multicast routed to more than one of them.
+
+That works, but it doesn't scale: N spokes means N dedicated WireGuard
+interfaces on the hub, N keypairs, N listen ports, N-entry `avahi
+allow-interfaces` config. Fine for a 2-spoke demo, unworkable for
+anything real.
+
+**This version replaces that with a small daemon,
+`mdns-unicast-repeater.py`, deployed only on `server`.** It joins the
+mDNS multicast group as an ordinary local socket (unrelated to
+WireGuard's peer ACLs -- IGMP/MLD group membership is a purely local
+kernel/host concern) on the *one shared* `wg0`, and for every packet it
+sees, re-sends an identical copy as plain **unicast** UDP to each spoke's
+own address. WireGuard has never had any trouble routing unicast to a
+specific peer on a shared interface -- that was never the problem -- so
+this reaches every spoke without needing multicast to traverse the
+tunnel at all, and scales to any number of spokes by just adding an
+address to its peer list.
+
+Two details that mattered when building it (see
+`templates/mdns-unicast-repeater.py.j2`):
+
+- The repeater's outbound socket must also bind to port 5353. A socket
+  that sends from a random ephemeral port gets silently ignored by
+  avahi (and mDNS implementations generally) -- real mDNS traffic
+  always comes from port 5353 on both ends, and nothing here enforces
+  that except doing it deliberately.
+- Sending back to whichever host a packet came from is harmless (avahi
+  de-dupes its own traffic) but wasteful, so each host is excluded from
+  its own repeat.
+
+Since there's only one interface on the hub now, avahi's own reflector is
+disabled everywhere (`enable-reflector: false`) -- there's nothing left
+for it to reflect between.
+
+## Why not one WireGuard interface per spoke?
+
+Kept here because the constraint is real and worth understanding, even
+though this study no longer works around it that way.
+
+Instead, `server` used to run two dedicated interfaces, `wg-c1` (to
+client1) and `wg-c2` (to client2), each a genuine point-to-point link, so
+that avahi's reflector could treat them as ordinary distinct interfaces.
+Two WireGuard-specific quirks came with it:
+
 - `wg-quick` auto-adds a kernel route for every `AllowedIPs` entry, and
-  `224.0.0.0/4` is shared by both of the server's interfaces, which
-  collides on whichever comes up second. Routing is disabled
-  (`Table = off`) on the server's interfaces and only the one unicast
-  `/32` route each actually needs is added by hand in `PostUp`.
+  `224.0.0.0/4` was shared by both of the server's interfaces, which
+  collided ("File exists") on whichever interface came up second.
+  Routing had to be disabled (`Table = off`) on the server's interfaces,
+  with only the one unicast `/32` route each interface actually needed
+  added by hand.
+- Interestingly, the same collision did **not** happen for IPv6: both
+  interfaces joined `ff02::fb` independently with no error, since IPv6
+  link-local multicast is scoped by interface index at the socket level
+  rather than resolved through the single shared main routing table the
+  way IPv4's class-D multicast is. There's no "one owning device"
+  constraint to collide on for a link-scope address.
+
+Both problems are moot now that the hub is back to one shared interface
+-- there's no second interface to collide with, and multicast doesn't
+get routed through WireGuard at all any more, on either address family.
 
 ## IPv6
 
-Every WireGuard interface also carries a ULA address (`fd00:1::/64` for
-the client1 tunnel, `fd00:2::/64` for client2's), and every peer's
-`AllowedIPs` includes `ff02::fb/128` (mDNS's IPv6 link-local multicast
-group) alongside `224.0.0.0/4`. avahi has both `use-ipv4`/`use-ipv6` set
-to `yes` everywhere.
-
-Interestingly, the server's two WireGuard interfaces joining the *same*
-`ff02::fb` group does **not** hit the routing collision the "why a hub
-interface per spoke" section above describes for IPv4: `ip -6 maddr show`
-lists `ff02::fb` as a member on both `wg-c1` and `wg-c2` independently,
-with no "File exists" error. IPv6 link-local multicast is scoped by
-interface index at the socket level rather than resolved through the
-single shared main routing table the way IPv4's class-D multicast is, so
-there's no "one owning device" constraint to collide on. The unicast
-`/128` route still needs the same manual `PostUp` treatment as IPv4,
-since that's an ordinary (non-link-local) route and hits the same
-per-interface `Table = off` question.
+Every WireGuard interface carries a ULA address in `fd00::/64` alongside
+its IPv4 one, and every peer's `AllowedIPs` includes `ff02::fb/128`
+(mDNS's IPv6 link-local multicast group) alongside `224.0.0.0/4`. avahi
+has both `use-ipv4`/`use-ipv6` set to `yes` everywhere, and the repeater
+runs an independent IPv6 loop alongside its IPv4 one.
 
 `avahi-resolve -6`/`avahi-browse` work correctly end-to-end over IPv6,
-across both the mesh and the `foreign_lan` domain -- see the "Why `ping
-foo.local` didn't work at first" section below for why `ping -6`/`getent
+across both the mesh and the `foreign_lan` domain -- see "Why `ping
+foo.local` didn't work at first" below for why `ping -6`/`getent
 ahostsv6` still don't.
 
 ## Usage
@@ -91,10 +127,10 @@ ahostsv6` still don't.
 vagrant up
 ```
 
-This boots `server`, `client1`, `client2` (Arch Linux, libvirt provider),
-then runs `ansible/playbook.yml` against all three at once (needed since
-the playbook wires each host's WireGuard public key into the others'
-peer config).
+This boots `server`, `client1`, `client2`, `foreign` (Arch Linux, libvirt
+provider), then runs `ansible/playbook.yml` against all of them at once
+(needed since the playbook wires each host's WireGuard public key into
+the others' peer config).
 
 If `vagrant`/`virsh` report a permissions error, make sure your user is
 in the `libvirt` group and `libvirtd.service` is running, then log out
@@ -104,15 +140,15 @@ the new group membership takes effect.
 ## Verification
 
 From `client1`, resolve and reach `client2` purely over the WireGuard
-overlay:
+overlay, relayed through the hub's unicast repeater:
 
 ```bash
 vagrant ssh client1
-ping -c2 client2.local          # resolves to 10.0.2.2 via mDNS over wg0
+ping -c2 client2.local              # resolves to 10.0.0.3
 avahi-resolve -n client2.local
-avahi-resolve -6 -n client2.local   # resolves to fd00:2::2
-avahi-browse -rt _ssh._tcp      # should list server and client2
-ssh vagrant@client2.local       # full round trip: discover, resolve, connect
+avahi-resolve -6 -n client2.local   # resolves to fd00::3
+avahi-browse -rt _ssh._tcp          # should list server and client2
+ssh vagrant@client2.local           # full round trip: discover, resolve, connect
 ```
 
 Each host also advertises one fake (unbacked -- nothing is actually
@@ -120,12 +156,17 @@ listening) service of a different type, to check discovery of more than
 just SSH: a fake NAS (`_smb._tcp`) on `server`, a fake web app
 (`_http._tcp`) on `client1`, a fake printer (`_ipp._tcp`) on `client2`,
 and a fake widget (`_http._tcp`) on `foreign`. `avahi-browse -at` from
-`server` or `client2` should list exactly 6 services (3x SSH + 3 fakes,
-all tagged `wg0`/`wg-c1`/`wg-c2`) -- never anything from `foreign`.
+any of `server`/`client1`/`client2` should list exactly 6 services (3x
+SSH + 3 fakes, all tagged `wg0`) -- never anything from `foreign`.
+
+`sudo journalctl -u mdns-unicast-repeater -f` on `server` shows every
+packet it captures and which peers it forwards to, in real time -- handy
+for confirming it's actually doing something versus avahi resolving
+purely from its own local cache.
 
 `ip addr show wg0` / `wg show` on any node shows the tunnel and handshake
-state. On `server`, `wg show` lists both `wg-c1` and `wg-c2` with a
-recent handshake once the spokes are up.
+state. On `server`, `wg show` lists both `client1` and `client2` as peers
+of the single `wg0`.
 
 ### Checking the foreign_lan / dual-homed side
 
@@ -166,11 +207,10 @@ With both fixed, `nss-mdns`'s IPv4 modules genuinely work correctly, and
 turned out to have nothing to do with kernel routing at all: `strace`
 shows `mdns4_minimal` doesn't send its own multicast packets -- it just
 asks the local avahi-daemon over its Unix socket (`RESOLVE-HOSTNAME-IPV4
-client2.local` -> `+ 10 0 client2.local 10.0.2.2`), the same way
-`avahi-resolve` does. That's also why it now correctly resolves
+client2.local` -> `+ 10 0 client2.local 10.0.0.3`), the same way
+`avahi-resolve` does. That's also why it correctly resolves
 `foreign.local` from the dual-homed `client1` just as well as
-`client2.local` -- there was never a single-route conflict between the
-two domains for IPv4 the way there'd been for `wg-quick`'s own routes.
+`client2.local`.
 
 **IPv6 is a different story, and stays broken**: `ping -6`/`getent
 ahostsv6` still don't return the real address. `strace` shows exactly
@@ -178,8 +218,8 @@ why -- the `mdns6_minimal` module sends `RESOLVE-HOSTNAME-IPV4` (not
 `RESOLVE-HOSTNAME-IPV6`) to avahi's socket regardless of which module
 you loaded, so it always gets back the IPv4 answer, which `ping -6`
 correctly rejects as the wrong address family (`getent ahostsv6`
-"succeeds" only by synthesizing a v4-mapped address, `::ffff:10.0.2.2`,
-not the real `fd00:2::2`). This is a genuine bug in Arch's `nss-mdns
+"succeeds" only by synthesizing a v4-mapped address, `::ffff:10.0.0.3`,
+not the real `fd00::3`). This is a genuine bug in Arch's `nss-mdns
 0.15.1-2` package, not a misconfiguration -- there's nothing to fix on
 our side for it. `avahi-resolve -6`/`avahi-browse` remain fully correct
 and are the reliable way to verify IPv6 mDNS.
@@ -187,12 +227,12 @@ and are the reliable way to verify IPv6 mDNS.
 ## Notes
 
 - Boxes have no firewall by default, so no explicit forward/accept rules
-  were added beyond `net.ipv4.ip_forward`. If you introduce `nftables`
-  later, you'll need an explicit forward rule between `wg-c1` and
-  `wg-c2`.
+  were added beyond `net.ipv4.ip_forward` (needed on `server` so unicast
+  traffic between client1 and client2, e.g. an actual SSH connection to a
+  discovered host, gets routed through the hub).
 - Re-running `vagrant provision` re-applies the whole playbook and always
-  restarts WireGuard/avahi -- fine for this kind of throwaway study, not
-  written for idempotent no-op re-runs.
+  restarts WireGuard/avahi/the repeater -- fine for this kind of
+  throwaway study, not written for idempotent no-op re-runs.
 - First boot runs a full `pacman -Syu` (the box image is stale enough
   that skipping it hits partial-upgrade file conflicts) and then reboots
   each VM (via the `vagrant-reload` plugin) before starting WireGuard,
@@ -201,3 +241,7 @@ and are the reliable way to verify IPv6 mDNS.
   will silently block all libvirt VM traffic (SSH still works, but
   pacman/internet access won't). Fix: `iptables -I DOCKER-USER -i virbr+
   -j ACCEPT` and `-o virbr+ -j ACCEPT` (runtime-only, not persisted).
+- If you're re-running this against VMs built by an earlier version of
+  this study, the playbook cleans up the old `wg-c1`/`wg-c2` interfaces
+  on the server automatically (both used to listen on the same UDP port
+  the new shared `wg0` needs).

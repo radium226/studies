@@ -1,18 +1,22 @@
 ---
 # WireGuard topology:
 #
-#              wg-c1 (10.0.1.1/24)          wg0 (10.0.1.2/24)
-#   server  ------------------------------  client1
+#            wg0 (10.0.0.1/24)
+#   server  -------------------  client1 (10.0.0.2/24, wg0)
 #     |
-#     |    wg-c2 (10.0.2.1/24)              wg0 (10.0.2.2/24)
-#     +---------------------------------    client2
+#     +----------------------    client2 (10.0.0.3/24, wg0)
 #
-# server has TWO WireGuard interfaces (one dedicated point-to-point link
-# per spoke) instead of one shared interface, because WireGuard's
-# cryptokey routing can only ever deliver a given destination (including
-# a multicast group like 224.0.0.251) to a single peer per interface.
-# Giving each spoke its own interface lets avahi's reflector treat them as
-# normal distinct network interfaces and repeat mDNS traffic between them.
+# ONE shared wg0 on the server with both spokes as peers -- this scales to
+# any number of spokes, unlike an earlier version of this study that gave
+# the server one dedicated WireGuard interface per spoke (see git history
+# / README for why, and why that doesn't scale). The tradeoff: WireGuard's
+# cryptokey routing can only ever deliver a given destination to a single
+# peer per interface, so it genuinely cannot forward a multicast mDNS
+# packet to multiple peers on one shared interface. Instead of routing
+# multicast through WireGuard at all, mdns-unicast-repeater.py (deployed
+# on the server only) joins the multicast group as an ordinary local
+# socket and re-sends every packet it sees as plain unicast UDP to each
+# spoke's own address -- which WireGuard has never had any trouble with.
 - hosts: all
   become: true
 
@@ -32,48 +36,39 @@
         state: directory
         mode: "0700"
 
+    # Leftover from an earlier version of this study, where the server had
+    # one dedicated WireGuard interface per spoke instead of one shared
+    # wg0. Both used ListenPort 51820, so if they're still running they'll
+    # keep that UDP port bound and the new wg0 fails to start.
+    - name: Remove the old per-spoke WireGuard interfaces, if present
+      when: inventory_hostname == 'server'
+      block:
+        - name: Stop and disable wg-c1/wg-c2
+          ansible.builtin.systemd_service:
+            name: "wg-quick@{{ item }}"
+            state: stopped
+            enabled: false
+          loop: [wg-c1, wg-c2]
+          failed_when: false
+
+        - name: Remove their config/key files
+          ansible.builtin.file:
+            path: "/etc/wireguard/{{ item }}"
+            state: absent
+          loop:
+            - wg-c1.conf
+            - wg-c2.conf
+            - wg-c1.key
+            - wg-c2.key
+
     # --- Key generation -----------------------------------------------
     # All key-generation/pubkey facts run before any templating task
     # below, so that cross-host hostvars lookups (e.g. hostvars['client1']
     # .wg_pubkey from the server) are always populated by the time
     # they're needed.
 
-    - name: Generate server WireGuard keypairs (wg-c1, wg-c2)
-      when: inventory_hostname == 'server'
-      block:
-        - name: Generate private keys if missing
-          ansible.builtin.shell: |
-            umask 077
-            test -f /etc/wireguard/{{ item }}.key || wg genkey > /etc/wireguard/{{ item }}.key
-          loop: [wg-c1, wg-c2]
-          changed_when: false
-          no_log: true
-
-        - name: Read private keys
-          ansible.builtin.command: cat /etc/wireguard/{{ item }}.key
-          loop: [wg-c1, wg-c2]
-          register: server_privkeys
-          changed_when: false
-          no_log: true
-
-        - name: Derive public keys
-          ansible.builtin.shell: "wg pubkey < /etc/wireguard/{{ item }}.key"
-          loop: [wg-c1, wg-c2]
-          register: server_pubkeys
-          changed_when: false
-
-        - name: Record wg-c1 keys as facts
-          ansible.builtin.set_fact:
-            wg_c1_privkey: "{{ server_privkeys.results[0].stdout }}"
-            wg_c1_pubkey: "{{ server_pubkeys.results[0].stdout }}"
-
-        - name: Record wg-c2 keys as facts
-          ansible.builtin.set_fact:
-            wg_c2_privkey: "{{ server_privkeys.results[1].stdout }}"
-            wg_c2_pubkey: "{{ server_pubkeys.results[1].stdout }}"
-
-    - name: Generate spoke WireGuard keypair (wg0)
-      when: inventory_hostname in ['client1', 'client2']
+    - name: Generate this host's WireGuard keypair (wg0)
+      when: inventory_hostname in ['server', 'client1', 'client2']
       block:
         - name: Generate private key if missing
           ansible.builtin.shell: |
@@ -84,53 +79,41 @@
 
         - name: Read private key
           ansible.builtin.command: cat /etc/wireguard/wg0.key
-          register: spoke_privkey
+          register: wg0_privkey_result
           changed_when: false
           no_log: true
 
         - name: Derive public key
           ansible.builtin.shell: "wg pubkey < /etc/wireguard/wg0.key"
-          register: spoke_pubkey
+          register: wg0_pubkey_result
           changed_when: false
 
         - name: Record wg0 keys as facts
           ansible.builtin.set_fact:
-            wg_privkey: "{{ spoke_privkey.stdout }}"
-            wg_pubkey: "{{ spoke_pubkey.stdout }}"
+            wg_privkey: "{{ wg0_privkey_result.stdout }}"
+            wg_pubkey: "{{ wg0_pubkey_result.stdout }}"
 
     # --- Interface config templating -----------------------------------
 
-    - name: Write wg-c1.conf (server side of the client1 tunnel)
+    # No more Table=off/manual-route juggling: since the server now has
+    # only one WireGuard interface, there's no cross-interface multicast
+    # route collision to work around any more, and none of the peers here
+    # need multicast in their AllowedIPs at all -- see the file header.
+    - name: Write wg0.conf (server)
       when: inventory_hostname == 'server'
       ansible.builtin.template:
         src: templates/wg-interface.conf.j2
-        dest: /etc/wireguard/wg-c1.conf
+        dest: /etc/wireguard/wg0.conf
         mode: "0600"
       vars:
-        local_address: 10.0.1.1/24,fd00:1::1/64
-        wg_private_key: "{{ wg_c1_privkey }}"
+        local_address: 10.0.0.1/24,fd00::1/64
+        wg_private_key: "{{ wg_privkey }}"
         listen_port: 51820
-        peer_pubkey: "{{ hostvars['client1'].wg_pubkey }}"
-        peer_allowed_ips: "10.0.1.2/32,224.0.0.0/4,fd00:1::2/128,ff02::fb/128"
-        disable_auto_routes: true
-        peer_unicast_ip: 10.0.1.2/32
-        peer_unicast_ip6: fd00:1::2/128
-
-    - name: Write wg-c2.conf (server side of the client2 tunnel)
-      when: inventory_hostname == 'server'
-      ansible.builtin.template:
-        src: templates/wg-interface.conf.j2
-        dest: /etc/wireguard/wg-c2.conf
-        mode: "0600"
-      vars:
-        local_address: 10.0.2.1/24,fd00:2::1/64
-        wg_private_key: "{{ wg_c2_privkey }}"
-        listen_port: 51821
-        peer_pubkey: "{{ hostvars['client2'].wg_pubkey }}"
-        peer_allowed_ips: "10.0.2.2/32,224.0.0.0/4,fd00:2::2/128,ff02::fb/128"
-        disable_auto_routes: true
-        peer_unicast_ip: 10.0.2.2/32
-        peer_unicast_ip6: fd00:2::2/128
+        peers:
+          - pubkey: "{{ hostvars['client1'].wg_pubkey }}"
+            allowed_ips: 10.0.0.2/32,fd00::2/128
+          - pubkey: "{{ hostvars['client2'].wg_pubkey }}"
+            allowed_ips: 10.0.0.3/32,fd00::3/128
 
     - name: Write wg0.conf (client1)
       when: inventory_hostname == 'client1'
@@ -139,12 +122,13 @@
         dest: /etc/wireguard/wg0.conf
         mode: "0600"
       vars:
-        local_address: 10.0.1.2/24,fd00:1::2/64
+        local_address: 10.0.0.2/24,fd00::2/64
         wg_private_key: "{{ wg_privkey }}"
-        peer_pubkey: "{{ hostvars['server'].wg_c1_pubkey }}"
-        peer_endpoint: "{{ hostvars['server'].ansible_host }}:51820"
-        peer_allowed_ips: "10.0.0.0/16,224.0.0.0/4,fd00::/16,ff02::fb/128"
-        persistent_keepalive: 25
+        peers:
+          - pubkey: "{{ hostvars['server'].wg_pubkey }}"
+            endpoint: "{{ hostvars['server'].ansible_host }}:51820"
+            allowed_ips: "10.0.0.0/24,224.0.0.0/4,fd00::/64,ff02::fb/128"
+            persistent_keepalive: 25
 
     - name: Write wg0.conf (client2)
       when: inventory_hostname == 'client2'
@@ -153,25 +137,18 @@
         dest: /etc/wireguard/wg0.conf
         mode: "0600"
       vars:
-        local_address: 10.0.2.2/24,fd00:2::2/64
+        local_address: 10.0.0.3/24,fd00::3/64
         wg_private_key: "{{ wg_privkey }}"
-        peer_pubkey: "{{ hostvars['server'].wg_c2_pubkey }}"
-        peer_endpoint: "{{ hostvars['server'].ansible_host }}:51821"
-        peer_allowed_ips: "10.0.0.0/16,224.0.0.0/4,fd00::/16,ff02::fb/128"
-        persistent_keepalive: 25
+        peers:
+          - pubkey: "{{ hostvars['server'].wg_pubkey }}"
+            endpoint: "{{ hostvars['server'].ansible_host }}:51820"
+            allowed_ips: "10.0.0.0/24,224.0.0.0/4,fd00::/64,ff02::fb/128"
+            persistent_keepalive: 25
 
     # --- Bring tunnels up ------------------------------------------------
 
-    - name: Start and enable server WireGuard interfaces
-      when: inventory_hostname == 'server'
-      ansible.builtin.systemd_service:
-        name: "wg-quick@{{ item }}"
-        state: restarted
-        enabled: true
-      loop: [wg-c1, wg-c2]
-
-    - name: Start and enable spoke WireGuard interface
-      when: inventory_hostname in ['client1', 'client2']
+    - name: Start and enable WireGuard
+      when: inventory_hostname in ['server', 'client1', 'client2']
       ansible.builtin.systemd_service:
         name: wg-quick@wg0
         state: restarted
@@ -185,6 +162,39 @@
         sysctl_set: true
         state: present
         reload: true
+
+    # --- Unicast mDNS repeater (replaces avahi's reflector) --------------
+    # See the file header for why: one shared wg0 with multiple peers
+    # can't have WireGuard forward multicast to more than one of them, so
+    # this repeats each mDNS packet as unicast instead, which scales to
+    # any number of spokes without needing one WireGuard interface each.
+
+    - name: Deploy the unicast mDNS repeater script
+      when: inventory_hostname == 'server'
+      ansible.builtin.template:
+        src: templates/mdns-unicast-repeater.py.j2
+        dest: /usr/local/bin/mdns-unicast-repeater.py
+        mode: "0755"
+      vars:
+        mdns_repeater_iface: wg0
+        mdns_repeater_local_v4: 10.0.0.1
+        mdns_repeater_peers_v4: [10.0.0.2, 10.0.0.3]
+        mdns_repeater_peers_v6: ["fd00::2", "fd00::3"]
+
+    - name: Deploy the unicast mDNS repeater systemd unit
+      when: inventory_hostname == 'server'
+      ansible.builtin.copy:
+        src: files/mdns-unicast-repeater.service
+        dest: /etc/systemd/system/mdns-unicast-repeater.service
+        mode: "0644"
+
+    - name: Start and enable the unicast mDNS repeater
+      when: inventory_hostname == 'server'
+      ansible.builtin.systemd_service:
+        name: mdns-unicast-repeater
+        state: restarted
+        enabled: true
+        daemon_reload: true
 
     # --- mDNS (avahi) ----------------------------------------------------
 
@@ -208,10 +218,12 @@
         foreign_iface: "{{ foreign_iface_result.stdout }}"
 
     # client1's avahi handles two independent mDNS domains at once: wg0
-    # (bridged into the mesh via the hub's reflector) and foreign_lan (not
-    # bridged anywhere -- enable-reflector is only ever true on the hub, so
-    # the two domains never mix). foreign only has the latter.
-    - name: Configure avahi to only reflect/publish over the intended interfaces
+    # (the WireGuard mesh) and foreign_lan (not bridged anywhere). foreign
+    # only has the latter. No host runs avahi's own reflector any more --
+    # mdns-unicast-repeater.py does that job on the server now instead
+    # (see the file header), so every host here has exactly one relevant
+    # mDNS domain and nothing to reflect between.
+    - name: Configure avahi to only publish over the intended interfaces
       ansible.builtin.template:
         src: templates/avahi-daemon.conf.j2
         dest: /etc/avahi/avahi-daemon.conf
@@ -224,12 +236,11 @@
         # selected, same as Python's `a if cond else b`.
         avahi_allow_interfaces: >-
           {{
-            'wg-c1,wg-c2' if inventory_hostname == 'server'
-            else ('wg0,' + foreign_iface) if inventory_hostname == 'client1'
-            else 'wg0' if inventory_hostname == 'client2'
-            else foreign_iface
+            ('wg0,' + foreign_iface) if inventory_hostname == 'client1'
+            else foreign_iface if inventory_hostname == 'foreign'
+            else 'wg0'
           }}
-        avahi_enable_reflector: "{{ inventory_hostname == 'server' }}"
+        avahi_enable_reflector: false
 
     - name: Advertise SSH over mDNS
       ansible.builtin.copy:
