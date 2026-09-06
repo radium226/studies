@@ -1,0 +1,48 @@
+options {
+    directory "/var/named";
+    pid-file "/run/named/named.pid";
+
+    listen-on { 127.0.0.1; 10.0.0.1; };
+    listen-on-v6 { ::1; fd00::1; };
+
+    allow-recursion { none; };
+    allow-transfer { none; };
+    allow-update { none; };
+    recursion no;
+
+    version none;
+    hostname none;
+    server-id none;
+};
+
+zone "localhost" IN {
+    type master;
+    file "localhost.zone";
+};
+
+zone "0.0.127.in-addr.arpa" IN {
+    type master;
+    file "127.0.0.zone";
+};
+
+zone "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa" {
+    type master;
+    file "localhost.ip6.zone";
+};
+
+# Proof-of-concept: WireGuard mesh peers register their own name/address
+# here via real RFC 2136 dynamic updates (nsupdate), triggered from
+# wg0's PostUp on every host. Open/unauthenticated updates -- fine for a
+# lab POC, not something to do on a real network. See
+# wg-dns-register.sh.j2 and the README.
+zone "wg" IN {
+    type master;
+    file "/var/named/wg.zone";
+    allow-update { any; };
+};
+
+zone "0.0.10.in-addr.arpa" IN {
+    type master;
+    file "/var/named/db.10.0.0";
+    allow-update { any; };
+};

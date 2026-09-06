@@ -224,6 +224,57 @@ not the real `fd00::3`). This is a genuine bug in Arch's `nss-mdns
 our side for it. `avahi-resolve -6`/`avahi-browse` remain fully correct
 and are the reliable way to verify IPv6 mDNS.
 
+## Proof of concept: dynamic DNS (parallel to avahi, not a replacement)
+
+A second, independent name-resolution mechanism alongside everything
+above: `server` runs BIND (`named`), and every mesh host (including
+`server` itself) registers its own name and address there via a real
+**RFC 2136 dynamic DNS update** (`nsupdate`) -- the actual standard
+protocol, the same mechanism real "wide-area Bonjour" and dynamic-DNS
+setups use, not something bespoke. Two zones: `wg` (forward, `A`/`AAAA`)
+and `0.0.10.in-addr.arpa` (reverse, `PTR`, IPv4 only). Both allow
+open/unauthenticated updates from anyone -- fine for a lab POC, not
+something to do for real.
+
+Registration happens from `wg0`'s `PostUp` (`wg-dns-register.sh.j2`),
+so it fires on every tunnel-up, not just once during provisioning.
+`resolvectl dns`/`resolvectl domain '~wg'` (also set from `PostUp`) wire
+up split-DNS routing, so plain tools resolve `*.wg` names with zero
+special tooling, directly comparable to the avahi/mDNS setup:
+
+```bash
+vagrant ssh client1
+ping client2.wg              # resolves via real unicast DNS, not mDNS
+getent hosts client2.wg
+getent hosts 10.0.0.3        # reverse lookup -- and it actually works here,
+                              # unlike the broken nss-mdns reverse path
+```
+
+Two real things surfaced building this:
+
+- **BIND refuses to load a zone whose NS record has no address (glue)
+  record**, when the NS target is *inside* that same zone
+  ("in-bailiwick"). `wg`'s NS points at `server.wg`, which is inside
+  `wg` itself, so the zone failed to load at all (`SERVFAIL` on every
+  update) until `server.wg`'s A/AAAA was pre-seeded statically in the
+  zone file -- everyone else's records, including a second copy of
+  `server.wg` itself, still arrive purely dynamically. (The reverse
+  zone's NS target is *outside* it, so it never hit this.)
+- Testing this surfaced a **real, pre-existing gap in the mesh itself**:
+  `net.ipv6.conf.all.forwarding` was never enabled on the server, only
+  the IPv4 equivalent -- so IPv6 unicast between client1 and client2
+  (through the hub) was silently broken this whole time. mDNS-only
+  testing never exercised a bare cross-spoke IPv6 ping outside of a
+  resolved name, so it went unnoticed until this POC's `ping client2.wg`
+  needed it. Now fixed alongside `net.ipv4.ip_forward`.
+
+Known limitations, left out deliberately to keep this a small POC: no
+IPv6 reverse zone (`ip6.arpa`), and `dig` (unlike `ping`/`getent`) needs
+an explicit `@10.0.0.1` -- these boxes' `/etc/resolv.conf` was never
+pointed at systemd-resolved's stub listener, so `dig`'s own direct query
+path (which bypasses NSS/resolved entirely) has nowhere to send an
+unqualified query.
+
 ## Tests
 
 ```bash

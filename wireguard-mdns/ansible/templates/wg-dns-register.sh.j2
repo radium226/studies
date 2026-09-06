@@ -1,0 +1,44 @@
+#!/bin/bash
+# Proof-of-concept: registers this host's own WireGuard address with the
+# hub's DNS server via a real RFC 2136 dynamic update (nsupdate) -- run
+# from wg0's PostUp, so it fires every time the tunnel comes up,
+# including on every reboot, not just during provisioning.
+#
+# Retries rather than depending on strict startup ordering: a systemd
+# drop-in makes named wait for the server's own wg0, but there's no such
+# guarantee that named has finished starting by the time a *spoke's*
+# wg0 comes up (e.g. simultaneous boot).
+set -u
+
+HOSTNAME={{ inventory_hostname }}
+IPV4={{ wg_dns_ipv4 }}
+IPV6={{ wg_dns_ipv6 }}
+DNS_SERVER={{ wg_dns_server }}
+REVERSE_NAME="$(echo "$IPV4" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa."
+
+register() {
+    nsupdate <<EOF
+server $DNS_SERVER
+zone wg.
+update delete $HOSTNAME.wg A
+update delete $HOSTNAME.wg AAAA
+update add $HOSTNAME.wg 300 A $IPV4
+update add $HOSTNAME.wg 300 AAAA $IPV6
+send
+zone 0.0.10.in-addr.arpa.
+update delete $REVERSE_NAME PTR
+update add $REVERSE_NAME 300 PTR $HOSTNAME.wg.
+send
+EOF
+}
+
+for attempt in $(seq 1 10); do
+    if register; then
+        logger -t wg-dns-register "registered $HOSTNAME.wg -> $IPV4 / $IPV6"
+        exit 0
+    fi
+    sleep 2
+done
+
+logger -t wg-dns-register "FAILED to register $HOSTNAME.wg after 10 attempts"
+exit 1

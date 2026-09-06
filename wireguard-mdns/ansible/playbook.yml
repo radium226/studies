@@ -27,6 +27,7 @@
           - wireguard-tools
           - avahi
           - nss-mdns
+          - bind
         state: present
         update_cache: true
 
@@ -109,6 +110,9 @@
         local_address: 10.0.0.1/24,fd00::1/64
         wg_private_key: "{{ wg_privkey }}"
         listen_port: 51820
+        wg_dns_server: 10.0.0.1
+        wg_dns_ipv4: 10.0.0.1
+        wg_dns_ipv6: "fd00::1"
         peers:
           - pubkey: "{{ hostvars['client1'].wg_pubkey }}"
             allowed_ips: 10.0.0.2/32,fd00::2/128
@@ -124,6 +128,9 @@
       vars:
         local_address: 10.0.0.2/24,fd00::2/64
         wg_private_key: "{{ wg_privkey }}"
+        wg_dns_server: 10.0.0.1
+        wg_dns_ipv4: 10.0.0.2
+        wg_dns_ipv6: "fd00::2"
         peers:
           - pubkey: "{{ hostvars['server'].wg_pubkey }}"
             endpoint: "{{ hostvars['server'].ansible_host }}:51820"
@@ -139,11 +146,88 @@
       vars:
         local_address: 10.0.0.3/24,fd00::3/64
         wg_private_key: "{{ wg_privkey }}"
+        wg_dns_server: 10.0.0.1
+        wg_dns_ipv4: 10.0.0.3
+        wg_dns_ipv6: "fd00::3"
         peers:
           - pubkey: "{{ hostvars['server'].wg_pubkey }}"
             endpoint: "{{ hostvars['server'].ansible_host }}:51820"
             allowed_ips: "10.0.0.0/24,224.0.0.0/4,fd00::/64,ff02::fb/128"
             persistent_keepalive: 25
+
+    # --- Proof-of-concept: real dynamic DNS on the hub -------------------
+    # Parallel to the avahi/mDNS setup, not a replacement for it: a BIND
+    # server on the hub, with peers registering their own name/address
+    # via genuine RFC 2136 dynamic updates (nsupdate) -- the actual
+    # standard protocol, not a bespoke one. Open/unauthenticated updates:
+    # fine for a lab POC, not something to do for real. See
+    # wg-dns-register.sh.j2 and the README.
+
+    - name: Deploy named.conf
+      when: inventory_hostname == 'server'
+      ansible.builtin.template:
+        src: templates/named.conf.j2
+        dest: /etc/named.conf
+        owner: root
+        group: named
+        mode: "0640"
+
+    - name: Deploy the wg zone skeleton (SOA/NS only -- everything else is dynamic)
+      when: inventory_hostname == 'server'
+      ansible.builtin.template:
+        src: templates/wg.zone.j2
+        dest: /var/named/wg.zone
+        owner: named
+        group: named
+        mode: "0644"
+        force: false # don't clobber a zone file BIND has since rewritten with dynamic records
+
+    - name: Deploy the reverse zone skeleton
+      when: inventory_hostname == 'server'
+      ansible.builtin.template:
+        src: templates/db.10.0.0.zone.j2
+        dest: /var/named/db.10.0.0
+        owner: named
+        group: named
+        mode: "0644"
+        force: false
+
+    # named needs to bind to wg0's own address (10.0.0.1), so it must not
+    # start before that interface exists -- a drop-in makes this true on
+    # every boot, not just this one provisioning run.
+    - name: Make named wait for wg0
+      when: inventory_hostname == 'server'
+      block:
+        - name: Create the systemd drop-in directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/named.service.d
+            state: directory
+            mode: "0755"
+
+        - name: Deploy the drop-in
+          ansible.builtin.copy:
+            src: files/named-wait-for-wg0.conf
+            dest: /etc/systemd/system/named.service.d/override.conf
+            mode: "0644"
+
+    - name: Start and enable named
+      when: inventory_hostname == 'server'
+      ansible.builtin.systemd_service:
+        name: named
+        state: restarted
+        enabled: true
+        daemon_reload: true
+
+    - name: Deploy the DNS self-registration script
+      when: inventory_hostname in ['server', 'client1', 'client2']
+      ansible.builtin.template:
+        src: templates/wg-dns-register.sh.j2
+        dest: /usr/local/bin/wg-dns-register.sh
+        mode: "0755"
+      vars:
+        wg_dns_server: 10.0.0.1
+        wg_dns_ipv4: "{{ {'server': '10.0.0.1', 'client1': '10.0.0.2', 'client2': '10.0.0.3'}[inventory_hostname] }}"
+        wg_dns_ipv6: "{{ {'server': 'fd00::1', 'client1': 'fd00::2', 'client2': 'fd00::3'}[inventory_hostname] }}"
 
     # --- Bring tunnels up ------------------------------------------------
 
@@ -154,14 +238,17 @@
         state: restarted
         enabled: true
 
-    - name: Allow IPv4 forwarding on the server (routes client1 <-> client2)
+    - name: Allow IPv4 + IPv6 forwarding on the server (routes client1 <-> client2)
       when: inventory_hostname == 'server'
       ansible.posix.sysctl:
-        name: net.ipv4.ip_forward
+        name: "{{ item }}"
         value: "1"
         sysctl_set: true
         state: present
         reload: true
+      loop:
+        - net.ipv4.ip_forward
+        - net.ipv6.conf.all.forwarding
 
     # --- Unicast mDNS repeater (replaces avahi's reflector) --------------
     # See the file header for why: one shared wg0 with multiple peers
