@@ -1,0 +1,245 @@
+[tools]
+python = "3.13"
+uv = "latest"
+node = "latest"
+
+[env]
+# --- session geometry -------------------------------------------------------
+# A portrait phone panel, in *physical* pixels. Divided by DEVICE_PIXEL_RATIO
+# this gives Firefox a 450x1000 CSS viewport; 2.4 is not arbitrary, see
+# containers/firefox/firefox-user.js.
+#
+# Only a fallback. Under RDP the session is sized by the client, so these are
+# what the tunnel asks for when the browser sends no geometry of its own.
+SCREEN_WIDTH = "1080"
+SCREEN_HEIGHT = "2400"
+DEVICE_PIXEL_RATIO = "2.4"
+
+# Not the panel's DPI. guacd's RDP client divides the requested pixels by
+# dpi/96, so 96 is how the size above is taken literally -- see client.js.
+SCREEN_DPI = "96"
+
+# --- the RDP session --------------------------------------------------------
+# xrdp authenticates through PAM, so unlike Xvnc there is no passwordless mode.
+# Set on the session user by the Firefox container's entrypoint and handed to
+# guacd by the tunnel, so both sides read it from here and cannot drift.
+RDP_USERNAME = "firefox"
+RDP_PASSWORD = "firefox"
+
+# --- what Firefox opens on start --------------------------------------------
+# Defaults to the diagnostic page served by the tunnel container itself, so the
+# mobile tuning and scaling are visibly verifiable with no internet access.
+START_URL = "http://localhost:8080/diagnostics"
+
+# --- podman -----------------------------------------------------------------
+POD_NAME = "firefox-guac"
+HOST_PORT = "8080"
+GUACD_IMAGE = "docker.io/guacamole/guacd:1.5.5"
+FIREFOX_IMAGE = "localhost/firefox-remote:latest"
+TUNNEL_IMAGE = "localhost/guac-tunnel:latest"
+
+# guacamole-common-js lags guacd on npm; matching majors keeps the 1.5+
+# protocol version negotiation happy.
+GUACAMOLE_JS_VERSION = "1.5.0"
+
+# ============================================================================
+# Client assets
+# ============================================================================
+
+[tasks."js:vendor"]
+description = "Vendor guacamole-common-js into the tunnel's static assets"
+run = """
+set -euo pipefail
+dest=app/src/guac_tunnel/static/vendor
+target="$dest/guacamole-common.min.js"
+
+if [ -f "$target" ]; then
+    echo "already vendored: $target"
+    exit 0
+fi
+
+# Fetched at build time and committed to nothing: the page must not depend on
+# a CDN at runtime, and the container must not depend on host state.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+(cd "$work" && npm pack --silent "guacamole-common-js@${GUACAMOLE_JS_VERSION}" >/dev/null && tar xzf ./*.tgz)
+
+mkdir -p "$dest"
+# The esm build ends in `export default Guacamole`, so the page can import it
+# directly -- no bundler, no build step.
+cp "$work/package/dist/esm/guacamole-common.min.js" "$target"
+cp "$work/package/LICENSE" "$dest/guacamole-common.LICENSE"
+echo "vendored guacamole-common-js ${GUACAMOLE_JS_VERSION}"
+"""
+
+# ============================================================================
+# Python
+# ============================================================================
+
+[tasks.sync]
+description = "Install Python dependencies"
+dir = "app"
+run = "uv sync"
+
+[tasks.test]
+description = "Run the tunnel unit tests"
+dir = "app"
+run = "uv run pytest"
+
+[tasks.lint]
+description = "Lint and format-check the tunnel"
+dir = "app"
+run = ["uv run ruff check .", "uv run ruff format --check ."]
+
+[tasks.format]
+description = "Format the tunnel sources"
+dir = "app"
+run = "uv run ruff format ."
+
+[tasks.dev]
+description = "Run the tunnel on the host, against guacd in the pod"
+depends = ["js:vendor"]
+dir = "app"
+run = "uv run guac-tunnel"
+
+# ============================================================================
+# Images
+# ============================================================================
+
+[tasks."build:firefox"]
+description = "Build the Firefox + xrdp image"
+run = "podman build -t ${FIREFOX_IMAGE} containers/firefox"
+
+[tasks."build:tunnel"]
+description = "Build the tunnel image"
+depends = ["js:vendor"]
+run = "podman build -t ${TUNNEL_IMAGE} -f containers/tunnel/Containerfile ."
+
+[tasks.build]
+description = "Build every image"
+depends = ["build:firefox", "build:tunnel"]
+run = "podman pull -q ${GUACD_IMAGE}"
+
+# ============================================================================
+# The pod
+# ============================================================================
+
+[tasks.up]
+description = "Start the pod"
+run = """
+set -euo pipefail
+
+podman pod exists "${POD_NAME}" && { echo "already up; run 'mise run down' first"; exit 1; }
+
+# Only the tunnel is published. guacd (4822) and xrdp (3389) stay on the pod's
+# private loopback, which is what makes a fixed, committed RDP password a
+# reasonable thing to do rather than a hole.
+podman pod create --name "${POD_NAME}" --publish "${HOST_PORT}:8080" >/dev/null
+
+# No SCREEN_* here: the session is sized by whatever the browser negotiates.
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-firefox" \\
+    --env DEVICE_PIXEL_RATIO="${DEVICE_PIXEL_RATIO}" \\
+    --env START_URL="${START_URL}" \\
+    --env RDP_USERNAME="${RDP_USERNAME}" \\
+    --env RDP_PASSWORD="${RDP_PASSWORD}" \\
+    "${FIREFOX_IMAGE}" >/dev/null
+
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-guacd" \\
+    "${GUACD_IMAGE}" >/dev/null
+
+podman run --detach --pod "${POD_NAME}" --name "${POD_NAME}-tunnel" \\
+    --env SCREEN_WIDTH="${SCREEN_WIDTH}" \\
+    --env SCREEN_HEIGHT="${SCREEN_HEIGHT}" \\
+    --env SCREEN_DPI="${SCREEN_DPI}" \\
+    --env RDP_USERNAME="${RDP_USERNAME}" \\
+    --env RDP_PASSWORD="${RDP_PASSWORD}" \\
+    "${TUNNEL_IMAGE}" >/dev/null
+
+mise run url
+"""
+
+[tasks.down]
+description = "Stop the pod and remove its containers"
+run = "podman pod rm --force --ignore ${POD_NAME}"
+
+[tasks.restart]
+description = "Recreate the pod"
+run = ["mise run down", "mise run up"]
+
+[tasks.status]
+description = "Show what is running"
+# No --format here: mise renders `{{ }}` as its own template syntax, so a Go
+# template format string never reaches podman.
+run = "podman ps --pod --filter pod=${POD_NAME}"
+
+[tasks.url]
+description = "Print the address to open on the phone"
+run = """
+address=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \\K\\S+' || echo localhost)
+echo
+echo "  desktop : http://localhost:${HOST_PORT}"
+echo "  phone   : http://${address}:${HOST_PORT}"
+echo
+"""
+
+# ============================================================================
+# Poking at a running pod
+# ============================================================================
+
+[tasks.logs]
+description = "Follow every container's logs"
+run = "podman pod logs --follow ${POD_NAME}"
+
+[tasks."logs:firefox"]
+description = "Follow the Firefox container's logs"
+run = "podman logs --follow ${POD_NAME}-firefox"
+
+[tasks."logs:guacd"]
+description = "Follow guacd's logs"
+run = "podman logs --follow ${POD_NAME}-guacd"
+
+[tasks."logs:tunnel"]
+description = "Follow the tunnel's logs"
+run = "podman logs --follow ${POD_NAME}-tunnel"
+
+[tasks."shell:firefox"]
+description = "Open a shell in the Firefox container"
+run = "podman exec --interactive --tty ${POD_NAME}-firefox bash"
+
+[tasks."shell:tunnel"]
+description = "Open a shell in the tunnel container"
+run = "podman exec --interactive --tty ${POD_NAME}-tunnel bash"
+
+[tasks.rdp]
+description = "Check the xrdp session directly, bypassing guacd"
+run = """
+set -euo pipefail
+# Answers "is Firefox even rendering?" before the tunnel or guacd get blamed
+# for a blank canvas.
+#
+# There is no session until somebody connects: sesman starts Xorg and the
+# session on the first RDP login, on the display given by X11DisplayOffset.
+display=:10
+
+podman exec "${POD_NAME}-firefox" ps -o comm= -C Xorg -C firefox-esr || {
+    echo "no session yet -- open the page and run this again"
+    exit 0
+}
+echo
+
+# As the session user, with its cookie: the container's own root has no
+# authority on a display sesman started for somebody else.
+inspect() {
+    podman exec --user "${RDP_USERNAME}" \\
+        --env DISPLAY="$display" \\
+        --env XAUTHORITY="/home/${RDP_USERNAME}/.Xauthority" \\
+        "${POD_NAME}-firefox" "$@"
+}
+
+inspect xdpyinfo | grep -E 'dimensions|resolution'
+inspect xwininfo -root -tree | grep -i navigator || true
+echo
+echo "to look at it with a real RDP client:"
+echo "  podman run --rm --pod ${POD_NAME} -p 3389:3389 alpine/socat tcp-listen:3389,fork,reuseaddr tcp:127.0.0.1:3389"
+echo "  xfreerdp /v:localhost /u:${RDP_USERNAME} /p:${RDP_PASSWORD} /cert:ignore /dynamic-resolution"
+"""

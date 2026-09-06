@@ -1,0 +1,167 @@
+:root {
+  --ink: #e8e8ea;
+  --muted: #9a9aa4;
+  --chrome: rgb(22 22 26 / 82%);
+  --edge: rgb(255 255 255 / 14%);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Any `display` rule below would otherwise win over the UA stylesheet and make
+   [hidden] elements visible anyway. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  color: var(--ink);
+  font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* A remote desktop must never rubber-band or pull-to-refresh underneath. */
+  overscroll-behavior: none;
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 100dvh, not 100vh: on mobile the URL bar makes vh lie, leaving a strip of
+   the display permanently under the browser chrome. */
+#stage {
+  position: fixed;
+  inset: 0;
+  height: 100dvh;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+#stage > * {
+  /* guacamole-common-js positions its layers absolutely inside this. */
+  position: relative;
+}
+
+/* Invisible but still *inside* the viewport, and never display:none or
+   visibility:hidden: a phone only raises its keyboard for an element it
+   considers really focusable, and parking one far off-screen either fails to
+   summon it or makes the page lurch trying to scroll it into view. */
+#keyboard-sink {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  resize: none;
+  z-index: -1;
+  caret-color: transparent;
+}
+
+/* --- floating controls ---------------------------------------------------- */
+
+.controls {
+  position: fixed;
+  right: calc(var(--safe-right) + 10px);
+  bottom: calc(var(--safe-bottom) + 44px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: opacity 240ms ease;
+}
+
+.controls[data-idle="true"] {
+  opacity: 0.18;
+}
+
+.controls button {
+  /* 44px is the smallest reliably tappable target on a phone. */
+  width: 44px;
+  height: 44px;
+  font-size: 19px;
+  color: var(--ink);
+  background: var(--chrome);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.controls button:active {
+  background: rgb(60 60 68 / 90%);
+}
+
+/* --- debug strip ---------------------------------------------------------- */
+
+.strip {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 6px calc(var(--safe-right) + 10px) calc(var(--safe-bottom) + 6px)
+    calc(var(--safe-left) + 10px);
+  font: inherit;
+  color: var(--muted);
+  text-align: left;
+  background: var(--chrome);
+  border: 0;
+  border-top: 1px solid var(--edge);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.strip__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+
+.dot[data-state="connected"] {
+  background: #46d17f;
+}
+
+.dot[data-state="connecting"],
+.dot[data-state="waiting"] {
+  background: #e0b341;
+}
+
+.dot[data-state="disconnected"] {
+  background: #e2564e;
+}
+
+.strip__detail {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 8px 0 2px;
+}
+
+.strip__detail dt {
+  color: rgb(255 255 255 / 40%);
+}
+
+.strip__detail dd {
+  margin: 0;
+  color: var(--ink);
+}
