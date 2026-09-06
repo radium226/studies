@@ -60,6 +60,31 @@ Two other WireGuard quirks needed working around (see
   (`Table = off`) on the server's interfaces and only the one unicast
   `/32` route each actually needs is added by hand in `PostUp`.
 
+## IPv6
+
+Every WireGuard interface also carries a ULA address (`fd00:1::/64` for
+the client1 tunnel, `fd00:2::/64` for client2's), and every peer's
+`AllowedIPs` includes `ff02::fb/128` (mDNS's IPv6 link-local multicast
+group) alongside `224.0.0.0/4`. avahi has both `use-ipv4`/`use-ipv6` set
+to `yes` everywhere.
+
+Interestingly, the server's two WireGuard interfaces joining the *same*
+`ff02::fb` group does **not** hit the routing collision the "why a hub
+interface per spoke" section above describes for IPv4: `ip -6 maddr show`
+lists `ff02::fb` as a member on both `wg-c1` and `wg-c2` independently,
+with no "File exists" error. IPv6 link-local multicast is scoped by
+interface index at the socket level rather than resolved through the
+single shared main routing table the way IPv4's class-D multicast is, so
+there's no "one owning device" constraint to collide on. The unicast
+`/128` route still needs the same manual `PostUp` treatment as IPv4,
+since that's an ordinary (non-link-local) route and hits the same
+per-interface `Table = off` question.
+
+`avahi-resolve -6`/`avahi-browse` work correctly end-to-end over IPv6,
+across both the mesh and the `foreign_lan` domain -- see the "Why `ping
+foo.local` didn't work at first" section below for why `ping -6`/`getent
+ahostsv6` still don't.
+
 ## Usage
 
 ```bash
@@ -85,6 +110,7 @@ overlay:
 vagrant ssh client1
 ping -c2 client2.local          # resolves to 10.0.2.2 via mDNS over wg0
 avahi-resolve -n client2.local
+avahi-resolve -6 -n client2.local   # resolves to fd00:2::2
 avahi-browse -rt _ssh._tcp      # should list server and client2
 ssh vagrant@client2.local       # full round trip: discover, resolve, connect
 ```
@@ -115,21 +141,48 @@ avahi-resolve -4 -n foreign.local   # resolves to foreign's foreign_lan IP
 `foreign` in their own `avahi-browse -at` -- that's the domain separation
 working as intended.
 
-**Use avahi's own tools (`avahi-resolve`/`avahi-browse`), not `ping` or
-`getent`, to judge whether mDNS "works" on a given interface of a
-multi-homed host.** `avahi-daemon` binds and resolves per-interface
-correctly regardless of the two domains, but plain NSS-based lookups
-(`ping foo.local`, `getent hosts foo.local`, via `nss-mdns`) don't --
-they send one query that follows the kernel's normal routing decision
-for the mDNS multicast address, and `wg-quick` auto-adds a route for
-`224.0.0.0/4` toward `wg0`. Since a destination can only have one owning
-device in the main routing table, that's the *only* route to
-`224.0.0.251` on a multi-homed client, so `ping client2.local` (reachable
-via wg0) works, but `ping foreign.local` (only reachable via eth2) gives
-"Temporary failure in name resolution" even though it's genuinely
-discoverable and resolvable via avahi. This is an inherent limitation of
-plain NSS mDNS resolution on any multi-homed multicast host, not
-something specific to this setup.
+### Why `ping foo.local` didn't work at first (and how it's fixed)
+
+Two independent bugs conspired to make plain `ping`/`getent` unreliable
+for `.local` names, both fixed in the playbook now:
+
+1. **systemd-resolved runs its own, separate mDNS implementation**,
+   alongside avahi's -- that's what avahi's startup warning ("Detected
+   another IPv4 mDNS stack running on this host") is about. `resolve` in
+   `/etc/nsswitch.conf`'s `hosts:` line is consulted *before*
+   `mdns4_minimal`/`mdns6_minimal`, so resolved's own (buggier, as it
+   turns out) mDNS answered first and `nss-mdns` was never actually
+   reached at all. Fixed by setting `MulticastDNS=no` in
+   `/etc/systemd/resolved.conf`.
+2. Even with resolved's own mDNS off, its NSS module still answers
+   "not found" for `.local` names -- and the box's stock
+   `resolve [!UNAVAIL=return]` stops the whole chain on *any* non-UNAVAIL
+   status, including a plain NOTFOUND. So `nss-mdns` still never got a
+   turn. Fixed by dropping the `[!UNAVAIL=return]` override, restoring
+   glibc's sane default (`NOTFOUND`/`UNAVAIL` both continue to the next
+   module, only `SUCCESS` stops the chain).
+
+With both fixed, `nss-mdns`'s IPv4 modules genuinely work correctly, and
+turned out to have nothing to do with kernel routing at all: `strace`
+shows `mdns4_minimal` doesn't send its own multicast packets -- it just
+asks the local avahi-daemon over its Unix socket (`RESOLVE-HOSTNAME-IPV4
+client2.local` -> `+ 10 0 client2.local 10.0.2.2`), the same way
+`avahi-resolve` does. That's also why it now correctly resolves
+`foreign.local` from the dual-homed `client1` just as well as
+`client2.local` -- there was never a single-route conflict between the
+two domains for IPv4 the way there'd been for `wg-quick`'s own routes.
+
+**IPv6 is a different story, and stays broken**: `ping -6`/`getent
+ahostsv6` still don't return the real address. `strace` shows exactly
+why -- the `mdns6_minimal` module sends `RESOLVE-HOSTNAME-IPV4` (not
+`RESOLVE-HOSTNAME-IPV6`) to avahi's socket regardless of which module
+you loaded, so it always gets back the IPv4 answer, which `ping -6`
+correctly rejects as the wrong address family (`getent ahostsv6`
+"succeeds" only by synthesizing a v4-mapped address, `::ffff:10.0.2.2`,
+not the real `fd00:2::2`). This is a genuine bug in Arch's `nss-mdns
+0.15.1-2` package, not a misconfiguration -- there's nothing to fix on
+our side for it. `avahi-resolve -6`/`avahi-browse` remain fully correct
+and are the reliable way to verify IPv6 mDNS.
 
 ## Notes
 

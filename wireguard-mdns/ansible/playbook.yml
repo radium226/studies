@@ -107,13 +107,14 @@
         dest: /etc/wireguard/wg-c1.conf
         mode: "0600"
       vars:
-        local_address: 10.0.1.1/24
+        local_address: 10.0.1.1/24,fd00:1::1/64
         wg_private_key: "{{ wg_c1_privkey }}"
         listen_port: 51820
         peer_pubkey: "{{ hostvars['client1'].wg_pubkey }}"
-        peer_allowed_ips: "10.0.1.2/32,224.0.0.0/4"
+        peer_allowed_ips: "10.0.1.2/32,224.0.0.0/4,fd00:1::2/128,ff02::fb/128"
         disable_auto_routes: true
         peer_unicast_ip: 10.0.1.2/32
+        peer_unicast_ip6: fd00:1::2/128
 
     - name: Write wg-c2.conf (server side of the client2 tunnel)
       when: inventory_hostname == 'server'
@@ -122,13 +123,14 @@
         dest: /etc/wireguard/wg-c2.conf
         mode: "0600"
       vars:
-        local_address: 10.0.2.1/24
+        local_address: 10.0.2.1/24,fd00:2::1/64
         wg_private_key: "{{ wg_c2_privkey }}"
         listen_port: 51821
         peer_pubkey: "{{ hostvars['client2'].wg_pubkey }}"
-        peer_allowed_ips: "10.0.2.2/32,224.0.0.0/4"
+        peer_allowed_ips: "10.0.2.2/32,224.0.0.0/4,fd00:2::2/128,ff02::fb/128"
         disable_auto_routes: true
         peer_unicast_ip: 10.0.2.2/32
+        peer_unicast_ip6: fd00:2::2/128
 
     - name: Write wg0.conf (client1)
       when: inventory_hostname == 'client1'
@@ -137,11 +139,11 @@
         dest: /etc/wireguard/wg0.conf
         mode: "0600"
       vars:
-        local_address: 10.0.1.2/24
+        local_address: 10.0.1.2/24,fd00:1::2/64
         wg_private_key: "{{ wg_privkey }}"
         peer_pubkey: "{{ hostvars['server'].wg_c1_pubkey }}"
         peer_endpoint: "{{ hostvars['server'].ansible_host }}:51820"
-        peer_allowed_ips: "10.0.0.0/16,224.0.0.0/4"
+        peer_allowed_ips: "10.0.0.0/16,224.0.0.0/4,fd00::/16,ff02::fb/128"
         persistent_keepalive: 25
 
     - name: Write wg0.conf (client2)
@@ -151,11 +153,11 @@
         dest: /etc/wireguard/wg0.conf
         mode: "0600"
       vars:
-        local_address: 10.0.2.2/24
+        local_address: 10.0.2.2/24,fd00:2::2/64
         wg_private_key: "{{ wg_privkey }}"
         peer_pubkey: "{{ hostvars['server'].wg_c2_pubkey }}"
         peer_endpoint: "{{ hostvars['server'].ansible_host }}:51821"
-        peer_allowed_ips: "10.0.0.0/16,224.0.0.0/4"
+        peer_allowed_ips: "10.0.0.0/16,224.0.0.0/4,fd00::/16,ff02::fb/128"
         persistent_keepalive: 25
 
     # --- Bring tunnels up ------------------------------------------------
@@ -271,14 +273,53 @@
       register: nsswitch_hosts_line
       changed_when: false
 
-    - name: Enable mDNS hostname resolution (nss-mdns) in nsswitch.conf
+    # Two independent fixes to the box's stock hosts: line:
+    # - The generic "mdns_minimal" module only resolves A (IPv4) records --
+    #   real dual-stack NSS resolution needs the family-specific
+    #   mdns4_minimal/mdns6_minimal modules instead (the standard nss-mdns
+    #   convention).
+    # - "resolve [!UNAVAIL=return]" stops the whole chain on ANY status
+    #   other than UNAVAIL -- including a plain NOTFOUND, which is exactly
+    #   what nss-resolve returns for .local names once resolved's own mDNS
+    #   is disabled. That silently prevented mdns4_minimal/mdns6_minimal
+    #   from ever being consulted at all. Dropping the override restores
+    #   glibc's sane default action set (NOTFOUND/UNAVAIL both continue,
+    #   only SUCCESS stops), so resolved still short-circuits for names it
+    #   actually knows, but falls through to nss-mdns for everything else.
+    - name: Enable IPv4 + IPv6 mDNS hostname resolution (nss-mdns) in nsswitch.conf
       ansible.builtin.lineinfile:
         path: /etc/nsswitch.conf
         regexp: '^hosts:'
         line: >-
-          {{ nsswitch_hosts_line.stdout
-             if 'mdns_minimal' in nsswitch_hosts_line.stdout
-             else nsswitch_hosts_line.stdout | regex_replace('\bdns\b', 'mdns_minimal [NOTFOUND=return] dns') }}
+          {{ (nsswitch_hosts_line.stdout
+              if 'mdns4_minimal' in nsswitch_hosts_line.stdout
+              else nsswitch_hosts_line.stdout
+                   | regex_replace('\bmdns_minimal \[NOTFOUND=return\] ', '')
+                   | regex_replace('\bdns\b', 'mdns4_minimal [NOTFOUND=return] mdns6_minimal [NOTFOUND=return] dns'))
+             | regex_replace('resolve \[!UNAVAIL=return\]', 'resolve') }}
+
+    # systemd-resolved runs its own independent mDNS implementation
+    # alongside avahi's (that's what avahi's "Detected another IPv4 mDNS
+    # stack running on this host" startup warning meant). nsswitch's
+    # "resolve" entry sits before mdns4_minimal/mdns6_minimal and stops the
+    # chain on any non-UNAVAIL answer -- so whenever resolved's own mDNS
+    # answers (even the wrong address family, which its legacy
+    # gethostbyname2-style API doesn't request correctly, unlike its
+    # getaddrinfo-style API), our nss-mdns modules never get consulted at
+    # all. Disabling resolved's own mDNS lets "resolve" correctly step
+    # aside for .local names and avahi/nss-mdns becomes the sole mDNS
+    # implementation, as it should be.
+    - name: Disable systemd-resolved's own mDNS (avahi is the sole mDNS implementation)
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/resolved.conf
+        regexp: '^#?MulticastDNS='
+        line: MulticastDNS=no
+        insertafter: '^\[Resolve\]'
+
+    - name: Restart systemd-resolved
+      ansible.builtin.systemd_service:
+        name: systemd-resolved
+        state: restarted
 
     - name: Start and enable avahi-daemon
       ansible.builtin.systemd_service:

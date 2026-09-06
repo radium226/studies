@@ -19,6 +19,10 @@ PostUp = ip link set dev %i multicast on
 Table = off
 PostUp = ip -4 route replace {{ peer_unicast_ip }} dev %i
 PostDown = ip -4 route del {{ peer_unicast_ip }} dev %i || true
+{% if peer_unicast_ip6 is defined %}
+PostUp = ip -6 route replace {{ peer_unicast_ip6 }} dev %i
+PostDown = ip -6 route del {{ peer_unicast_ip6 }} dev %i || true
+{% endif %}
 {% endif %}
 
 [Peer]
