@@ -169,12 +169,23 @@
     # this repeats each mDNS packet as unicast instead, which scales to
     # any number of spokes without needing one WireGuard interface each.
 
+    # Plain (non-templated) file -- config lives in the environment file
+    # below instead, so this script is also plain, importable Python for
+    # tests/test_repeater_unit.py to exercise directly, with no Jinja
+    # rendering involved.
     - name: Deploy the unicast mDNS repeater script
       when: inventory_hostname == 'server'
-      ansible.builtin.template:
-        src: templates/mdns-unicast-repeater.py.j2
+      ansible.builtin.copy:
+        src: files/mdns-unicast-repeater.py
         dest: /usr/local/bin/mdns-unicast-repeater.py
         mode: "0755"
+
+    - name: Deploy the unicast mDNS repeater environment file
+      when: inventory_hostname == 'server'
+      ansible.builtin.template:
+        src: templates/mdns-unicast-repeater.env.j2
+        dest: /etc/mdns-unicast-repeater.env
+        mode: "0644"
       vars:
         mdns_repeater_iface: wg0
         mdns_repeater_local_v4: 10.0.0.1

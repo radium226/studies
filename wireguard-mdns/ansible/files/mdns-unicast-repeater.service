@@ -5,6 +5,7 @@ Requires=wg-quick@wg0.service
 Wants=network-online.target
 
 [Service]
+EnvironmentFile=/etc/mdns-unicast-repeater.env
 ExecStart=/usr/local/bin/mdns-unicast-repeater.py
 Restart=on-failure
 RestartSec=2

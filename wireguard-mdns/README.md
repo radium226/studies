@@ -224,6 +224,35 @@ not the real `fd00::3`). This is a genuine bug in Arch's `nss-mdns
 our side for it. `avahi-resolve -6`/`avahi-browse` remain fully correct
 and are the reliable way to verify IPv6 mDNS.
 
+## Tests
+
+```bash
+uv sync
+uv run pytest              # everything (needs the VMs up for most of it)
+uv run pytest -m "not integration"   # unit tests only: fast, no VMs needed
+```
+
+Two kinds, in `tests/`:
+
+- **Unit** (`test_repeater_unit.py`): the repeater's pure forwarding
+  logic (`forward_targets` -- "which peers should this packet go to"),
+  loaded directly from `ansible/files/mdns-unicast-repeater.py` by path.
+  No sockets, no VMs, runs in well under a second.
+- **Integration** (everything else, marked `@pytest.mark.integration`):
+  SSHes into the live VMs and checks the actual behavior this whole
+  study is about -- WireGuard handshakes, mDNS resolution and service
+  discovery in both address families, the two-domain isolation, the
+  repeater actually forwarding live traffic, and the resolver-config
+  fixes. This is the suite that answers "does everything we built
+  actually still work" -- run it after any change to the playbook or
+  templates. The `ping -6`/`getent ahostsv6` tests are intentionally
+  `xfail(strict=True)`: they document the known upstream nss-mdns bug,
+  and the suite will tell you loudly (an unexpected XPASS) if a future
+  package update ever fixes it.
+
+The integration suite skips itself with a clear message (not a wall of
+individual connection-refused failures) if the VMs aren't up.
+
 ## Notes
 
 - Boxes have no firewall by default, so no explicit forward/accept rules
