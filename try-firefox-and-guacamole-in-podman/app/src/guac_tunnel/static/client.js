@@ -27,18 +27,12 @@ const MIN_REMOTE_WIDTH = 1080;
 /** Matches `Settings.max_dimension`; the tunnel clamps to it regardless. */
 const MAX_REMOTE_DIMENSION = 4096;
 
-/** Quiet period before asking the session to resize. See requestSize(). */
+/** Quiet period before reconnecting at a new size. See requestSize(). */
 const RESIZE_SETTLE_MS = 250;
 
-/** How long to leave a resize request unanswered before repeating it. */
-const RESIZE_RETRY_MS = 1200;
-
-/** Times to ask before settling for a letterbox. Covers a cold session. */
-const RESIZE_ATTEMPTS = 4;
-
 // The remote geometry, as reported by guacd once the session has actually
-// resized. What we asked for is only a request: the round trip is a RandR
-// resize and a full Firefox reflow, so this always lags and is never assumed.
+// resized. What we asked for is only a request: the round trip is a reconnect
+// and a full Firefox reflow, so this always lags and is never assumed.
 let remote = { width: 0, height: 0 };
 let scale = 1;
 let client = null;
@@ -57,11 +51,14 @@ function noteInput(what) {
 
 // --- geometry -------------------------------------------------------------
 //
-// Rotation asks the remote session to change shape, and RDP's display-update
-// channel carries that: guacd turns a mid-session `size` into a Display
-// Control PDU, xorgxrdp does a RandR resize, Firefox reflows. Scaling stays as
-// the fallback -- something has to be on screen during the round trip, and the
-// request is not always granted in full.
+// Rotation reconnects. There is no instruction for it: neither guacd nor wayvnc
+// will change the size of a live VNC connection, so the session is reshaped in
+// the gap between two of them -- the tunnel resizes sway's output while nothing
+// is connected, and this reconnects into a session that is already the right
+// shape. sway and Firefox never restart, so the page survives it.
+//
+// Scaling stays as the fallback: something has to be on screen for the second
+// or so that takes, and the request is not always granted in full.
 
 /**
  * The session size this viewport wants, in physical pixels.
@@ -105,38 +102,32 @@ function fit() {
 }
 
 /**
- * Ask the remote session to become the shape of this viewport.
+ * Make the remote session the shape of this viewport, by reconnecting.
  *
- * Repeated until it obeys, because a resize that arrives while the session is
- * still coming up is dropped and nothing anywhere says so -- and the first
- * rotation after opening the page is exactly when that happens. Giving up is
- * safe: fit() letterboxes, which is only what the VNC version always did.
+ * No retry loop: the reshape happens before guacd is even dialled, so by the
+ * time there is a session to draw it is already the right size. If it is not,
+ * fit() letterboxes -- which is only what the VNC version always did.
  */
 function requestSize() {
   if (!client) return;
 
   // Same reason fit() bows out: the on-screen keyboard shrinks the visual
-  // viewport, and reflowing the *remote session* down to the sliver above the
-  // keys -- on every keypress -- is far worse than rescaling ever was.
+  // viewport, and reconnecting the session down to the sliver above the keys --
+  // on every keypress -- is far worse than rescaling ever was.
   if (document.activeElement === sink) return;
 
   const wanted = wantedSize();
   if (wanted.width === remote.width && wanted.height === remote.height) return;
 
-  client.sendSize(wanted.width, wanted.height);
-
-  if (--attemptsLeft > 0) {
-    resizeTimer = setTimeout(requestSize, RESIZE_RETRY_MS);
-  }
+  connect();
 }
 
 // A phone reports a resize for every keyboard show/hide and every scroll of
 // the URL bar. Rescaling is cheap, so it happens once a frame; resizing is not
-// -- each request costs a RandR resize and a full Firefox reflow -- so it waits
-// for the viewport to hold still first.
+// -- it drops the session and dials it again -- so it waits for the viewport to
+// hold still first.
 let pendingFit = null;
 let resizeTimer = null;
-let attemptsLeft = 0;
 function scheduleGeometry() {
   if (pendingFit === null) {
     pendingFit = requestAnimationFrame(() => {
@@ -145,7 +136,6 @@ function scheduleGeometry() {
     });
   }
 
-  attemptsLeft = RESIZE_ATTEMPTS;
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(requestSize, RESIZE_SETTLE_MS);
 }

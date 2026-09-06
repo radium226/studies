@@ -1,92 +1,78 @@
-# A normal Firefox on an X server that xrdp spawns per session.
+# A normal Firefox on a Wayland compositor, published over VNC.
 #
-# This image is not short, and that is the trade. xrdp is three moving parts --
-# xrdp on 3389, xrdp-sesman authenticating through PAM, and an Xorg with the
-# xorgxrdp driver started per session -- but it is the only backend that speaks
-# the RDP Display Control channel, which is what makes the session reflow when
-# the phone rotates.
+# The X11 version of this image needed three processes and an X server: xrdp on
+# 3389, xrdp-sesman authenticating through PAM, and an Xorg with the xorgxrdp
+# driver started per session. All of it existed to reach one feature -- the RDP
+# Display Control channel, which is what makes the session reflow when the phone
+# rotates instead of letterboxing.
+#
+# sway is that whole stack in one unprivileged process: a headless wlroots
+# compositor is the display and the window manager, wayvnc publishes it, and
+# guacd 1.6 asks for a new size over RFB when the phone turns. See the README
+# for why this is VNC again after the study deliberately left it, and for the
+# weston/RDP attempt that came first and does not work.
 FROM docker.io/library/debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# wayland-utils is for `mise run rdp`: wayland-info is the only way left to ask
+# what shape the session currently is, now that there is no xdpyinfo.
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes \
         ca-certificates \
-        dbus-x11 \
+        dbus-daemon \
         firefox-esr \
         fonts-dejavu-core \
         fonts-noto-color-emoji \
-        openbox \
-        openssl \
         procps \
-        x11-utils \
-        x11-xserver-utils \
-        xauth \
-        xrdp \
-        xorgxrdp \
-        xserver-xorg-core \
-        xserver-xorg-legacy \
+        sway \
+        wayland-utils \
+        wayvnc \
+        xkb-data \
     && rm -rf /var/lib/apt/lists/*
 
-# The account the RDP session runs as. sesman authenticates it against
-# /etc/shadow, so unlike the Xvnc setup it needs a real password -- set from the
-# environment by the entrypoint, so changing it needs no rebuild.
-RUN useradd --create-home --shell /bin/bash firefox
+# The session user. Nothing authenticates it: wayvnc serves the desktop to
+# whoever connects, so there is no password, no PAM and no /etc/shadow in the
+# picture. It exists only to own XDG_RUNTIME_DIR and to not be root.
+RUN useradd --create-home --uid 1000 --shell /bin/bash firefox \
+    && mkdir -p /run/user/1000 /control \
+    && chown firefox:firefox /run/user/1000 /control \
+    && chmod 700 /run/user/1000
 
-# xrdp's own runtime state. The package normally gets these from a tmpfiles.d
-# rule that nothing runs in a container.
-RUN mkdir -p /run/xrdp /var/log/xrdp /tmp/.X11-unix
+# /control is a volume shared with the tunnel container, and sway's IPC socket
+# is what crosses it. The tunnel is what reshapes this session -- it is the only
+# process that knows when nothing is connected, which is the only moment a VNC
+# desktop can change size. See app/src/guac_tunnel/session.py.
+#
+# The path is pinned rather than left to sway, which would otherwise put the
+# socket at a name containing its own pid.
 
-# Generated here rather than left to the package's postinst, which is not
-# reliably run under buildah. Both are needed: rsakeys.ini for RDP standard
-# security, cert/key for the TLS layer xrdp negotiates by default. The
-# certificate is self-signed, which is why guacd connects with `ignore-cert`.
-RUN xrdp-keygen xrdp auto \
-    && openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -keyout /etc/xrdp/key.pem -out /etc/xrdp/cert.pem \
-        -subj /CN=firefox 2>/dev/null \
-    && chmod 600 /etc/xrdp/key.pem
-
-# Debian ships Xorg behind a setuid wrapper that only lets the console user
-# start it. xorgxrdp drives no hardware and claims no VT, so the session's Xorg
-# needs neither the console nor root -- only permission to run at all.
-RUN printf 'allowed_users=anybody\nneeds_root_rights=no\n' > /etc/X11/Xwrapper.config
-
-# Two adjustments to the shipped config:
-#   - xrdp logs to files by default, which `podman logs` never sees. Running
-#     with --nodaemon plus EnableConsole puts both halves on stdout.
-#   - sesman refuses users outside TerminalServerUsers when that group exists,
-#     and silently skips the check when it does not. Create it and join it, so
-#     the behaviour does not depend on which of those is true.
-RUN sed -i 's/^#\?EnableConsole=.*/EnableConsole=true/; s/^#\?ConsoleLevel=.*/ConsoleLevel=INFO/' \
-        /etc/xrdp/xrdp.ini /etc/xrdp/sesman.ini \
-    && groupadd --force tsusers \
-    && usermod --append --groups tsusers firefox
-
-COPY entrypoint.sh /usr/local/bin/
-# sesman runs this as the session, in place of Debian's default startwm.sh --
-# which sources /etc/X11/Xsession and would start a full desktop session.
-COPY startwm.sh /etc/xrdp/startwm.sh
+COPY entrypoint.sh session.sh /usr/local/bin/
+COPY sway-config /etc/sway/config
 COPY firefox-user.js /opt/firefox-user.js
-COPY openbox-rc.xml /opt/openbox-rc.xml
-RUN chmod +x /usr/local/bin/entrypoint.sh /etc/xrdp/startwm.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/session.sh
 
-# Deliberately root: sesman reads /etc/shadow and setuids into the session, and
-# neither is possible otherwise. Rootless Podman maps this to an ordinary
-# unprivileged user on the host, so it is root only inside the namespace.
-WORKDIR /root
+USER firefox
+WORKDIR /home/firefox
 
-# No SCREEN_WIDTH/SCREEN_HEIGHT here: under RDP the framebuffer size is
-# negotiated by the client, so the browser's own viewport decides it. What is
-# left is the ratio that divides it down to a CSS viewport -- see
-# firefox-user.js for why 2.4 and not something rounder.
+# SCREEN_WIDTH/SCREEN_HEIGHT are a fallback, not a configuration: they are the
+# output sway starts with, and every size after the first connection comes from
+# the client instead. DEVICE_PIXEL_RATIO is what divides that down to a CSS
+# viewport -- see firefox-user.js for why 2.4 and not something rounder.
 ENV LANG=C.UTF-8 \
+    XDG_RUNTIME_DIR=/run/user/1000 \
+    SWAYSOCK=/control/sway.sock \
+    WAYVNC_SOCKET=/control/wayvnc.sock \
+    WAYLAND_DISPLAY=wayland-1 \
+    MOZ_ENABLE_WAYLAND=1 \
+    GDK_BACKEND=wayland \
+    SCREEN_WIDTH=1080 \
+    SCREEN_HEIGHT=2400 \
     DEVICE_PIXEL_RATIO=2.4 \
+    KEYBOARD_LAYOUT=fr \
     START_URL=http://localhost:8080/diagnostics \
-    USER_AGENT="Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0" \
-    RDP_USERNAME=firefox \
-    RDP_PASSWORD=firefox
+    USER_AGENT="Mozilla/5.0 (Android 14; Mobile; rv:128.0) Gecko/128.0 Firefox/128.0"
 
-EXPOSE 3389
+EXPOSE 5900
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

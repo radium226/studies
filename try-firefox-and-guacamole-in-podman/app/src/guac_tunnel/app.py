@@ -15,6 +15,7 @@ from .bridge import GuacdConnection, bridge, tunnel_uuid_frame
 from .config import STATIC_ROOT, Settings
 from .handshake import Display, HandshakeError, perform_handshake
 from .protocol import ProtocolError
+from .session import SessionError, reshape
 
 
 def _page(name: str):
@@ -59,6 +60,22 @@ async def tunnel(websocket: WebSocket) -> None:
 
     await websocket.accept(subprotocol="guacamole")
 
+    # Before guacd, not after: this is the only moment the session can change
+    # shape, because neither guacd nor wayvnc will resize a live VNC connection
+    # and there is no live one yet. A rotation in the browser is a reconnect,
+    # and this is the half of it that does the work. See session.py.
+    try:
+        await reshape(
+            settings.session_socket,
+            settings.session_output,
+            display.width,
+            display.height,
+        )
+    except SessionError as error:
+        # Worth saying out loud, but not worth refusing a session over: the
+        # client letterboxes whatever size it is actually given.
+        logger.warning("could not reshape the session: {}", error)
+
     try:
         connection = await GuacdConnection.open(settings.guacd_host, settings.guacd_port)
     except OSError as error:
@@ -93,10 +110,9 @@ async def tunnel(websocket: WebSocket) -> None:
             await websocket.send_text(buffered)
 
         # A successful handshake does not mean the remote desktop is up: guacd
-        # answers `ready` before it has reached xrdp, and under RDP it does not
-        # even mean the session exists -- sesman has still to authenticate and
-        # start one. A failure there surfaces as an `error` instruction *inside*
-        # the session stream. The browser reports that; nothing to catch here.
+        # answers `ready` before it has reached weston. A failure there surfaces
+        # as an `error` instruction *inside* the session stream. The browser
+        # reports that; nothing to catch here.
         await bridge(connection, websocket)
 
     except (HandshakeError, ProtocolError) as error:

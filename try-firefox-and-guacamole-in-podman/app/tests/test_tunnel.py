@@ -223,7 +223,7 @@ class TestPages:
         with fake_guacd() as guacd, client_for(guacd, remote_host="10.0.0.5") as client:
             body = client.get("/health").json()
 
-        assert body["remote"] == "rdp://10.0.0.5:3389"
+        assert body["remote"] == "vnc://10.0.0.5:5900"
 
     @pytest.mark.parametrize("path", ["/", "/diagnostics"])
     def test_serves_the_pages(self, path):

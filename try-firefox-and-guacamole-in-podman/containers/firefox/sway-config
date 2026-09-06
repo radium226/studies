@@ -1,0 +1,32 @@
+# sway as the session: one output, one window, nothing else on screen.
+#
+# @PLACEHOLDER@s are substituted by the entrypoint from the container
+# environment, because sway's config has no way to read one.
+
+# The headless backend invents this output. Its size here is only what the
+# session starts at: wayvnc replaces it through wlr-output-management when a
+# client asks for a different one, which is what a phone rotating turns into.
+output HEADLESS-1 resolution @SCREEN_WIDTH@x@SCREEN_HEIGHT@ position 0 0
+
+# Nothing to decorate and nothing to tile against: a single window fills the
+# workspace on its own, so Firefox stays an ordinary window -- real tabs, a real
+# URL bar -- rather than being put fullscreen and hiding its own chrome.
+default_border none
+default_floating_border none
+titlebar_padding 1 1
+gaps inner 0
+gaps outer 0
+bar {
+    mode invisible
+}
+
+# Must match guacd's `server-layout`. guacd translates keysyms through that
+# keymap; what it does not cover arrives here as a raw unicode keysym, and this
+# is the layout that decides whether there is a key to press for it.
+input * {
+    xkb_layout "@KEYBOARD_LAYOUT@"
+}
+
+# The pointer belongs to the person holding the phone, not to a laptop lid:
+# never hide it for inactivity.
+seat * hide_cursor 0
