@@ -27,18 +27,39 @@
 # The WireGuard keypair exchange below (server needs both spokes'
 # pubkeys; each spoke needs the server's) is the one place that actually
 # matters here -- see facts.py's WireguardKey for how it's handled.
+#
+# The same "prepare vs execute" split also rules out the obvious
+# `restarted=some_op.did_change()` for "only restart if config changed":
+# that expression is a plain Python call evaluated the instant this
+# script defines the operation, long before some_op has actually run
+# against the target -- pyinfra raises "Cannot evaluate operation result
+# before execution" rather than silently getting it wrong. The fix used
+# throughout below is `_if=any_changed(some_op, ...)` (or `all_changed`)
+# on a *second*, restart-only `systemd.service()` call: `_if` takes a
+# callback pyinfra runs later, once execution actually reaches it, and
+# skips the whole operation (cleanly reported as no change) if it
+# returns False. Keep the "ensure running/enabled" and "restart on
+# change" concerns in two separate operations, not one -- gating a
+# single combined operation behind `_if` would also skip the idempotent
+# running/enabled check on a no-change run.
 import re
 
 from pyinfra import host, inventory
 from pyinfra.facts.files import File
 from pyinfra.operations import files, pacman, server, systemd
+from pyinfra.operations.util import any_changed
 
 from facts import InterfaceWithAddress, NsswitchHostsLine, WireguardKey
 
+# No update=True: pacman.update() (`pacman -Sy`) is unconditional in
+# pyinfra (there's no way to tell if a sync "changed" anything), so it
+# would make this operation report Success on every single run even
+# once the packages are already installed. The Vagrantfile's bootstrap
+# provisioner already does a full `-Sy`/`-Su` before pyinfra ever runs,
+# so the package db is fresh enough without syncing again here.
 pacman.packages(
     name="Install WireGuard and mDNS packages",
     packages=["wireguard-tools", "avahi", "nss-mdns", "bind", "python"],
-    update=True,
 )
 
 files.directory(
@@ -78,7 +99,7 @@ if host.name == "server":
 WG_DNS_SERVER = "10.0.0.1"
 
 if host.name == "server":
-    files.template(
+    wg_conf = files.template(
         name="Write wg0.conf (server)",
         src="templates/wg-interface.conf.j2",
         dest="/etc/wireguard/wg0.conf",
@@ -107,7 +128,7 @@ elif host.name in ("client1", "client2"):
     spoke_dns_ipv6 = {"client1": "fd00::2", "client2": "fd00::3"}[host.name]
     server_host = inventory.get_host("server")
 
-    files.template(
+    wg_conf = files.template(
         name=f"Write wg0.conf ({host.name})",
         src="templates/wg-interface.conf.j2",
         dest="/etc/wireguard/wg0.conf",
@@ -127,6 +148,9 @@ elif host.name in ("client1", "client2"):
         ],
     )
 
+else:
+    wg_conf = None
+
 # --- Proof-of-concept: real dynamic DNS on the hub -------------------
 # Parallel to the avahi/mDNS setup, not a replacement for it: a BIND
 # server on the hub, with peers registering their own name/address via
@@ -136,7 +160,7 @@ elif host.name in ("client1", "client2"):
 # README.
 
 if host.name == "server":
-    files.template(
+    named_conf = files.template(
         name="Deploy named.conf",
         src="templates/named.conf.j2",
         dest="/etc/named.conf",
@@ -178,7 +202,7 @@ if host.name == "server":
         path="/etc/systemd/system/named.service.d",
         mode="755",
     )
-    files.put(
+    named_drop_in = files.put(
         name="Deploy the drop-in",
         src="files/named-wait-for-wg0.conf",
         dest="/etc/systemd/system/named.service.d/override.conf",
@@ -189,9 +213,23 @@ if host.name == "server":
         name="Start and enable named",
         service="named",
         running=True,
-        restarted=True,
         enabled=True,
+    )
+
+    # A plain `restarted=` bool would be evaluated once, eagerly, right
+    # here -- before named.conf/the drop-in have actually been written on
+    # the target (pyinfra only queues operations in this "prepare" pass,
+    # see the file header), so it can never reflect whether they changed.
+    # `_if=any_changed(...)` instead passes a callback pyinfra runs later,
+    # once those operations have executed for real -- and skips this
+    # whole operation (reported as no change) when neither did.
+    systemd.service(
+        name="Restart named (config changed)",
+        service="named",
+        running=True,
+        restarted=True,
         daemon_reload=True,
+        _if=any_changed(named_conf, named_drop_in),
     )
 
 # Plain (non-templated) file: HOSTNAME, IPV4, IPV6 and DNS_SERVER are all
@@ -208,12 +246,21 @@ if host.name in ("server", "client1", "client2"):
 # --- Bring tunnels up ------------------------------------------------
 
 if host.name in ("server", "client1", "client2"):
+    assert wg_conf is not None  # always set: same host.name check as above
+
     systemd.service(
         name="Start and enable WireGuard",
         service="wg-quick@wg0",
         running=True,
-        restarted=True,
         enabled=True,
+    )
+
+    systemd.service(
+        name="Restart WireGuard (config changed)",
+        service="wg-quick@wg0",
+        running=True,
+        restarted=True,
+        _if=any_changed(wg_conf),
     )
 
 if host.name == "server":
@@ -241,14 +288,14 @@ if host.name == "server":
     # below instead, so this script is also plain, importable Python for
     # tests/test_repeater_unit.py to exercise directly, with no Jinja
     # rendering involved.
-    files.put(
+    repeater_script = files.put(
         name="Deploy the unicast mDNS repeater script",
         src="files/mdns-unicast-repeater",
         dest="/usr/local/bin/mdns-unicast-repeater",
         mode="755",
     )
 
-    files.template(
+    repeater_env = files.template(
         name="Deploy the unicast mDNS repeater environment file",
         src="templates/mdns-unicast-repeater.env.j2",
         dest="/etc/mdns-unicast-repeater.env",
@@ -259,7 +306,7 @@ if host.name == "server":
         mdns_repeater_peers_v6=["fd00::2", "fd00::3"],
     )
 
-    files.put(
+    repeater_unit = files.put(
         name="Deploy the unicast mDNS repeater systemd unit",
         src="files/mdns-unicast-repeater.service",
         dest="/etc/systemd/system/mdns-unicast-repeater.service",
@@ -270,9 +317,16 @@ if host.name == "server":
         name="Start and enable the unicast mDNS repeater",
         service="mdns-unicast-repeater",
         running=True,
-        restarted=True,
         enabled=True,
+    )
+
+    systemd.service(
+        name="Restart the unicast mDNS repeater (script/config changed)",
+        service="mdns-unicast-repeater",
+        running=True,
+        restarted=True,
         daemon_reload=True,
+        _if=any_changed(repeater_script, repeater_env, repeater_unit),
     )
 
 # --- mDNS (avahi) ----------------------------------------------------
@@ -297,7 +351,7 @@ elif host.name == "foreign":
 else:
     avahi_allow_interfaces = "wg0"
 
-files.template(
+avahi_conf = files.template(
     name="Configure avahi to only publish over the intended interfaces",
     src="templates/avahi-daemon.conf.j2",
     dest="/etc/avahi/avahi-daemon.conf",
@@ -306,7 +360,7 @@ files.template(
     avahi_enable_reflector=False,
 )
 
-files.put(
+avahi_ssh_service = files.put(
     name="Advertise SSH over mDNS",
     src="files/avahi-ssh.service",
     dest="/etc/avahi/services/ssh.service",
@@ -323,7 +377,7 @@ FAKE_SERVICES = {
     "foreign": ("avahi-foreign-widget.service", "widget.service"),
 }
 src_name, dest_name = FAKE_SERVICES[host.name]
-files.put(
+avahi_fake_service = files.put(
     name=f"Advertise a fake service over mDNS ({dest_name})",
     src=f"files/{src_name}",
     dest=f"/etc/avahi/services/{dest_name}",
@@ -370,7 +424,7 @@ files.line(
 # nss-mdns modules never get consulted at all. Disabling resolved's own
 # mDNS lets "resolve" correctly step aside for .local names and
 # avahi/nss-mdns becomes the sole mDNS implementation, as it should be.
-files.line(
+resolved_conf = files.line(
     name="Disable systemd-resolved's own mDNS (avahi is the sole mDNS implementation)",
     path="/etc/systemd/resolved.conf",
     line="^#?MulticastDNS=",
@@ -378,16 +432,30 @@ files.line(
 )
 
 systemd.service(
-    name="Restart systemd-resolved",
+    name="Ensure systemd-resolved is running",
+    service="systemd-resolved",
+    running=True,
+)
+
+systemd.service(
+    name="Restart systemd-resolved (resolved.conf changed)",
     service="systemd-resolved",
     running=True,
     restarted=True,
+    _if=any_changed(resolved_conf),
 )
 
 systemd.service(
     name="Start and enable avahi-daemon",
     service="avahi-daemon",
     running=True,
-    restarted=True,
     enabled=True,
+)
+
+systemd.service(
+    name="Restart avahi-daemon (config/services changed)",
+    service="avahi-daemon",
+    running=True,
+    restarted=True,
+    _if=any_changed(avahi_conf, avahi_ssh_service, avahi_fake_service),
 )
