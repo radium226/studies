@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#MISE description="SSH into one of the study VMs (server, client1, client2, foreign)"
+set -euo pipefail
+
+if [ $# -eq 0 ]; then
+  echo "Usage: mise run connect-to <server|client1|client2|foreign>" >&2
+  exit 1
+fi
+
+vagrant ssh "$1"
