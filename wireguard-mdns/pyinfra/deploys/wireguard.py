@@ -155,15 +155,36 @@ def wireguard():
         )
 
     if host.name == "server":
+        # A drop-in under /etc/sysctl.d/ rather than appending to the
+        # monolithic /etc/sysctl.conf -- same reasoning as named's
+        # systemd drop-in above: ours lives in its own clearly-owned
+        # file instead of interleaved with unrelated system defaults.
+        sysctl_persist_file = "/etc/sysctl.d/99-wireguard-mdns.conf"
+
+        # Leftover from before this used a drop-in: both lines used to
+        # get appended straight to /etc/sysctl.conf.
+        for stale_line in (
+            "net.ipv4.ip_forward = 1",
+            "net.ipv6.conf.all.forwarding = 1",
+        ):
+            files.line(
+                name=f"Remove '{stale_line}' from /etc/sysctl.conf, if present",
+                path="/etc/sysctl.conf",
+                line=stale_line,
+                present=False,
+            )
+
         server.sysctl(
             name="Allow IPv4 forwarding on the server (routes client1 <-> client2)",
             key="net.ipv4.ip_forward",
             value=1,
             persist=True,
+            persist_file=sysctl_persist_file,
         )
         server.sysctl(
             name="Allow IPv6 forwarding on the server (routes client1 <-> client2)",
             key="net.ipv6.conf.all.forwarding",
             value=1,
             persist=True,
+            persist_file=sysctl_persist_file,
         )
