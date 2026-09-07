@@ -13,5 +13,5 @@ $TTL 300
 ; self-registers dynamically like everyone else on wg0's PostUp; this
 ; is just the one record that has to already exist before the zone can
 ; even load enough to accept that update.
-server  IN  A     10.0.0.1
-server  IN  AAAA  fd00::1
+server  IN  A     {{ wg_ipv4 }}
+server  IN  AAAA  {{ wg_ipv6 }}

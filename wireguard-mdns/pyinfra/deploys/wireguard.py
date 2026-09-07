@@ -18,8 +18,7 @@ from pyinfra.api import deploy
 from pyinfra.operations import files, pacman, server, systemd
 
 from facts import WireguardKey
-
-WG_DNS_SERVER = "10.0.0.1"
+from .defaults import WG_DATA_DEFAULTS
 
 # Without these, an untaken {% if %}/{% endif %} (or {% for %} with no
 # items) still leaves its own tag line's newline in the rendered output --
@@ -30,8 +29,16 @@ WG_DNS_SERVER = "10.0.0.1"
 JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
-@deploy("Setup WireGuard")
-def wireguard():
+def _local_address(h):
+    """h's own wg0 address in both families, each with the mesh's prefix length."""
+    return f"{h.data.wg_ipv4}/{h.data.wg_ipv4_prefixlen},{h.data.wg_ipv6}/{h.data.wg_ipv6_prefixlen}"
+
+
+# data_defaults makes WG_DATA_DEFAULTS the fallback for every host.data.wg_*
+# lookup below, so this deploy works even against an inventory that doesn't
+# override them -- see deploys/defaults.py's header.
+@deploy("Setup WireGuard", data_defaults=WG_DATA_DEFAULTS)
+def setup_wireguard():
     # wireguard-tools is also installed inline by the WireguardKey fact
     # itself (see facts.py) -- pyinfra runs facts before any operation on
     # any host, so that's what actually guarantees it's present by the
@@ -77,34 +84,34 @@ def wireguard():
     # multicast in their AllowedIPs at all -- see the file header.
 
     if "hub" in host.groups:
+        client1 = inventory.get_host("client1")
+        client2 = inventory.get_host("client2")
+
         wg_conf = files.template(
             name="Write wg0.conf (server)",
             src="templates/wireguard/wg-interface.conf.j2",
             dest="/etc/wireguard/wg0.conf",
             mode="600",
             jinja_env_kwargs=JINJA_ENV_KWARGS,
-            local_address="10.0.0.1/24,fd00::1/64",
+            local_address=_local_address(host),
             wg_private_key=host.get_fact(WireguardKey).private,
-            listen_port=51820,
-            wg_dns_server=WG_DNS_SERVER,
-            wg_dns_ipv4="10.0.0.1",
-            wg_dns_ipv6="fd00::1",
+            listen_port=host.data.wg_listen_port,
+            wg_dns_server=host.data.wg_ipv4,
+            wg_dns_ipv4=host.data.wg_ipv4,
+            wg_dns_ipv6=host.data.wg_ipv6,
             peers=[
                 {
-                    "pubkey": inventory.get_host("client1").get_fact(WireguardKey).public,
-                    "allowed_ips": "10.0.0.2/32,fd00::2/128",
+                    "pubkey": client1.get_fact(WireguardKey).public,
+                    "allowed_ips": f"{client1.data.wg_ipv4}/32,{client1.data.wg_ipv6}/128",
                 },
                 {
-                    "pubkey": inventory.get_host("client2").get_fact(WireguardKey).public,
-                    "allowed_ips": "10.0.0.3/32,fd00::3/128",
+                    "pubkey": client2.get_fact(WireguardKey).public,
+                    "allowed_ips": f"{client2.data.wg_ipv4}/32,{client2.data.wg_ipv6}/128",
                 },
             ],
         )
 
     elif "spokes" in host.groups:
-        spoke_address = {"client1": "10.0.0.2/24,fd00::2/64", "client2": "10.0.0.3/24,fd00::3/64"}[host.name]
-        spoke_dns_ipv4 = {"client1": "10.0.0.2", "client2": "10.0.0.3"}[host.name]
-        spoke_dns_ipv6 = {"client1": "fd00::2", "client2": "fd00::3"}[host.name]
         server_host = inventory.get_host("server")
 
         wg_conf = files.template(
@@ -113,16 +120,21 @@ def wireguard():
             dest="/etc/wireguard/wg0.conf",
             mode="600",
             jinja_env_kwargs=JINJA_ENV_KWARGS,
-            local_address=spoke_address,
+            local_address=_local_address(host),
             wg_private_key=host.get_fact(WireguardKey).private,
-            wg_dns_server=WG_DNS_SERVER,
-            wg_dns_ipv4=spoke_dns_ipv4,
-            wg_dns_ipv6=spoke_dns_ipv6,
+            wg_dns_server=server_host.data.wg_ipv4,
+            wg_dns_ipv4=host.data.wg_ipv4,
+            wg_dns_ipv6=host.data.wg_ipv6,
             peers=[
                 {
                     "pubkey": server_host.get_fact(WireguardKey).public,
-                    "endpoint": f"{server_host.data.ssh_hostname}:51820",
-                    "allowed_ips": "10.0.0.0/24,224.0.0.0/4,fd00::/64,ff02::fb/128",
+                    "endpoint": f"{server_host.data.ssh_hostname}:{server_host.data.wg_listen_port}",
+                    # Routes the whole mesh (both families) plus multicast back
+                    # through the hub -- the mesh networks come from
+                    # host.data.wg_ipv4_network/wg_ipv6_network, same as
+                    # local_address above; the multicast ranges are unrelated
+                    # to the mesh's own addressing, so stay literal.
+                    "allowed_ips": f"{host.data.wg_ipv4_network},224.0.0.0/4,{host.data.wg_ipv6_network},ff02::fb/128",
                     "persistent_keepalive": 25,
                 },
             ],

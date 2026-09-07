@@ -6,7 +6,7 @@
 # .local names actually resolve.
 import re
 
-from pyinfra import host
+from pyinfra import host, inventory
 from pyinfra.api import deploy
 from pyinfra.operations import files, pacman, systemd
 
@@ -19,7 +19,7 @@ JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
 @deploy("Setup mDNS")
-def mdns():
+def setup_mdns():
     pacman.packages(
         name="Install avahi and nss-mdns",
         packages=["avahi", "nss-mdns", "python"],
@@ -38,6 +38,8 @@ def mdns():
             mode="755",
         )
 
+        spoke_hosts = [inventory.get_host("client1"), inventory.get_host("client2")]
+
         repeater_env = files.template(
             name="Deploy the unicast mDNS repeater environment file",
             src="templates/mdns/mdns-unicast-repeater.env.j2",
@@ -45,9 +47,9 @@ def mdns():
             mode="644",
             jinja_env_kwargs=JINJA_ENV_KWARGS,
             mdns_repeater_iface="wg0",
-            mdns_repeater_local_v4="10.0.0.1",
-            mdns_repeater_peers_v4=["10.0.0.2", "10.0.0.3"],
-            mdns_repeater_peers_v6=["fd00::2", "fd00::3"],
+            mdns_repeater_local_v4=host.data.wg_ipv4,
+            mdns_repeater_peers_v4=[h.data.wg_ipv4 for h in spoke_hosts],
+            mdns_repeater_peers_v6=[h.data.wg_ipv6 for h in spoke_hosts],
         )
 
         repeater_unit = files.put(
@@ -83,11 +85,12 @@ def mdns():
     # unicast repeater above does that job on the server now instead, so
     # every host here has exactly one relevant mDNS domain and nothing to
     # reflect between.
-    if host.name == "client1":
-        foreign_iface = host.get_fact(InterfaceWithAddress, ip="192.168.60.11")
+    foreign_lan_ip = host.data.get("foreign_lan_ip")
+    if foreign_lan_ip:
+        foreign_iface = host.get_fact(InterfaceWithAddress, ip=foreign_lan_ip)
         avahi_allow_interfaces = f"wg0,{foreign_iface}"
     elif "foreign_lan" in host.groups:
-        avahi_allow_interfaces = host.get_fact(InterfaceWithAddress, ip="192.168.60.20")
+        avahi_allow_interfaces = host.get_fact(InterfaceWithAddress, ip=host.data.ssh_hostname)
     else:
         avahi_allow_interfaces = "wg0"
 
@@ -110,18 +113,12 @@ def mdns():
 
     # One fake (unbacked -- nothing is actually listening on these ports)
     # service per host, of a different type each, so avahi-browse across the
-    # mesh shows real variety rather than 3 copies of the same thing.
-    FAKE_SERVICES = {
-        "server": ("avahi-nas.service", "nas.service"),
-        "client1": ("avahi-webapp.service", "webapp.service"),
-        "client2": ("avahi-printer.service", "printer.service"),
-        "foreign": ("avahi-foreign-widget.service", "widget.service"),
-    }
-    src_name, dest_name = FAKE_SERVICES[host.name]
+    # mesh shows real variety rather than 3 copies of the same thing -- see
+    # inventory.py's avahi_fake_service_src/_dest.
     avahi_fake_service = files.put(
-        name=f"Advertise a fake service over mDNS ({dest_name})",
-        src=f"files/mdns/{src_name}",
-        dest=f"/etc/avahi/services/{dest_name}",
+        name=f"Advertise a fake service over mDNS ({host.data.avahi_fake_service_dest})",
+        src=f"files/mdns/{host.data.avahi_fake_service_src}",
+        dest=f"/etc/avahi/services/{host.data.avahi_fake_service_dest}",
         mode="644",
     )
 

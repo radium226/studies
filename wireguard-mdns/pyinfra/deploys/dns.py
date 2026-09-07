@@ -10,14 +10,17 @@ from pyinfra.api import deploy
 from pyinfra.facts.files import File
 from pyinfra.operations import files, pacman, systemd
 
+from .defaults import WG_DATA_DEFAULTS
+
 # See deploys/wireguard.py's JINJA_ENV_KWARGS for why every
 # files.template() call here passes this, even though none of these
 # templates currently have conditionals of their own.
 JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
-@deploy("Setup DNS")
-def dns():
+# data_defaults: see deploys/wireguard.py's own @deploy for why.
+@deploy("Setup DNS", data_defaults=WG_DATA_DEFAULTS)
+def setup_dns():
     pacman.packages(
         name="Install bind",
         packages=["bind"],
@@ -32,6 +35,10 @@ def dns():
             group="named",
             mode="640",
             jinja_env_kwargs=JINJA_ENV_KWARGS,
+            wg_ipv4=host.data.wg_ipv4,
+            wg_ipv6=host.data.wg_ipv6,
+            reverse_zone_name=host.data.wg_ipv4_reverse_zone,
+            reverse_zone_file=host.data.wg_ipv4_reverse_zone_file,
         )
 
         # force: false in the old Ansible playbook -- don't clobber a zone
@@ -48,13 +55,15 @@ def dns():
                 group="named",
                 mode="644",
                 jinja_env_kwargs=JINJA_ENV_KWARGS,
+                wg_ipv4=host.data.wg_ipv4,
+                wg_ipv6=host.data.wg_ipv6,
             )
 
-        if not host.get_fact(File, path="/var/named/db.10.0.0"):
+        if not host.get_fact(File, path=f"/var/named/{host.data.wg_ipv4_reverse_zone_file}"):
             files.template(
                 name="Deploy the reverse zone skeleton",
                 src="templates/dns/db.10.0.0.zone.j2",
-                dest="/var/named/db.10.0.0",
+                dest=f"/var/named/{host.data.wg_ipv4_reverse_zone_file}",
                 user="named",
                 group="named",
                 mode="644",

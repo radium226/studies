@@ -33,8 +33,6 @@
 # together (`a.will_change or b.will_change`): both sides are plain
 # already-computed bools by this point, not deferred callbacks, so
 # there's nothing special about combining them.
-from deploys import dns, mdns, wireguard
+from deploys import setup_internal_network
 
-wireguard()
-dns()
-mdns()
+setup_internal_network()
