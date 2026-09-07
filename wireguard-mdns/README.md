@@ -132,8 +132,8 @@ mise run provision-vms   # cd pyinfra && uv run pyinfra inventory.py deploy.py -
 ```
 
 `bootstrap-vms` and `provision-vms` are each idempotent and safe to
-re-run by themselves later (e.g. after editing `pyinfra/deploy.py`, just
-`mise run provision-vms` again). `provision-vms` must run against every
+re-run by themselves later (e.g. after editing `pyinfra/deploys/*.py`,
+just `mise run provision-vms` again). `provision-vms` must run against every
 host at once (not per-machine) since the deploy wires each WireGuard
 host's public key into the others' peer config -- that's why it's a
 plain pyinfra invocation over the static `pyinfra/inventory.py` rather
@@ -338,4 +338,6 @@ individual connection-refused failures) if the VMs aren't up.
   pyinfra deploy (`pyinfra/`) instead -- see `pyinfra/deploy.py`'s file
   header for the one structural gotcha that came with the switch (facts
   vs. operations execution order, relevant to the WireGuard keypair
-  exchange).
+  exchange). `deploy.py` itself is just an orchestrator: the actual
+  operations live in `pyinfra/deploys/{wireguard,dns,mdns}.py`, one
+  `@deploy`-wrapped function per concern.
