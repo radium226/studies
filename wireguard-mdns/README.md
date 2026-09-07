@@ -54,7 +54,7 @@ allow-interfaces` config. Fine for a 2-spoke demo, unworkable for
 anything real.
 
 **This version replaces that with a small daemon,
-`mdns-unicast-repeater.py`, deployed only on `server`.** It joins the
+`mdns-unicast-repeater`, deployed only on `server`.** It joins the
 mDNS multicast group as an ordinary local socket (unrelated to
 WireGuard's peer ACLs -- IGMP/MLD group membership is a purely local
 kernel/host concern) on the *one shared* `wg0`, and for every packet it
@@ -66,7 +66,7 @@ tunnel at all, and scales to any number of spokes by just adding an
 address to its peer list.
 
 Two details that mattered when building it (see
-`templates/mdns-unicast-repeater.py.j2`):
+`ansible/files/mdns-unicast-repeater`):
 
 - The repeater's outbound socket must also bind to port 5353. A socket
   that sends from a random ephemeral port gets silently ignored by
@@ -236,7 +236,7 @@ and `0.0.10.in-addr.arpa` (reverse, `PTR`, IPv4 only). Both allow
 open/unauthenticated updates from anyone -- fine for a lab POC, not
 something to do for real.
 
-Registration happens from `wg0`'s `PostUp` (`wg-dns-register.sh.j2`),
+Registration happens from `wg0`'s `PostUp` (`wg-dns-register`),
 so it fires on every tunnel-up, not just once during provisioning.
 `resolvectl dns`/`resolvectl domain '~wg'` (also set from `PostUp`) wire
 up split-DNS routing, so plain tools resolve `*.wg` names with zero
@@ -287,7 +287,7 @@ Two kinds, in `tests/`:
 
 - **Unit** (`test_repeater_unit.py`): the repeater's pure forwarding
   logic (`forward_targets` -- "which peers should this packet go to"),
-  loaded directly from `ansible/files/mdns-unicast-repeater.py` by path.
+  loaded directly from `ansible/files/mdns-unicast-repeater` by path.
   No sockets, no VMs, runs in well under a second.
 - **Integration** (everything else, marked `@pytest.mark.integration`):
   SSHes into the live VMs and checks the actual behavior this whole

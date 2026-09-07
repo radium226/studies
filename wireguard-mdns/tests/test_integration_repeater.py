@@ -5,7 +5,7 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-REPO_REPEATER_SCRIPT = Path(__file__).resolve().parent.parent / "ansible" / "files" / "mdns-unicast-repeater.py"
+REPO_REPEATER_SCRIPT = Path(__file__).resolve().parent.parent / "ansible" / "files" / "mdns-unicast-repeater"
 
 
 def test_repeater_service_is_active(ssh):
@@ -29,7 +29,7 @@ def test_repeater_deployed_script_matches_the_repo(ssh):
     running -- e.g. after editing the script but forgetting to
     re-provision.
     """
-    deployed = ssh("server", "cat /usr/local/bin/mdns-unicast-repeater.py")
+    deployed = ssh("server", "cat /usr/local/bin/mdns-unicast-repeater")
     assert deployed.strip() == REPO_REPEATER_SCRIPT.read_text().strip()
 
 

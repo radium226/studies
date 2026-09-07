@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 EnvironmentFile=/etc/mdns-unicast-repeater.env
-ExecStart=/usr/local/bin/mdns-unicast-repeater.py
+ExecStart=/usr/local/bin/mdns-unicast-repeater
 Restart=on-failure
 RestartSec=2
 DynamicUser=yes

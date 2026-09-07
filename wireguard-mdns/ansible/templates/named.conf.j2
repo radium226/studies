@@ -34,7 +34,7 @@ zone "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa" 
 # here via real RFC 2136 dynamic updates (nsupdate), triggered from
 # wg0's PostUp on every host. Open/unauthenticated updates -- fine for a
 # lab POC, not something to do on a real network. See
-# wg-dns-register.sh.j2 and the README.
+# wg-dns-register and the README.
 zone "wg" IN {
     type master;
     file "/var/named/wg.zone";

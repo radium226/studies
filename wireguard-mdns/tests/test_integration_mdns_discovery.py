@@ -69,7 +69,7 @@ def test_foreign_lan_invisible_from_mesh_only_hosts(ssh, browse, host):
 
 
 def test_reflector_disabled_everywhere(ssh):
-    """avahi's own reflector is superseded by mdns-unicast-repeater.py on
+    """avahi's own reflector is superseded by mdns-unicast-repeater on
     the server -- nothing should have it turned on any more, mesh or
     foreign_lan side.
     """

@@ -8,12 +8,16 @@
 # drop-in makes named wait for the server's own wg0, but there's no such
 # guarantee that named has finished starting by the time a *spoke's*
 # wg0 comes up (e.g. simultaneous boot).
+#
+# Plain file, not a template: HOSTNAME, IPV4, IPV6 and DNS_SERVER are all
+# derived at runtime from wg0 itself, so the same script deploys unchanged
+# to every peer.
 set -u
 
-HOSTNAME={{ inventory_hostname }}
-IPV4={{ wg_dns_ipv4 }}
-IPV6={{ wg_dns_ipv6 }}
-DNS_SERVER={{ wg_dns_server }}
+HOSTNAME="$(hostname)"
+IPV4="$(ip -4 -o addr show dev wg0 | awk '{print $4}' | cut -d/ -f1)"
+IPV6="$(ip -6 -o addr show dev wg0 scope global | awk '{print $4}' | cut -d/ -f1)"
+DNS_SERVER="$(echo "$IPV4" | awk -F. '{print $1"."$2"."$3".1"}')"
 REVERSE_NAME="$(echo "$IPV4" | awk -F. '{print $4"."$3"."$2"."$1}').in-addr.arpa."
 
 register() {

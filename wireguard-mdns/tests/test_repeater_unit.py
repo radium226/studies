@@ -1,4 +1,4 @@
-"""Unit tests for mdns-unicast-repeater.py's forwarding logic.
+"""Unit tests for mdns-unicast-repeater's forwarding logic.
 
 No VMs, no sockets, no network involved -- just the pure decision of
 "which peers should this packet be repeated to", loaded directly from
@@ -9,15 +9,20 @@ import importlib.util
 import sys
 import threading
 import time
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import pytest
 
-REPEATER_PATH = Path(__file__).resolve().parent.parent / "ansible" / "files" / "mdns-unicast-repeater.py"
+REPEATER_PATH = Path(__file__).resolve().parent.parent / "ansible" / "files" / "mdns-unicast-repeater"
 
 
 def _load_repeater_module():
-    spec = importlib.util.spec_from_file_location("mdns_unicast_repeater", REPEATER_PATH)
+    # No .py suffix, so spec_from_file_location can't infer a loader from
+    # the extension the way it would for an ordinary module -- give it one
+    # explicitly instead.
+    loader = SourceFileLoader("mdns_unicast_repeater", str(REPEATER_PATH))
+    spec = importlib.util.spec_from_file_location(loader.name, REPEATER_PATH, loader=loader)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)

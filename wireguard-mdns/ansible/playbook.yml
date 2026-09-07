@@ -13,7 +13,7 @@
 # cryptokey routing can only ever deliver a given destination to a single
 # peer per interface, so it genuinely cannot forward a multicast mDNS
 # packet to multiple peers on one shared interface. Instead of routing
-# multicast through WireGuard at all, mdns-unicast-repeater.py (deployed
+# multicast through WireGuard at all, mdns-unicast-repeater (deployed
 # on the server only) joins the multicast group as an ordinary local
 # socket and re-sends every packet it sees as plain unicast UDP to each
 # spoke's own address -- which WireGuard has never had any trouble with.
@@ -161,7 +161,7 @@
     # via genuine RFC 2136 dynamic updates (nsupdate) -- the actual
     # standard protocol, not a bespoke one. Open/unauthenticated updates:
     # fine for a lab POC, not something to do for real. See
-    # wg-dns-register.sh.j2 and the README.
+    # wg-dns-register and the README.
 
     - name: Deploy named.conf
       when: inventory_hostname == 'server'
@@ -218,16 +218,15 @@
         enabled: true
         daemon_reload: true
 
+    # Plain (non-templated) file: HOSTNAME, IPV4, IPV6 and DNS_SERVER are
+    # all derived at runtime from wg0 itself (see the file header), so the
+    # same script deploys unchanged to every peer.
     - name: Deploy the DNS self-registration script
       when: inventory_hostname in ['server', 'client1', 'client2']
-      ansible.builtin.template:
-        src: templates/wg-dns-register.sh.j2
-        dest: /usr/local/bin/wg-dns-register.sh
+      ansible.builtin.copy:
+        src: files/wg-dns-register
+        dest: /usr/local/bin/wg-dns-register
         mode: "0755"
-      vars:
-        wg_dns_server: 10.0.0.1
-        wg_dns_ipv4: "{{ {'server': '10.0.0.1', 'client1': '10.0.0.2', 'client2': '10.0.0.3'}[inventory_hostname] }}"
-        wg_dns_ipv6: "{{ {'server': 'fd00::1', 'client1': 'fd00::2', 'client2': 'fd00::3'}[inventory_hostname] }}"
 
     # --- Bring tunnels up ------------------------------------------------
 
@@ -263,8 +262,8 @@
     - name: Deploy the unicast mDNS repeater script
       when: inventory_hostname == 'server'
       ansible.builtin.copy:
-        src: files/mdns-unicast-repeater.py
-        dest: /usr/local/bin/mdns-unicast-repeater.py
+        src: files/mdns-unicast-repeater
+        dest: /usr/local/bin/mdns-unicast-repeater
         mode: "0755"
 
     - name: Deploy the unicast mDNS repeater environment file
@@ -318,7 +317,7 @@
     # client1's avahi handles two independent mDNS domains at once: wg0
     # (the WireGuard mesh) and foreign_lan (not bridged anywhere). foreign
     # only has the latter. No host runs avahi's own reflector any more --
-    # mdns-unicast-repeater.py does that job on the server now instead
+    # mdns-unicast-repeater does that job on the server now instead
     # (see the file header), so every host here has exactly one relevant
     # mDNS domain and nothing to reflect between.
     - name: Configure avahi to only publish over the intended interfaces
