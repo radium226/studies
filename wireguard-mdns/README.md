@@ -66,7 +66,7 @@ tunnel at all, and scales to any number of spokes by just adding an
 address to its peer list.
 
 Two details that mattered when building it (see
-`pyinfra/files/mdns-unicast-repeater`):
+`pyinfra/files/mdns/mdns-unicast-repeater`):
 
 - The repeater's outbound socket must also bind to port 5353. A socket
   that sends from a random ephemeral port gets silently ignored by
@@ -143,6 +143,12 @@ If `vagrant`/`virsh` report a permissions error, make sure your user is
 in the `libvirt` group and `libvirtd.service` is running, then log out
 and back in (or run the command via `sudo -g libvirt -u "$USER" ...`) so
 the new group membership takes effect.
+
+A fourth task SSHes into any one VM directly:
+
+```bash
+mise run connect-to server     # or client1, client2, foreign
+```
 
 ## Verification
 
@@ -296,7 +302,7 @@ Two kinds, in `tests/`:
 
 - **Unit** (`test_repeater_unit.py`): the repeater's pure forwarding
   logic (`forward_targets` -- "which peers should this packet go to"),
-  loaded directly from `pyinfra/files/mdns-unicast-repeater` by path.
+  loaded directly from `pyinfra/files/mdns/mdns-unicast-repeater` by path.
   No sockets, no VMs, runs in well under a second.
 - **Integration** (everything else, marked `@pytest.mark.integration`):
   SSHes into the live VMs and checks the actual behavior this whole

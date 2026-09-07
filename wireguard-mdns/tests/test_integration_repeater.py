@@ -5,7 +5,7 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-REPO_REPEATER_SCRIPT = Path(__file__).resolve().parent.parent / "pyinfra" / "files" / "mdns-unicast-repeater"
+REPO_REPEATER_SCRIPT = Path(__file__).resolve().parent.parent / "pyinfra" / "files" / "mdns" / "mdns-unicast-repeater"
 
 
 def test_repeater_service_is_active(ssh):

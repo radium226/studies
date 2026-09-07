@@ -3,13 +3,18 @@
 # server on the hub, with peers registering their own name/address via
 # genuine RFC 2136 dynamic updates (nsupdate) -- the actual standard
 # protocol, not a bespoke one. Open/unauthenticated updates: fine for a
-# lab POC, not something to do for real. See files/wg-dns-register and
-# the README.
+# lab POC, not something to do for real. See files/dns/wg-dns-register
+# and the README.
 from pyinfra import host
 from pyinfra.api import deploy
 from pyinfra.facts.files import File
 from pyinfra.operations import files, pacman, systemd
 from pyinfra.operations.util import any_changed
+
+# See deploys/wireguard.py's JINJA_ENV_KWARGS for why every
+# files.template() call here passes this, even though none of these
+# templates currently have conditionals of their own.
+JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
 @deploy("DNS")
@@ -22,11 +27,12 @@ def dns():
     if host.name == "server":
         named_conf = files.template(
             name="Deploy named.conf",
-            src="templates/named.conf.j2",
+            src="templates/dns/named.conf.j2",
             dest="/etc/named.conf",
             user="root",
             group="named",
             mode="640",
+            jinja_env_kwargs=JINJA_ENV_KWARGS,
         )
 
         # force: false in the old Ansible playbook -- don't clobber a zone
@@ -37,21 +43,23 @@ def dns():
         if not host.get_fact(File, path="/var/named/wg.zone"):
             files.template(
                 name="Deploy the wg zone skeleton (SOA/NS only -- everything else is dynamic)",
-                src="templates/wg.zone.j2",
+                src="templates/dns/wg.zone.j2",
                 dest="/var/named/wg.zone",
                 user="named",
                 group="named",
                 mode="644",
+                jinja_env_kwargs=JINJA_ENV_KWARGS,
             )
 
         if not host.get_fact(File, path="/var/named/db.10.0.0"):
             files.template(
                 name="Deploy the reverse zone skeleton",
-                src="templates/db.10.0.0.zone.j2",
+                src="templates/dns/db.10.0.0.zone.j2",
                 dest="/var/named/db.10.0.0",
                 user="named",
                 group="named",
                 mode="644",
+                jinja_env_kwargs=JINJA_ENV_KWARGS,
             )
 
         # named needs to bind to wg0's own address (10.0.0.1), so it must
@@ -64,7 +72,7 @@ def dns():
         )
         named_drop_in = files.put(
             name="Deploy the drop-in",
-            src="files/named-wait-for-wg0.conf",
+            src="files/dns/named-wait-for-wg0.conf",
             dest="/etc/systemd/system/named.service.d/override.conf",
             mode="644",
         )
@@ -93,7 +101,7 @@ def dns():
     if host.name in ("server", "client1", "client2"):
         files.put(
             name="Deploy the DNS self-registration script",
-            src="files/wg-dns-register",
+            src="files/dns/wg-dns-register",
             dest="/usr/local/bin/wg-dns-register",
             mode="755",
         )

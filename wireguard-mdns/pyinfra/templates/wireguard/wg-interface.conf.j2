@@ -9,8 +9,8 @@ ListenPort = {{ listen_port }}
 # unusable -- no relevant-interface log line, no error either -- unless
 # it's turned on explicitly.
 PostUp = ip link set dev %i multicast on
-
 {% if wg_dns_ipv4 is defined %}
+
 # Proof-of-concept RFC 2136 dynamic DNS (see wg-dns-register, README):
 # split-DNS routing so plain tools resolve *.wg through the hub's named,
 # then self-register this host's own name/address there.
@@ -18,8 +18,8 @@ PostUp = resolvectl dns %i {{ wg_dns_server }}
 PostUp = resolvectl domain %i '~wg'
 PostUp = /usr/local/bin/wg-dns-register &
 {% endif %}
-
 {% for peer in peers %}
+
 [Peer]
 PublicKey = {{ peer.pubkey }}
 AllowedIPs = {{ peer.allowed_ips }}
@@ -29,5 +29,4 @@ Endpoint = {{ peer.endpoint }}
 {% if peer.persistent_keepalive is defined %}
 PersistentKeepalive = {{ peer.persistent_keepalive }}
 {% endif %}
-
 {% endfor %}

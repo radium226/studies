@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-REPEATER_PATH = Path(__file__).resolve().parent.parent / "pyinfra" / "files" / "mdns-unicast-repeater"
+REPEATER_PATH = Path(__file__).resolve().parent.parent / "pyinfra" / "files" / "mdns" / "mdns-unicast-repeater"
 
 
 def _load_repeater_module():

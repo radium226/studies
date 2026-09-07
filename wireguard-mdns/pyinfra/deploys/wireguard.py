@@ -22,6 +22,14 @@ from facts import WireguardKey
 
 WG_DNS_SERVER = "10.0.0.1"
 
+# Without these, an untaken {% if %}/{% endif %} (or {% for %} with no
+# items) still leaves its own tag line's newline in the rendered output --
+# pyinfra's Jinja environment doesn't set them by default. See
+# templates/wireguard/wg-interface.conf.j2, whose blank-line separators
+# are placed as the first line *inside* each conditional/loop specifically
+# so they only appear when that block actually renders.
+JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
+
 
 @deploy("WireGuard")
 def wireguard():
@@ -72,9 +80,10 @@ def wireguard():
     if host.name == "server":
         wg_conf = files.template(
             name="Write wg0.conf (server)",
-            src="templates/wg-interface.conf.j2",
+            src="templates/wireguard/wg-interface.conf.j2",
             dest="/etc/wireguard/wg0.conf",
             mode="600",
+            jinja_env_kwargs=JINJA_ENV_KWARGS,
             local_address="10.0.0.1/24,fd00::1/64",
             wg_private_key=host.get_fact(WireguardKey).private,
             listen_port=51820,
@@ -101,9 +110,10 @@ def wireguard():
 
         wg_conf = files.template(
             name=f"Write wg0.conf ({host.name})",
-            src="templates/wg-interface.conf.j2",
+            src="templates/wireguard/wg-interface.conf.j2",
             dest="/etc/wireguard/wg0.conf",
             mode="600",
+            jinja_env_kwargs=JINJA_ENV_KWARGS,
             local_address=spoke_address,
             wg_private_key=host.get_fact(WireguardKey).private,
             wg_dns_server=WG_DNS_SERVER,

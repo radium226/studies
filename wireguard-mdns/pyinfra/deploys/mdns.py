@@ -13,6 +13,11 @@ from pyinfra.operations.util import any_changed
 
 from facts import InterfaceWithAddress, NsswitchHostsLine
 
+# See deploys/wireguard.py's JINJA_ENV_KWARGS for why every
+# files.template() call here passes this, even though none of these
+# templates currently have conditionals of their own.
+JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
+
 
 @deploy("mDNS")
 def mdns():
@@ -29,16 +34,17 @@ def mdns():
         # rendering involved.
         repeater_script = files.put(
             name="Deploy the unicast mDNS repeater script",
-            src="files/mdns-unicast-repeater",
+            src="files/mdns/mdns-unicast-repeater",
             dest="/usr/local/bin/mdns-unicast-repeater",
             mode="755",
         )
 
         repeater_env = files.template(
             name="Deploy the unicast mDNS repeater environment file",
-            src="templates/mdns-unicast-repeater.env.j2",
+            src="templates/mdns/mdns-unicast-repeater.env.j2",
             dest="/etc/mdns-unicast-repeater.env",
             mode="644",
+            jinja_env_kwargs=JINJA_ENV_KWARGS,
             mdns_repeater_iface="wg0",
             mdns_repeater_local_v4="10.0.0.1",
             mdns_repeater_peers_v4=["10.0.0.2", "10.0.0.3"],
@@ -47,7 +53,7 @@ def mdns():
 
         repeater_unit = files.put(
             name="Deploy the unicast mDNS repeater systemd unit",
-            src="files/mdns-unicast-repeater.service",
+            src="files/mdns/mdns-unicast-repeater.service",
             dest="/etc/systemd/system/mdns-unicast-repeater.service",
             mode="644",
         )
@@ -94,16 +100,17 @@ def mdns():
 
     avahi_conf = files.template(
         name="Configure avahi to only publish over the intended interfaces",
-        src="templates/avahi-daemon.conf.j2",
+        src="templates/mdns/avahi-daemon.conf.j2",
         dest="/etc/avahi/avahi-daemon.conf",
         mode="644",
+        jinja_env_kwargs=JINJA_ENV_KWARGS,
         avahi_allow_interfaces=avahi_allow_interfaces,
         avahi_enable_reflector=False,
     )
 
     avahi_ssh_service = files.put(
         name="Advertise SSH over mDNS",
-        src="files/avahi-ssh.service",
+        src="files/mdns/avahi-ssh.service",
         dest="/etc/avahi/services/ssh.service",
         mode="644",
     )
@@ -120,7 +127,7 @@ def mdns():
     src_name, dest_name = FAKE_SERVICES[host.name]
     avahi_fake_service = files.put(
         name=f"Advertise a fake service over mDNS ({dest_name})",
-        src=f"files/{src_name}",
+        src=f"files/mdns/{src_name}",
         dest=f"/etc/avahi/services/{dest_name}",
         mode="644",
     )
