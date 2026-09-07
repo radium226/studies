@@ -84,24 +84,22 @@ Vagrant.configure("2") do |config|
       # The full upgrade above pulls in a new kernel package, which deletes
       # the /lib/modules tree for the kernel that's still actually running
       # -- including wireguard.ko. Reboot into the new kernel before
-      # anything tries to load it.
-      node.vm.provision :reload
+      # anything tries to load it. Named explicitly (rather than the bare
+      # `node.vm.provision :reload` shorthand) so `vagrant provision
+      # --provision-with bootstrap,reload` (see mise/tasks/bootstrap-vms)
+      # can target it.
+      node.vm.provision "reload", type: :reload
 
     end
   end
 
-  # Run pyinfra once, after every VM is up, against all of them at once --
-  # the deploy needs every WireGuard host's public key to configure the
-  # others' peers, so a single run over the static pyinfra/inventory.py
-  # (not Vagrant's per-machine auto inventory) is required. A global
-  # trigger (not a per-machine `vagrant provision` block, unlike the old
-  # Ansible provisioner) is what gets this to run exactly once per `vagrant
-  # up`/`vagrant provision` invocation, after every machine in it is up --
-  # Vagrant has no built-in pyinfra provisioner. Runs on the host, not
-  # inside any VM, hence `uv run` rather than a VM provisioner block.
-  config.trigger.after [:up, :provision] do |trigger|
-    trigger.name = "pyinfra"
-    trigger.info = "Configuring WireGuard + mDNS with pyinfra..."
-    trigger.run = { inline: "sh -c 'cd pyinfra && uv run pyinfra inventory.py deploy.py'" }
-  end
+  # No `vagrant up`/`vagrant provision` trigger here for pyinfra on
+  # purpose: it needs every WireGuard host's public key to configure the
+  # others' peers, so it must run exactly once, over the static
+  # pyinfra/inventory.py (not Vagrant's per-machine auto inventory) --
+  # against every machine at once. A `config.trigger.after` used to do
+  # this, but it fires once per machine action rather than once overall,
+  # which raced multiple concurrent pyinfra runs against the same hosts.
+  # `mise run provision-vms` (see mise/tasks/) is the one place this now
+  # runs, after `mise run start-vms` and `mise run bootstrap-vms`.
 end

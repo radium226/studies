@@ -123,17 +123,21 @@ ahostsv6` still don't.
 
 ## Usage
 
+Three [mise](https://mise.jdx.dev) tasks in `mise/tasks/`, run in order:
+
 ```bash
-vagrant up
+mise run start-vms       # vagrant up --no-provision: boot server, client1, client2, foreign
+mise run bootstrap-vms   # pacman keyring + full upgrade, then reboot into the new kernel
+mise run provision-vms   # cd pyinfra && uv run pyinfra inventory.py deploy.py -y
 ```
 
-This boots `server`, `client1`, `client2`, `foreign` (Arch Linux, libvirt
-provider), then a Vagrant trigger runs `pyinfra/deploy.py` (via `uv run
-pyinfra`) against all of them at once (needed since the deploy wires each
-host's WireGuard public key into the others' peer config). Re-running it
-by hand later: `cd pyinfra && uv run pyinfra inventory.py deploy.py`, or
-via the [mise](https://mise.jdx.dev) tasks in `mise/tasks/`:
-`mise run vagrant-up` / `mise run pyinfra`.
+`bootstrap-vms` and `provision-vms` are each idempotent and safe to
+re-run by themselves later (e.g. after editing `pyinfra/deploy.py`, just
+`mise run provision-vms` again). `provision-vms` must run against every
+host at once (not per-machine) since the deploy wires each WireGuard
+host's public key into the others' peer config -- that's why it's a
+plain pyinfra invocation over the static `pyinfra/inventory.py` rather
+than a Vagrant provisioner.
 
 If `vagrant`/`virsh` report a permissions error, make sure your user is
 in the `libvirt` group and `libvirtd.service` is running, then log out

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Boot the study VMs (server, client1, client2, foreign) without bootstrapping or configuring them"
+set -euo pipefail
+
+vagrant up --no-provision

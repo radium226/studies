@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Re-run the pyinfra deploy against the already-up study VMs"
-set -euo pipefail
-
-cd pyinfra
-uv run pyinfra inventory.py deploy.py

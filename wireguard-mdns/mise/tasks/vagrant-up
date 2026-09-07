@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Bring up the WireGuard + mDNS study VMs (server, client1, client2, foreign)"
-set -euo pipefail
-
-vagrant up

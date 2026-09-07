@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Bootstrap the already-started study VMs: pacman keyring + full upgrade, then reboot into the new kernel"
+set -euo pipefail
+
+vagrant provision --provision-with bootstrap,reload
