@@ -319,6 +319,49 @@ Two kinds, in `tests/`:
 The integration suite skips itself with a clear message (not a wall of
 individual connection-refused failures) if the VMs aren't up.
 
+## pyinfra config layout
+
+The wg0 mesh's own config (its CIDR, listen port, reverse DNS zone, each
+host's own address) used to be hardcoded, piecemeal, inside
+`wireguard.py`/`dns.py`/`mdns.py` themselves -- which meant the same IP
+literal was retyped in more than one file, with nothing stopping them from
+silently drifting apart. It's layered instead, in this order:
+
+1. **`pyinfra/deploys/defaults.py`** computes the mesh's network plan once
+   (`WG_IPV4_NETWORK`, `WG_IPV6_NETWORK`, `WG_LISTEN_PORT`, and the reverse
+   DNS zone derived from the IPv4 network) and exposes it as one dict,
+   `WG_DATA_DEFAULTS`. Nothing under `deploys/` imports `inventory.py` --
+   the dependency only ever goes the other way, so `deploys/` could become
+   a standalone, reusable module without ever knowing this specific
+   inventory exists.
+2. **`pyinfra/deploys/wireguard.py`/`dns.py`** declare
+   `@deploy(..., data_defaults=WG_DATA_DEFAULTS)` (a pyinfra mechanism:
+   the lowest-priority fallback for `host.data`) and read every value they
+   need -- `wg_ipv4`, `wg_ipv4_network`, `wg_listen_port`,
+   `wg_ipv4_reverse_zone`, ... -- off `host.data.wg_*`. Never a literal.
+3. **`pyinfra/group_data/{all,mesh}.py`** -- pyinfra's own [project
+   layout](https://docs.pyinfra.com/en/3.x/inventory-data.html#project-layout)
+   convention: one file per group, auto-loaded and merged into every host
+   in that group. `all.py` holds the SSH connection defaults shared by all
+   4 VMs; `mesh.py` holds the network plan this study actually uses --
+   it re-exports `WG_DATA_DEFAULTS` rather than retyping the numbers, so
+   it can't disagree with `defaults.py`. Point `mesh.py` at a different
+   `ipaddress.ip_network(...)`/port to actually change the plan.
+4. **`pyinfra/inventory.py`** only places topology: which 4 hosts exist,
+   which groups each belongs to (`hub`/`spokes`/`mesh`/`foreign_lan`), and
+   the handful of values with no sensible shared default (each host's own
+   `wg_ipv4`/`wg_ipv6` placement, client1's `foreign_lan_ip`, each host's
+   fake avahi service).
+5. **`pyinfra/deploys/internal_network.py`** composes all three concerns
+   into one public entrypoint, `setup_internal_network()` -- `deploy.py`
+   just calls that.
+
+`host.data.wg_*` therefore resolves host data > group data > deploy
+defaults (pyinfra's own precedence), so overriding the mesh's CIDR for a
+different inventory is a `group_data/mesh.py` edit, never a `deploys/*.py`
+one -- and the config is visible in one obvious place instead of buried
+across three deploy files.
+
 ## Notes
 
 - Boxes have no firewall by default, so no explicit forward/accept rules
@@ -344,6 +387,7 @@ individual connection-refused failures) if the VMs aren't up.
   pyinfra deploy (`pyinfra/`) instead -- see `pyinfra/deploy.py`'s file
   header for the one structural gotcha that came with the switch (facts
   vs. operations execution order, relevant to the WireGuard keypair
-  exchange). `deploy.py` itself is just an orchestrator: the actual
-  operations live in `pyinfra/deploys/{wireguard,dns,mdns}.py`, one
-  `@deploy`-wrapped function per concern.
+  exchange). `deploy.py` itself just calls `setup_internal_network()`,
+  which composes the three `@deploy`-wrapped concerns in
+  `pyinfra/deploys/{wireguard,dns,mdns}.py` -- see "pyinfra config
+  layout" below for how their config is organized.
