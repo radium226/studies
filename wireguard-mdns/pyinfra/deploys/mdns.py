@@ -9,7 +9,6 @@ import re
 from pyinfra import host
 from pyinfra.api import deploy
 from pyinfra.operations import files, pacman, systemd
-from pyinfra.operations.util import any_changed
 
 from facts import InterfaceWithAddress, NsswitchHostsLine
 
@@ -19,7 +18,7 @@ from facts import InterfaceWithAddress, NsswitchHostsLine
 JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
-@deploy("mDNS")
+@deploy("Setup mDNS")
 def mdns():
     pacman.packages(
         name="Install avahi and nss-mdns",
@@ -27,7 +26,7 @@ def mdns():
     )
 
     # --- Unicast mDNS repeater (replaces avahi's reflector) --------------
-    if host.name == "server":
+    if "hub" in host.groups:
         # Plain (non-templated) file -- config lives in the environment file
         # below instead, so this script is also plain, importable Python for
         # tests/test_repeater_unit.py to exercise directly, with no Jinja
@@ -58,22 +57,16 @@ def mdns():
             mode="644",
         )
 
+        repeater_changed = (
+            repeater_script.will_change or repeater_env.will_change or repeater_unit.will_change
+        )
         systemd.service(
             name="Start and enable the unicast mDNS repeater",
             service="mdns-unicast-repeater",
             running=True,
             enabled=True,
-        )
-
-        # See deploy.py's file header for why a plain
-        # `restarted=repeater_script.did_change() or ...` doesn't work here.
-        systemd.service(
-            name="Restart the unicast mDNS repeater (script/config changed)",
-            service="mdns-unicast-repeater",
-            running=True,
-            restarted=True,
-            daemon_reload=True,
-            _if=any_changed(repeater_script, repeater_env, repeater_unit),
+            restarted=repeater_changed,
+            daemon_reload=repeater_unit.will_change,
         )
 
     # --- mDNS (avahi) ----------------------------------------------------
@@ -93,7 +86,7 @@ def mdns():
     if host.name == "client1":
         foreign_iface = host.get_fact(InterfaceWithAddress, ip="192.168.60.11")
         avahi_allow_interfaces = f"wg0,{foreign_iface}"
-    elif host.name == "foreign":
+    elif "foreign_lan" in host.groups:
         avahi_allow_interfaces = host.get_fact(InterfaceWithAddress, ip="192.168.60.20")
     else:
         avahi_allow_interfaces = "wg0"
@@ -180,32 +173,19 @@ def mdns():
     )
 
     systemd.service(
-        name="Ensure systemd-resolved is running",
+        name="Restart systemd-resolved",
         service="systemd-resolved",
         running=True,
+        restarted=resolved_conf.will_change,
     )
 
-    # See deploy.py's file header for why a plain
-    # `restarted=resolved_conf.did_change()` doesn't work here.
-    systemd.service(
-        name="Restart systemd-resolved (resolved.conf changed)",
-        service="systemd-resolved",
-        running=True,
-        restarted=True,
-        _if=any_changed(resolved_conf),
+    avahi_changed = (
+        avahi_conf.will_change or avahi_ssh_service.will_change or avahi_fake_service.will_change
     )
-
     systemd.service(
         name="Start and enable avahi-daemon",
         service="avahi-daemon",
         running=True,
         enabled=True,
-    )
-
-    systemd.service(
-        name="Restart avahi-daemon (config/services changed)",
-        service="avahi-daemon",
-        running=True,
-        restarted=True,
-        _if=any_changed(avahi_conf, avahi_ssh_service, avahi_fake_service),
+        restarted=avahi_changed,
     )

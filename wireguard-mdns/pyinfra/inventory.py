@@ -35,6 +35,12 @@ spokes = [
     _node("client2", "192.168.56.12"),
 ]
 
+# Every host actually on the WireGuard mesh -- deploys/*.py checks this
+# group (`"mesh" in host.groups`) wherever hub and spokes share the same
+# behaviour, instead of repeating `host.name in ("server", "client1",
+# "client2")`.
+mesh = hub + spokes
+
 # Not part of the WireGuard mesh at all -- represents some other node that
 # happens to share client1's non-WireGuard "foreign_lan" network.
 foreign_lan = [_node("foreign", "192.168.60.20")]

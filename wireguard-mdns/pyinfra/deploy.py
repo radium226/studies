@@ -18,20 +18,21 @@
 # pubkeys; each spoke needs the server's) is the one place that actually
 # matters here -- see facts.py's WireguardKey for how it's handled.
 #
-# The same "prepare vs execute" split also rules out the obvious
-# `restarted=some_op.did_change()` for "only restart if config changed":
-# that expression is a plain Python call evaluated the instant a deploy
-# defines the operation, long before some_op has actually run against
-# the target -- pyinfra raises "Cannot evaluate operation result before
-# execution" rather than silently getting it wrong. The fix used
-# throughout deploys/ is `_if=any_changed(some_op, ...)` (or
-# `all_changed`) on a *second*, restart-only `systemd.service()` call:
-# `_if` takes a callback pyinfra runs later, once execution actually
-# reaches it, and skips the whole operation (cleanly reported as no
-# change) if it returns False. Keep the "ensure running/enabled" and
-# "restart on change" concerns in two separate operations, not one --
-# gating a single combined operation behind `_if` would also skip the
-# idempotent running/enabled check on a no-change run.
+# "only restart if config changed" -- every systemd.service() below uses
+# `restarted=some_op.will_change` (`some_op` being an earlier
+# files.template()/files.put() return value). `.will_change` is safe to
+# read immediately: pyinfra already diffs every idempotent operation
+# against current remote state during the "prepare" phase above (that's
+# what powers the "Detected changes" table before anything actually
+# runs), and the property just returns that already-computed result.
+# Its sibling `.did_change()` looks similar but does the opposite thing
+# and is *not* safe here: it reports what actually happened, so it
+# raises "Cannot evaluate operation result before execution" unless read
+# after that operation has actually run -- which, this early, it hasn't.
+# When more than one prior operation should trigger a restart, `or` them
+# together (`a.will_change or b.will_change`): both sides are plain
+# already-computed bools by this point, not deferred callbacks, so
+# there's nothing special about combining them.
 from deploys import dns, mdns, wireguard
 
 wireguard()

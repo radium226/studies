@@ -16,7 +16,6 @@
 from pyinfra import host, inventory
 from pyinfra.api import deploy
 from pyinfra.operations import files, pacman, server, systemd
-from pyinfra.operations.util import any_changed
 
 from facts import WireguardKey
 
@@ -31,7 +30,7 @@ WG_DNS_SERVER = "10.0.0.1"
 JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
-@deploy("WireGuard")
+@deploy("Setup WireGuard")
 def wireguard():
     # wireguard-tools is also installed inline by the WireguardKey fact
     # itself (see facts.py) -- pyinfra runs facts before any operation on
@@ -53,7 +52,7 @@ def wireguard():
     # one dedicated WireGuard interface per spoke instead of one shared wg0.
     # Both used ListenPort 51820, so if they're still running they'll keep
     # that UDP port bound and the new wg0 fails to start.
-    if host.name == "server":
+    if "hub" in host.groups:
         for iface in ("wg-c1", "wg-c2"):
             systemd.service(
                 name=f"Stop and disable {iface}, if present",
@@ -77,7 +76,7 @@ def wireguard():
     # collision to work around any more, and none of the peers here need
     # multicast in their AllowedIPs at all -- see the file header.
 
-    if host.name == "server":
+    if "hub" in host.groups:
         wg_conf = files.template(
             name="Write wg0.conf (server)",
             src="templates/wireguard/wg-interface.conf.j2",
@@ -102,7 +101,7 @@ def wireguard():
             ],
         )
 
-    elif host.name in ("client1", "client2"):
+    elif "spokes" in host.groups:
         spoke_address = {"client1": "10.0.0.2/24,fd00::2/64", "client2": "10.0.0.3/24,fd00::3/64"}[host.name]
         spoke_dns_ipv4 = {"client1": "10.0.0.2", "client2": "10.0.0.3"}[host.name]
         spoke_dns_ipv6 = {"client1": "fd00::2", "client2": "fd00::3"}[host.name]
@@ -134,27 +133,18 @@ def wireguard():
 
     # --- Bring the tunnel up ---------------------------------------------
 
-    if host.name in ("server", "client1", "client2"):
-        assert wg_conf is not None  # always set: same host.name check as above
+    if "mesh" in host.groups:
+        assert wg_conf is not None  # always set: same group check as above
 
         systemd.service(
             name="Start and enable WireGuard",
             service="wg-quick@wg0",
             running=True,
             enabled=True,
+            restarted=wg_conf.will_change,
         )
 
-        # See deploy.py's file header for why a plain
-        # `restarted=wg_conf.did_change()` doesn't work here.
-        systemd.service(
-            name="Restart WireGuard (config changed)",
-            service="wg-quick@wg0",
-            running=True,
-            restarted=True,
-            _if=any_changed(wg_conf),
-        )
-
-    if host.name == "server":
+    if "hub" in host.groups:
         # A drop-in under /etc/sysctl.d/ rather than appending to the
         # monolithic /etc/sysctl.conf -- same reasoning as named's
         # systemd drop-in above: ours lives in its own clearly-owned

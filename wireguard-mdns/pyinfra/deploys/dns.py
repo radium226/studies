@@ -9,7 +9,6 @@ from pyinfra import host
 from pyinfra.api import deploy
 from pyinfra.facts.files import File
 from pyinfra.operations import files, pacman, systemd
-from pyinfra.operations.util import any_changed
 
 # See deploys/wireguard.py's JINJA_ENV_KWARGS for why every
 # files.template() call here passes this, even though none of these
@@ -17,14 +16,14 @@ from pyinfra.operations.util import any_changed
 JINJA_ENV_KWARGS = {"trim_blocks": True, "lstrip_blocks": True}
 
 
-@deploy("DNS")
+@deploy("Setup DNS")
 def dns():
     pacman.packages(
         name="Install bind",
         packages=["bind"],
     )
 
-    if host.name == "server":
+    if "hub" in host.groups:
         named_conf = files.template(
             name="Deploy named.conf",
             src="templates/dns/named.conf.j2",
@@ -82,23 +81,14 @@ def dns():
             service="named",
             running=True,
             enabled=True,
-        )
-
-        # See deploy.py's file header for why a plain
-        # `restarted=named_conf.did_change()` doesn't work here.
-        systemd.service(
-            name="Restart named (config changed)",
-            service="named",
-            running=True,
-            restarted=True,
-            daemon_reload=True,
-            _if=any_changed(named_conf, named_drop_in),
+            restarted=named_conf.will_change or named_drop_in.will_change,
+            daemon_reload=named_drop_in.will_change,
         )
 
     # Plain (non-templated) file: HOSTNAME, IPV4, IPV6 and DNS_SERVER are all
     # derived at runtime from wg0 itself (see wg-dns-register's own header),
     # so the same script deploys unchanged to every peer.
-    if host.name in ("server", "client1", "client2"):
+    if "mesh" in host.groups:
         files.put(
             name="Deploy the DNS self-registration script",
             src="files/dns/wg-dns-register",
