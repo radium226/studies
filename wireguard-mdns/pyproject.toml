@@ -1,0 +1,16 @@
+[project]
+name = "wireguard-mdns-tests"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["pyinfra>=3.10"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires the Vagrant VMs to be up (`vagrant up`); SSHes into them over the underlay network.",
+]

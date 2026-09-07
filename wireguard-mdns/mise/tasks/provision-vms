@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Configure WireGuard + mDNS on the already-bootstrapped study VMs by running pyinfra"
+set -euo pipefail
+
+cd pyinfra
+uv run pyinfra inventory.py deploy.py -y

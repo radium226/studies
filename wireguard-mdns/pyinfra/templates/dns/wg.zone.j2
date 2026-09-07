@@ -1,0 +1,17 @@
+$TTL 300
+@   IN  SOA server.wg. admin.wg. (
+        1         ; serial
+        3600      ; refresh
+        900       ; retry
+        604800    ; expire
+        300 )     ; minimum
+    IN  NS  server.wg.
+
+; Glue for the NS record above -- required at zone-load time for an
+; in-bailiwick NS target (BIND refuses to load the zone at all
+; otherwise: "NS 'server.wg' has no address records"). server.wg also
+; self-registers dynamically like everyone else on wg0's PostUp; this
+; is just the one record that has to already exist before the zone can
+; even load enough to accept that update.
+server  IN  A     {{ wg_ipv4 }}
+server  IN  AAAA  {{ wg_ipv6 }}

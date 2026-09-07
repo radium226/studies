@@ -1,0 +1,16 @@
+[Unit]
+Description=Unicast mDNS repeater for the WireGuard hub
+After=wg-quick@wg0.service network-online.target
+Requires=wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/mdns-unicast-repeater.env
+ExecStart=/usr/local/bin/mdns-unicast-repeater
+Restart=on-failure
+RestartSec=2
+DynamicUser=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
