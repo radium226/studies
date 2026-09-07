@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-REPEATER_PATH = Path(__file__).resolve().parent.parent / "ansible" / "files" / "mdns-unicast-repeater"
+REPEATER_PATH = Path(__file__).resolve().parent.parent / "pyinfra" / "files" / "mdns-unicast-repeater"
 
 
 def _load_repeater_module():
@@ -23,6 +23,7 @@ def _load_repeater_module():
     # explicitly instead.
     loader = SourceFileLoader("mdns_unicast_repeater", str(REPEATER_PATH))
     spec = importlib.util.spec_from_file_location(loader.name, REPEATER_PATH, loader=loader)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)

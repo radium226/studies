@@ -57,9 +57,10 @@ Vagrant.configure("2") do |config|
       # otherwise), and enough packages have been split/renamed upstream
       # (e.g. gcc-libs -> libgcc/libstdc++) that installing anything without
       # a full -Syu first hits pacman's "partial upgrade" file-conflict
-      # errors. Ansible also needs python, which these boxes don't ship
-      # with. The full upgrade is a big download, so retry a few times in
-      # case of a transient mirror timeout.
+      # errors. Unlike Ansible, pyinfra is agentless (plain SSH + shell
+      # commands, no Python needed on the target), so nothing here needs
+      # installing for its sake. The full upgrade is a big download, so
+      # retry a few times in case of a transient mirror timeout.
       node.vm.provision "bootstrap", type: "shell" do |shell|
         shell.inline = <<~SHELL
           set -e
@@ -77,8 +78,6 @@ Vagrant.configure("2") do |config|
             echo "pacman -Su failed, retrying ($n)..." >&2
             sleep 5
           done
-
-          pacman -S --noconfirm --needed python
         SHELL
       end
 
@@ -88,17 +87,21 @@ Vagrant.configure("2") do |config|
       # anything tries to load it.
       node.vm.provision :reload
 
-      # Run the playbook once, after every VM is up, against all of them at
-      # once -- the playbook needs every WireGuard host's public key to
-      # configure the others' peers, so a single run over a static
-      # inventory (not Vagrant's per-machine auto inventory) is required.
-      if name == ALL_NODES.last
-        node.vm.provision "configure-wireguard-and-mdns", type: "ansible" do |ansible|
-          ansible.playbook = "ansible/playbook.yml"
-          ansible.inventory_path = "ansible/inventory.ini"
-          ansible.limit = "all"
-        end
-      end
     end
+  end
+
+  # Run pyinfra once, after every VM is up, against all of them at once --
+  # the deploy needs every WireGuard host's public key to configure the
+  # others' peers, so a single run over the static pyinfra/inventory.py
+  # (not Vagrant's per-machine auto inventory) is required. A global
+  # trigger (not a per-machine `vagrant provision` block, unlike the old
+  # Ansible provisioner) is what gets this to run exactly once per `vagrant
+  # up`/`vagrant provision` invocation, after every machine in it is up --
+  # Vagrant has no built-in pyinfra provisioner. Runs on the host, not
+  # inside any VM, hence `uv run` rather than a VM provisioner block.
+  config.trigger.after [:up, :provision] do |trigger|
+    trigger.name = "pyinfra"
+    trigger.info = "Configuring WireGuard + mDNS with pyinfra..."
+    trigger.run = { inline: "sh -c 'cd pyinfra && uv run pyinfra inventory.py deploy.py'" }
   end
 end

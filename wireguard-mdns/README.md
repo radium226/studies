@@ -66,7 +66,7 @@ tunnel at all, and scales to any number of spokes by just adding an
 address to its peer list.
 
 Two details that mattered when building it (see
-`ansible/files/mdns-unicast-repeater`):
+`pyinfra/files/mdns-unicast-repeater`):
 
 - The repeater's outbound socket must also bind to port 5353. A socket
   that sends from a random ephemeral port gets silently ignored by
@@ -128,9 +128,12 @@ vagrant up
 ```
 
 This boots `server`, `client1`, `client2`, `foreign` (Arch Linux, libvirt
-provider), then runs `ansible/playbook.yml` against all of them at once
-(needed since the playbook wires each host's WireGuard public key into
-the others' peer config).
+provider), then a Vagrant trigger runs `pyinfra/deploy.py` (via `uv run
+pyinfra`) against all of them at once (needed since the deploy wires each
+host's WireGuard public key into the others' peer config). Re-running it
+by hand later: `cd pyinfra && uv run pyinfra inventory.py deploy.py`, or
+via the [mise](https://mise.jdx.dev) tasks in `mise/tasks/`:
+`mise run vagrant-up` / `mise run pyinfra`.
 
 If `vagrant`/`virsh` report a permissions error, make sure your user is
 in the `libvirt` group and `libvirtd.service` is running, then log out
@@ -281,13 +284,15 @@ unqualified query.
 uv sync
 uv run pytest              # everything (needs the VMs up for most of it)
 uv run pytest -m "not integration"   # unit tests only: fast, no VMs needed
+mise install                         # installs ty (see mise.toml)
+mise exec -- ty check --python .venv # type-checks pyinfra/ and tests/
 ```
 
 Two kinds, in `tests/`:
 
 - **Unit** (`test_repeater_unit.py`): the repeater's pure forwarding
   logic (`forward_targets` -- "which peers should this packet go to"),
-  loaded directly from `ansible/files/mdns-unicast-repeater` by path.
+  loaded directly from `pyinfra/files/mdns-unicast-repeater` by path.
   No sockets, no VMs, runs in well under a second.
 - **Integration** (everything else, marked `@pytest.mark.integration`):
   SSHes into the live VMs and checks the actual behavior this whole
@@ -310,7 +315,7 @@ individual connection-refused failures) if the VMs aren't up.
   were added beyond `net.ipv4.ip_forward` (needed on `server` so unicast
   traffic between client1 and client2, e.g. an actual SSH connection to a
   discovered host, gets routed through the hub).
-- Re-running `vagrant provision` re-applies the whole playbook and always
+- Re-running `vagrant provision` re-applies the whole deploy and always
   restarts WireGuard/avahi/the repeater -- fine for this kind of
   throwaway study, not written for idempotent no-op re-runs.
 - First boot runs a full `pacman -Syu` (the box image is stale enough
@@ -322,6 +327,11 @@ individual connection-refused failures) if the VMs aren't up.
   pacman/internet access won't). Fix: `iptables -I DOCKER-USER -i virbr+
   -j ACCEPT` and `-o virbr+ -j ACCEPT` (runtime-only, not persisted).
 - If you're re-running this against VMs built by an earlier version of
-  this study, the playbook cleans up the old `wg-c1`/`wg-c2` interfaces
-  on the server automatically (both used to listen on the same UDP port
-  the new shared `wg0` needs).
+  this study, the deploy cleans up the old `wg-c1`/`wg-c2` interfaces on
+  the server automatically (both used to listen on the same UDP port the
+  new shared `wg0` needs).
+- Deploying used to be an Ansible playbook (`ansible/`); it's now a
+  pyinfra deploy (`pyinfra/`) instead -- see `pyinfra/deploy.py`'s file
+  header for the one structural gotcha that came with the switch (facts
+  vs. operations execution order, relevant to the WireGuard keypair
+  exchange).
