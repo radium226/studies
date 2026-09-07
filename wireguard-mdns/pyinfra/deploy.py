@@ -37,7 +37,7 @@ from facts import InterfaceWithAddress, NsswitchHostsLine, WireguardKey
 
 pacman.packages(
     name="Install WireGuard and mDNS packages",
-    packages=["wireguard-tools", "avahi", "nss-mdns", "bind"],
+    packages=["wireguard-tools", "avahi", "nss-mdns", "bind", "python"],
     update=True,
 )
 
