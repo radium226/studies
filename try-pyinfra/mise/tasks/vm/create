@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Boot the Arch Vagrant box and bootstrap it via pyinfra"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT}"
+exec uv run arch-bootstrap vm create "$@"

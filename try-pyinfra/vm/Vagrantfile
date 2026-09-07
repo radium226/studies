@@ -1,0 +1,15 @@
+# -*- mode: ruby -*-
+# Minimal Arch Linux VM, bootstrapped by the same pyinfra deploy used for
+# the qcow2 and SD card targets (see bootstrap/operations.py). This
+# Vagrantfile only needs to boot something SSH-reachable with a
+# passwordless-sudo user -- generic/arch already provides that, so there
+# is no chroot/mount dance here at all, unlike the qcow2/SD card targets.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/arch"
+
+  config.vm.provider :libvirt do |lv|
+    lv.memory = 1024
+    lv.cpus = 1
+  end
+end

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Build an Arch Linux qcow2 image and bootstrap it via pyinfra"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT}"
+exec uv run arch-bootstrap qcow2 create "$@"
