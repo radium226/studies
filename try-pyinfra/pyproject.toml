@@ -1,0 +1,24 @@
+[project]
+name = "try-pyinfra"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "radium226", email = "radium226@rouages.xyz" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.1",
+    "pyinfra>=3.10.0",
+]
+
+[project.scripts]
+arch-bootstrap = "arch_bootstrap.cli:cli"
+
+[tool.uv.build-backend]
+module-name = "arch_bootstrap"
+module-root = ""
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

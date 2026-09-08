@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Boot the Arch qcow2 image with qemu"
+set -euo pipefail
+cd "${MISE_PROJECT_ROOT}"
+exec uv run arch-bootstrap qcow2 boot "$@"
