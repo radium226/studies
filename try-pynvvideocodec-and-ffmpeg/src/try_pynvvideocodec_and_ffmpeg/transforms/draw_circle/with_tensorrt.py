@@ -80,10 +80,12 @@ class WithTensorRT:
         engine: trt.ICudaEngine,
         context: trt.IExecutionContext,
         radius_ratio: torch.Tensor,
+        stream: torch.cuda.Stream,
     ):
         self.engine = engine  # The context needs its engine alive
         self.context = context
         self.radius_ratio = radius_ratio  # 0-d float32 tensor, on the GPU
+        self.stream = stream
 
     @staticmethod
     @contextmanager
@@ -109,7 +111,11 @@ class WithTensorRT:
         )
         radius_ratio = torch.tensor(settings.radius_ratio, dtype=torch.float32, device=device)
         context.set_tensor_address(RADIUS_RATIO_INPUT, radius_ratio.data_ptr())
-        yield WithTensorRT(engine, context, radius_ratio)
+        # TensorRT's own stream: on CUDA's legacy default stream (PyTorch's, unless
+        # told otherwise), which implicitly syncs with every other stream,
+        # TensorRT adds `cudaStreamSynchronize()` calls to stay correct, and warns
+        stream = torch.cuda.Stream(device=device)
+        yield WithTensorRT(engine, context, radius_ratio, stream)
 
     def transform_frame(self, frame: torch.Tensor) -> torch.Tensor:
         frame = frame.contiguous()
@@ -117,8 +123,14 @@ class WithTensorRT:
         # Like ONNX Runtime's IO binding: raw device addresses, nothing is copied
         self.context.set_tensor_address(FRAME_INPUT, frame.data_ptr())
         self.context.set_tensor_address(OUTPUT_NAME, output.data_ptr())
-        # Enqueued on PyTorch's own stream: ordered with PyTorch's kernels, no sync
-        # needed here (unlike ONNX Runtime, which has its own stream)
-        if not self.context.execute_async_v3(torch.cuda.current_stream().cuda_stream):
+        # Ordered with PyTorch on the GPU, without blocking the CPU: TensorRT's stream
+        # waits for the frame to be ready, then PyTorch's stream waits for the output
+        current = torch.cuda.current_stream()
+        self.stream.wait_stream(current)
+        if not self.context.execute_async_v3(self.stream.cuda_stream):
             raise RuntimeError("TensorRT failed to run the engine")
+        current.wait_stream(self.stream)
+        # Allocated on PyTorch's stream, written on TensorRT's: tell the caching
+        # allocator, so that the memory isn't reused before TensorRT is done with it
+        output.record_stream(self.stream)
         return output

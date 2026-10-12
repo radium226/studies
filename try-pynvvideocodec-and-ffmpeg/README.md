@@ -322,8 +322,8 @@ the engine (35 KB, a few seconds) with an optimization profile for frames from
 video have the same), and binds the radius tensor. `transform_frame` then hands
 TensorRT the raw GPU addresses of the input frame and of a fresh output tensor
 (`set_tensor_address`, like ONNX Runtime's IO binding), and enqueues the engine
-**on PyTorch's own CUDA stream** (`execute_async_v3(torch.cuda.current_stream().cuda_stream)`):
-unlike ONNX Runtime, no synchronization is needed between PyTorch and TensorRT.
+on its own CUDA stream (`execute_async_v3`), ordered with PyTorch's through
+`wait_stream()`: GPU-side waits, the CPU doesn't block.
 
 Things that were not obvious:
 
@@ -335,6 +335,11 @@ Things that were not obvious:
   re-exports a compiled one (`tensorrt_bindings.tensorrt`), invisible to type
   checkers: importing that one directly gives an untyped module instead of an
   error on every `trt.` attribute.
+- TensorRT runs on its own CUDA stream. On PyTorch's (CUDA's legacy default stream, which
+  implicitly syncs with every other stream), it warns "Using default stream in
+  enqueueV3() may lead to performance issues" and adds `cudaStreamSynchronize()`
+  calls. The two streams are ordered with `wait_stream()`, on the GPU, without
+  blocking the CPU.
 - GPU only: `run --backend=cpu --tensorrt-engine=…` is rejected.
 
 Outputs are bit-identical to plain PyTorch, ONNX and SafeTensors (same MD5 over
