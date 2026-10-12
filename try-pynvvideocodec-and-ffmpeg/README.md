@@ -267,11 +267,12 @@ Things that were not obvious:
   (`y[-1] + 1` from the `arange`) avoids it.
 - ONNX Runtime places a few shape-related nodes (`Cast`, `Squeeze`, on 4 to 8
   bytes) on the CPU, and warns about it; its profiler shows every node touching
-  frame-sized data on CUDA. PCIe traffic on the GPU backend still goes from
-  ~14 to ~60 MB/s (to the GPU) on the 100s clip: not frames (6 MB each at ~270
-  fps would be ~1.6 GB/s), most likely the overhead of ~20 kernel launches and
-  scalar copies per frame instead of a few with PyTorch. Not confirmed without
-  Nsight Systems.
+  frame-sized data on CUDA. `nvidia-smi dmon` reports ~36 MB/s to the GPU with
+  ONNX against ~14 MB/s with plain PyTorch, but the GPU's own counters (Nsight
+  Systems GPU metrics, sampled continuously) only show ~6% more PCIe traffic,
+  and Nsight shows the same 13 KB of host-to-device copies: `nvidia-smi`
+  samples a short window once per second, which per-frame bursts skew. Not a
+  real difference, then.
 - On the CPU, ONNX Runtime is ~2.5x slower than `DrawCircleWithoutAnything` (10 vs 25 fps):
   the model recomputes the mask for every frame, whereas `DrawCircleWithoutAnything` computes
   it once in `open()`.
@@ -310,8 +311,16 @@ and between `WithONNX` and `WithSafeTensors` (red), on both backends.
 | 1080p30, 100s | `gpu`        | 3000 | 11.2s | ~270 |
 | 1080p30, 100s | `gpu` + ONNX | 3000 | 11.2s | ~270 |
 
-The CPU backend is bound by libx265 (software HEVC encoding). The GPU backend is
-not optimized: the per-frame sync is the first thing to look at.
+The CPU backend is bound by libx265 (software HEVC encoding). On the GPU, Nsight
+Systems shows ~0.8 ms of CUDA kernels per frame out of ~3.7 ms: the GPU waits on
+the Python side (one synchronization per frame, before NVENC) most of the time.
+
+Two GPU costs Nsight pointed at are gone: the `torch.cat` adding the alpha
+channel for NVENC (~350 µs per frame; `NvEncSink` now keeps one RGBA buffer, alpha
+set once, and only fills its RGB channels) and `WithoutAnything`'s
+`frame.clone()` (a 6 MB copy per frame; now a single `torch.where`). GPU time per
+frame went from 868 to 792 µs, but the frame rate didn't move (~270 fps on the
+100s clip): the GPU was never the bottleneck.
 
 ### Why colors shift on the GPU
 
@@ -328,12 +337,16 @@ every tool guesses, and they don't all guess the same way:
 |---|---|---|
 | ffmpeg (`generate-sample.sh`, CPU backend) | always BT.601 | its defaults |
 | PyNvVideoCodec decoder (YUV → RGB) | BT.601 for 640×480, BT.709 for 1920×1080; follows the tags when there are some | its RGB output vs ffmpeg's, matrix by matrix: 0.35 mean difference with BT.709 |
-| NVENC (RGBA → YUV) | BT.601 for 640×480, BT.709 from 1024×576 up | raw YUV of solid colors vs each formula: exact match |
+| PyNvVideoCodec encoder (RGBA → YUV, before NVENC) | BT.601 up to 768×576, BT.709 as soon as the width is above 768 or the height above 576 | raw YUV of solid colors vs each formula, at 20 sizes: exact match every time |
 | NVENC output | writes no matrix tag (`color_space=unknown`) | `ffprobe` |
 
-Neither the decoder nor the encoder exposes an option to pick the matrix
+Both conversions are CUDA kernels inside PyNvVideoCodec, not the NVDEC / NVENC
+hardware: Nsight Systems shows `YuvToRgbKernel` after decoding and
+`ConvertRGB2YUV` before encoding, each preceded by a tiny
+`cudaMemcpyToSymbol` (about 20 bytes, twice per frame), most likely the
+matrix coefficients. Neither the decoder nor the encoder exposes an option to pick the matrix
 (`CreateEncoder` only knows `preset`, `tuning_info`, `bf`, `gop`, rate control…).
-So, on the 1080p sample, two guesses go wrong:
+So, on the first (untagged) 1080p sample, two guesses went wrong:
 
 ```mermaid
 flowchart LR
@@ -342,13 +355,26 @@ flowchart LR
     out -- "ffmpeg guesses BT.601 (wrong)" --> shown[colors shifted again]
 ```
 
-The fix is to tag both ends: a BT.709-tagged sample
-(`-vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709
--color_trc bt709 -color_range tv`), and the GPU output tagged with what NVENC
-used, when muxing (`-bsf:v hevc_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1`,
-without re-encoding). Tried by hand: the green bar comes back as `(1, 254, 0)`,
-and the RGB PSNR between input and output goes from 27 to 39 dB. Not applied to
-the code yet.
+The fix is to tag everything, with the matrix really used:
+
+- `generate-sample.sh` converts to YUV with BT.709 and tags the file as such
+  (`scale=out_color_matrix=bt709,setparams=…`: the encoder takes the primaries
+  and transfer tags from the frames, so `-color_primaries` alone isn't enough).
+- The GPU backend tags its output, when muxing and without re-encoding, with
+  `-bsf:v hevc_metadata=…matrix_coefficients=…`: BT.601 or BT.709 depending on
+  the size, following the measured rule (`rgb_to_yuv_standard()` in
+  `backends/gpu.py`).
+- The CPU backend encodes with BT.709 and tags it too.
+
+Result, mean RGB difference between input and output over all 300 frames:
+0.4 (GPU) and 1.1 (CPU, mostly libx265 compression around edges); the green bar
+comes back as `(1, 254, 0)` instead of `(18, 253, 8)`. A 640×480 BT.601 clip
+comes out tagged BT.601 (`smpte170m`).
+
+Careful when measuring: ffmpeg's `psnr` filter reported 18 dB between the GPU
+and CPU outputs although their pixels only differ by 0.9 on average. Comparing
+the decoded RGB pixels directly is more reliable when the two files carry
+different tags.
 
 ### Checking that frames stay on the GPU
 
@@ -384,6 +410,30 @@ CPU tensor sent to the GPU while developing. Limits: it is a prototype, it only
 sees PyTorch's own operations (not PyNvVideoCodec's), and it also raises on the
 pipeline's deliberate `synchronize()`, so it is not left on.
 
-The most precise tool is **Nsight Systems** (`nsys profile --trace=cuda`),
-which lists every CUDA memory copy with its direction and size. Not installed
-here, so not tried.
+**Nsight Systems** (`nsys profile --trace=cuda`) lists every CUDA memory copy
+with its direction and size. On the 10s clip (300 frames), GPU backend:
+
+| | Host → GPU | GPU → host | GPU → GPU |
+|---|---|---|---|
+| `WithoutAnything` | 608 copies, 13 KB | 1 copy, a few bytes | 300 copies, 2.5 GB (600, 4.4 GB, before removing its `clone()`) |
+| `WithONNX` | 613 copies, 13 KB | none | 300 copies, 2.5 GB |
+| `WithSafeTensors` | 610 copies, 13 KB | none | 300 copies, 2.5 GB |
+
+No frame ever crosses PCIe. The tiny host → GPU copies are the color-conversion
+coefficients (`cudaMemcpyToSymbol`, see the colors section). The GPU → GPU
+copies stay in the GPU's memory, but they are copies all the same:
+
+- One 8.3 MB copy per frame in every variant: PyNvVideoCodec copies our RGBA
+  tensor into its own input buffer (`cuMemcpy2DAsync`) before NVENC reads it.
+  So the hand-off to the encoder is zero-copy over PCIe, not inside the GPU.
+- `WithoutAnything` used to add a 6.2 MB copy per frame, its `frame.clone()`:
+  it now uses `torch.where`, like the model behind ONNX and SafeTensors.
+
+Kernel launches per frame: ~6 with `WithoutAnything` (the mask is computed once),
+~19 with `WithSafeTensors` and ~21 with `WithONNX` (the model recomputes the mask
+for every frame).
+
+Run as root (`sudo nsys profile --gpu-metrics-devices=all …`; GPU counters
+require profiling permissions, `ERR_NVGPUCTRPERM` otherwise), Nsight also
+samples the GPU's PCIe throughput continuously: ~0.7% of the link to the GPU
+and ~1.1% from it, the same with and without ONNX.

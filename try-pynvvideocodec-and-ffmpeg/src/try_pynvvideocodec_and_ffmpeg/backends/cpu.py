@@ -82,7 +82,10 @@ class FfmpegSink:
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-video_size", f"{info.width}x{info.height}",
             "-framerate", f"{info.fps.numerator}/{info.fps.denominator}", "-i", "pipe:0",
+            # RGB to YUV with BT.709, and say so in the file (or players guess)
+            "-vf", "scale=out_color_matrix=bt709:out_range=tv,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv",
             "-c:v", "libx265", "-pix_fmt", "yuv420p", "-tag:v", "hvc1",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
             "-x265-params", "log-level=error",
             str(path),
         ]

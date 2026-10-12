@@ -36,6 +36,5 @@ class WithoutAnything:
         yield WithoutAnything(mask)
 
     def transform_frame(self, frame: torch.Tensor) -> torch.Tensor:
-        output = frame.clone()
-        output[self.mask] = 255
-        return output
+        # One kernel writing a new frame (a `clone()` then a masked write was two passes)
+        return torch.where(self.mask.unsqueeze(-1), 255, frame)

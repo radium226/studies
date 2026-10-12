@@ -9,6 +9,7 @@ from collections.abc import Generator, Iterator
 from contextlib import closing, contextmanager
 from fractions import Fraction
 from pathlib import Path
+from typing import Literal
 
 import PyNvVideoCodec as nvc
 import structlog
@@ -71,6 +72,19 @@ class NvDecSource:
         pass
 
 
+def rgb_to_yuv_standard(width: int, height: int) -> Literal["bt601", "bt709"]:
+    """The matrix PyNvVideoCodec uses to convert RGB input to YUV before NVENC.
+
+    It's not configurable nor documented: measured by encoding solid colors and
+    reading back the raw YUV. Up to 768x576 (SD), BT.601; above, BT.709.
+    """
+    return "bt601" if width <= 768 and height <= 576 else "bt709"
+
+
+# H.265 VUI codes (colour_primaries, transfer_characteristics, matrix_coefficients)
+VUI_CODES = {"bt601": 6, "bt709": 1}
+
+
 class NvEncSink:
     def __init__(self, path: Path, info: VideoInfo):
         fps = f"{info.fps.numerator}/{info.fps.denominator}"
@@ -81,20 +95,29 @@ class NvEncSink:
         self.encoder = nvc.CreateEncoder(
             info.width, info.height, "ABGR", False, codec="hevc", preset="P4", fps=fps, bf=0
         )
-        self.alpha = torch.full((info.height, info.width, 1), 255, dtype=torch.uint8, device="cuda")
-        log.debug("nvenc.encoder", input_format="ABGR", codec="hevc", preset="P4", b_frames=0, fps=fps)
+        # One RGBA buffer for the whole video, alpha set once: each frame only
+        # fills the RGB channels (no `torch.cat`, no allocation per frame)
+        self.rgba = torch.full((info.height, info.width, 4), 255, dtype=torch.uint8, device="cuda")
+        standard = rgb_to_yuv_standard(info.width, info.height)
+        log.debug(
+            "nvenc.encoder", input_format="ABGR", codec="hevc", preset="P4", b_frames=0, fps=fps, rgb_to_yuv=standard
+        )
         self.frames = 0
         self.packets = 0
         self.bytes = 0
 
         # NVENC outputs an Annex-B HEVC elementary stream: let ffmpeg wrap it
         # into MP4 without re-encoding. Raw streams carry no timestamps, hence
-        # `-framerate`.
+        # `-framerate`. NVENC doesn't say which RGB to YUV matrix was used: the
+        # `hevc_metadata` filter writes it in the stream (still no re-encoding),
+        # or players would guess (ffmpeg always guesses BT.601).
+        code = VUI_CODES[standard]
+        vui = f"colour_primaries={code}:transfer_characteristics={code}:matrix_coefficients={code}:video_full_range_flag=0"
         # fmt: off
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "hevc", "-framerate", fps, "-i", "pipe:0",
-            "-c:v", "copy", "-tag:v", "hvc1",
+            "-c:v", "copy", "-tag:v", "hvc1", "-bsf:v", f"hevc_metadata={vui}",
             str(path),
         ]
         # fmt: on
@@ -102,7 +125,8 @@ class NvEncSink:
         self.muxer = subprocess.Popen(command, stdin=subprocess.PIPE)
 
     def write(self, frame: torch.Tensor) -> None:
-        rgba = torch.cat([frame, self.alpha], dim=2)
+        rgba = self.rgba
+        rgba[..., :3].copy_(frame)
         # PyTorch kernels are asynchronous and NVENC copies its input on its own
         # stream: wait, or it reads `rgba` before it is written. This also
         # guarantees the source's surface has been read before it is recycled.
