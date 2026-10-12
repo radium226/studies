@@ -24,9 +24,13 @@ memory. Copying them to the computer's main memory and back is slow (about 6 MB
 per picture, hundreds of times per second), so the whole trick is to keep them
 **on the graphics card** from start to end:
 
-```
-video file ──▶ NVDEC ──▶ draw the circle (PyTorch) ──▶ NVENC ──▶ new video file
-               └──────────── all on the graphics card ────────────┘
+```mermaid
+flowchart LR
+    input[video file] --> nvdec
+    subgraph gpu [all on the graphics card]
+        nvdec["NVDEC: decompress"] --> draw["draw the circle (PyTorch)"] --> nvenc["NVENC: compress"]
+    end
+    nvenc --> output[new video file]
 ```
 
 Only the compressed video, much smaller, goes in and out. Each step hands the
@@ -86,9 +90,9 @@ src/try_pynvvideocodec_and_ffmpeg/
 │   └── cpu.py            # CPUBackend: FfmpegSource, FfmpegSink (ffmpeg subprocesses)
 ├── transforms/
 │   └── draw_circle/
+│       ├── model.py             # Model (as DrawCircleModel): the torch.nn.Module behind ONNX and SafeTensors
 │       ├── without_anything.py  # WithoutAnything (as DrawCircleWithoutAnything): plain PyTorch
-│       ├── with_onnx.py         # Model (as DrawCircleModel), export_onnx(),
-│       │                        # WithONNX (as DrawCircleWithONNX): ONNX Runtime
+│       ├── with_onnx.py         # export_onnx(), WithONNX (as DrawCircleWithONNX): ONNX Runtime
 │       └── with_safetensors.py  # export_safetensors(),
 │                                # WithSafeTensors (as DrawCircleWithSafeTensors): Model + weights
 ├── pipeline.py           # run(): source → transform → sink, with timing and PCIe logging
@@ -110,11 +114,13 @@ where anything expensive is loaded (the ONNX Runtime session, the circle mask):
 ```python
 # backend_type: type[Backend], e.g. GPUBackend
 # transformer_type: type[FrameTransformer[S]], e.g. DrawCircleWithONNX, with its settings: S
-with backend_type.create() as backend, backend.open_source(input_path) as source:
-    with transformer_type.open(source.info, backend.device, settings) as frame_transformer:
-        with backend.open_sink(output_path, source.info) as sink:
-            for frame in source:
-                sink.write(frame_transformer.transform_frame(frame))
+with ExitStack() as stack:  # Exits in reverse order: sink, transformer, source, backend
+    backend = stack.enter_context(backend_type.create())
+    source = stack.enter_context(backend.open_source(input_path))
+    frame_transformer = stack.enter_context(transformer_type.open(source.info, backend.device, settings))
+    sink = stack.enter_context(backend.open_sink(output_path, source.info))
+    for frame in source:
+        sink.write(frame_transformer.transform_frame(frame))
 ```
 
 The abstractions are `Protocol`s rather than ABCs: the CPU and
@@ -134,28 +140,25 @@ Logs are structured (structlog):
 
 ### GPU (`--backend=gpu`)
 
-```
-input.mp4
-   │
-   ▼
-SimpleDecoder's demuxer (libavformat, bundled)          CPU
-   │ H.264 packets
-═══╪══════════════════════════════════════════════════
-   ▼                                                    GPU
-NVDEC ─▶ NV12 ─▶ RGB (converted by PyNvVideoCodec)
-            │ torch.from_dlpack (zero-copy)
-            ▼
-         draw circle   (PyTorch)
-            │ + alpha, __cuda_array_interface__ (zero-copy)
-            ▼
-         NVENC (RGBA → YUV, then HEVC)
-   │ HEVC Annex-B packets
-═══╪══════════════════════════════════════════════════
-   ▼                                                    CPU
-ffmpeg -f hevc -i pipe:0 -c copy (stdin pipe)
-   │
-   ▼
-output.mp4
+```mermaid
+flowchart TB
+    input[input.mp4] --> demuxer["SimpleDecoder's demuxer (libavformat, bundled)"]
+    subgraph cpu_in [CPU]
+        demuxer
+    end
+    demuxer -- H.264 packets --> nvdec
+    subgraph gpu [GPU]
+        nvdec["NVDEC: NV12, converted to RGB by PyNvVideoCodec"]
+        draw["draw the circle (PyTorch)"]
+        nvenc["NVENC: RGBA to YUV, then HEVC"]
+        nvdec -- "torch.from_dlpack (zero-copy)" --> draw
+        draw -- "+ alpha, __cuda_array_interface__ (zero-copy)" --> nvenc
+    end
+    nvenc -- HEVC Annex-B packets --> muxer
+    subgraph cpu_out [CPU]
+        muxer["ffmpeg -f hevc -i pipe:0 -c copy (stdin pipe)"]
+    end
+    muxer --> output[output.mp4]
 ```
 
 Only compressed data crosses the PCIe bus: the H.264 packets going in, and the
@@ -163,14 +166,12 @@ HEVC packets coming out.
 
 ### CPU (`--backend=cpu`)
 
-```
-input.mp4 ─▶ ffmpeg -f rawvideo -pix_fmt rgb24 pipe:1
-                │ raw RGB frames (stdout pipe)
-                ▼
-             draw circle   (PyTorch, on the CPU)
-                │ raw RGB frames (stdin pipe)
-                ▼
-             ffmpeg -f rawvideo … -i pipe:0 -c:v libx265 ─▶ output.mp4
+```mermaid
+flowchart LR
+    input[input.mp4] --> decoder["ffmpeg -f rawvideo -pix_fmt rgb24 pipe:1"]
+    decoder -- "raw RGB frames (stdout pipe)" --> draw["draw the circle (PyTorch, on the CPU)"]
+    draw -- "raw RGB frames (stdin pipe)" --> encoder["ffmpeg -f rawvideo … -i pipe:0 -c:v libx265"]
+    encoder --> output[output.mp4]
 ```
 
 `FfmpegSource` reads each frame into one reused buffer, wrapped as a tensor
@@ -312,13 +313,42 @@ and between `WithONNX` and `WithSafeTensors` (red), on both backends.
 The CPU backend is bound by libx265 (software HEVC encoding). The GPU backend is
 not optimized: the per-frame sync is the first thing to look at.
 
-### Colors differ slightly between backends
+### Why colors shift on the GPU
 
 On a pure green bar of the test pattern (input `(0, 255, 1)`), the CPU output
-gives `(1, 254, 0)` but the GPU output `(18, 253, 8)`. The RGB ⇄ YUV conversions
-done inside PyNvVideoCodec (decoder) and NVENC (encoder) don't seem to use the
-same matrix as FFmpeg; which one they use is not documented, and was not
-investigated further.
+gives `(1, 254, 0)`, but the GPU output `(18, 253, 8)`.
+
+Videos are stored in **YUV** (brightness + two color differences), not RGB. The
+formula between the two is a standard: **BT.601** (SD TV), **BT.709** (HD TV),
+BT.2020 (UHD / HDR), each in *limited* (Y in 16-235) or *full* (0-255) range. A
+file is supposed to say which one it uses (its "color tags"); when it doesn't,
+every tool guesses, and they don't all guess the same way:
+
+| Who | RGB ⇄ YUV for an untagged file | Measured how |
+|---|---|---|
+| ffmpeg (`generate-sample.sh`, CPU backend) | always BT.601 | its defaults |
+| PyNvVideoCodec decoder (YUV → RGB) | BT.601 for 640×480, BT.709 for 1920×1080; follows the tags when there are some | its RGB output vs ffmpeg's, matrix by matrix: 0.35 mean difference with BT.709 |
+| NVENC (RGBA → YUV) | BT.601 for 640×480, BT.709 from 1024×576 up | raw YUV of solid colors vs each formula: exact match |
+| NVENC output | writes no matrix tag (`color_space=unknown`) | `ffprobe` |
+
+Neither the decoder nor the encoder exposes an option to pick the matrix
+(`CreateEncoder` only knows `preset`, `tuning_info`, `bf`, `gop`, rate control…).
+So, on the 1080p sample, two guesses go wrong:
+
+```mermaid
+flowchart LR
+    sample["sample: BT.601 data, untagged"] -- "decoder guesses BT.709 (wrong)" --> rgb[RGB, already shifted]
+    rgb -- "NVENC uses BT.709" --> out["output: BT.709 data, untagged"]
+    out -- "ffmpeg guesses BT.601 (wrong)" --> shown[colors shifted again]
+```
+
+The fix is to tag both ends: a BT.709-tagged sample
+(`-vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709
+-color_trc bt709 -color_range tv`), and the GPU output tagged with what NVENC
+used, when muxing (`-bsf:v hevc_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1`,
+without re-encoding). Tried by hand: the green bar comes back as `(1, 254, 0)`,
+and the RGB PSNR between input and output goes from 27 to 39 dB. Not applied to
+the code yet.
 
 ### Checking that frames stay on the GPU
 

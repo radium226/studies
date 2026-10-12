@@ -17,7 +17,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 from ...core import VideoInfo
-from .with_onnx import DEFAULT_COLOR, Color, Model
+from .model import DEFAULT_COLOR, Color, Model
 from .without_anything import DEFAULT_RADIUS_RATIO
 
 log = structlog.get_logger()

@@ -18,9 +18,11 @@ class PCIeMonitor:
         (GPU → host). It counts every transfer, including the ones made inside
         PyNvVideoCodec, so it shows whether raw frames cross the bus.
         """
+        command = ["nvidia-smi", "dmon", "-s", "t", "-d", "1", "-i", str(gpu_id)]
+        log.debug("pcie.monitor.started", command=" ".join(command))
         try:
             process = subprocess.Popen(
-                ["nvidia-smi", "dmon", "-s", "t", "-d", "1", "-i", str(gpu_id)],
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,

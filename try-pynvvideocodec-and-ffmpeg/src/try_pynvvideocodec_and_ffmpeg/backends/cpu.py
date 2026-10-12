@@ -12,9 +12,12 @@ from io import BufferedReader
 from pathlib import Path
 from typing import cast
 
+import structlog
 import torch
 
 from ..core import FrameSink, FrameSource, VideoInfo
+
+log = structlog.get_logger()
 
 
 def probe(path: Path) -> VideoInfo:
@@ -31,6 +34,7 @@ def probe(path: Path) -> VideoInfo:
     )
     # fmt: on
     stream = json.loads(result.stdout)["streams"][0]
+    log.debug("ffprobe.stream", **stream)
     return VideoInfo(
         width=stream["width"],
         height=stream["height"],
@@ -43,21 +47,21 @@ class FfmpegSource:
     def __init__(self, path: Path):
         self.info = probe(path)
         # fmt: off
-        self.decoder = subprocess.Popen(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                "-i", str(path),
-                "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
-            ],
-            stdout=subprocess.PIPE,
-        )
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", str(path),
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ]
         # fmt: on
+        log.debug("ffmpeg.decoder.started", command=" ".join(command))
+        self.decoder = subprocess.Popen(command, stdout=subprocess.PIPE)
 
     def __iter__(self) -> Iterator[torch.Tensor]:
         stdout = cast(BufferedReader, self.decoder.stdout)
         # One buffer, reused for every frame: the tensors we yield alias it
         buffer = bytearray(self.info.width * self.info.height * 3)
         frame = torch.frombuffer(buffer, dtype=torch.uint8).view(self.info.height, self.info.width, 3)
+        log.debug("ffmpeg.decoder.buffer", bytes=len(buffer), data_ptr=hex(frame.data_ptr()))
         while stdout.readinto(buffer) == len(buffer):
             yield frame
 
@@ -66,6 +70,7 @@ class FfmpegSource:
             self.decoder.terminate()
         if self.decoder.wait() not in (0, -15):  # -15: SIGTERM, if we stopped early
             raise RuntimeError(f"ffmpeg (decoder) exited with code {self.decoder.returncode}")
+        log.debug("ffmpeg.decoder.stopped", returncode=self.decoder.returncode)
 
 
 class FfmpegSink:
@@ -73,28 +78,33 @@ class FfmpegSink:
         # ffmpeg encodes and muxes itself, so it knows the real timestamps:
         # unlike on the GPU, B-frames are fine here
         # fmt: off
-        self.encoder = subprocess.Popen(
-            [
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "rawvideo", "-pix_fmt", "rgb24", "-video_size", f"{info.width}x{info.height}",
-                "-framerate", f"{info.fps.numerator}/{info.fps.denominator}", "-i", "pipe:0",
-                "-c:v", "libx265", "-pix_fmt", "yuv420p", "-tag:v", "hvc1",
-                "-x265-params", "log-level=error",
-                str(path),
-            ],
-            stdin=subprocess.PIPE,
-        )
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-video_size", f"{info.width}x{info.height}",
+            "-framerate", f"{info.fps.numerator}/{info.fps.denominator}", "-i", "pipe:0",
+            "-c:v", "libx265", "-pix_fmt", "yuv420p", "-tag:v", "hvc1",
+            "-x265-params", "log-level=error",
+            str(path),
+        ]
         # fmt: on
+        log.debug("ffmpeg.encoder.started", command=" ".join(command))
+        self.encoder = subprocess.Popen(command, stdin=subprocess.PIPE)
+        self.frames = 0
+        self.bytes = 0
 
     def write(self, frame: torch.Tensor) -> None:
         assert self.encoder.stdin is not None
-        self.encoder.stdin.write(frame.contiguous().numpy().data)
+        data = frame.contiguous().numpy().data
+        self.encoder.stdin.write(data)
+        self.frames += 1
+        self.bytes += data.nbytes
 
     def close(self) -> None:
         assert self.encoder.stdin is not None
         self.encoder.stdin.close()
         if self.encoder.wait() != 0:
             raise RuntimeError(f"ffmpeg (encoder) exited with code {self.encoder.returncode}")
+        log.debug("ffmpeg.encoder.stopped", frames=self.frames, raw_bytes=self.bytes)
 
 
 class CPUBackend:

@@ -1,6 +1,6 @@
-from .with_onnx import DEFAULT_COLOR as DEFAULT_COLOR
-from .with_onnx import Color as Color
-from .with_onnx import Model as DrawCircleModel
+from .model import DEFAULT_COLOR as DEFAULT_COLOR
+from .model import Color as Color
+from .model import Model as DrawCircleModel
 from .with_onnx import WithONNX as DrawCircleWithONNX
 from .with_onnx import export_onnx as export_onnx
 from .with_safetensors import WithSafeTensors as DrawCircleWithSafeTensors
