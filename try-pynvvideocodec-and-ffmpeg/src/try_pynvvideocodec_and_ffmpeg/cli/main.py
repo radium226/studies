@@ -3,7 +3,7 @@ import logging
 import click
 import structlog
 
-from .commands import export_onnx, export_safetensors, run
+from .commands import export_onnx, export_safetensors, export_tensorrt, run
 
 
 @click.group()
@@ -17,3 +17,4 @@ def main(verbose: bool) -> None:
 main.add_command(run)
 main.add_command(export_onnx)
 main.add_command(export_safetensors)
+main.add_command(export_tensorrt)

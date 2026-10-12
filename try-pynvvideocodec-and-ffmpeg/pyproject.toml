@@ -13,6 +13,7 @@ dependencies = [
     "pynvvideocodec>=2.2.3",
     "safetensors>=0.8.0",
     "structlog>=26.1.0",
+    "tensorrt-cu13>=11.4.0.106",
     "torch>=2.14.1",
 ]
 

@@ -10,6 +10,7 @@ from ...transforms import (
     DrawCircleWithONNX,
     DrawCircleWithoutAnything,
     DrawCircleWithSafeTensors,
+    DrawCircleWithTensorRT,
 )
 
 
@@ -41,6 +42,11 @@ from ...transforms import (
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Draw the circle with these weights (see `export-safetensors`), loaded into the PyTorch model.",
 )
+@click.option(
+    "--tensorrt-engine",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Draw the circle with this TensorRT engine (see `export-tensorrt`). GPU backend only.",
+)
 def run(
     input_path: Path,
     output_path: Path,
@@ -48,8 +54,20 @@ def run(
     radius: float,
     onnx_model: Path | None,
     safetensors_weights: Path | None,
+    tensorrt_engine: Path | None,
 ) -> None:
     """Process INPUT_PATH, and write the result to OUTPUT_PATH."""
+    models = {
+        "--onnx-model": onnx_model,
+        "--safetensors-weights": safetensors_weights,
+        "--tensorrt-engine": tensorrt_engine,
+    }
+    given = [option for option, value in models.items() if value is not None]
+    if len(given) > 1:
+        raise click.UsageError(f"{' and '.join(given)} are mutually exclusive")
+    if tensorrt_engine is not None and backend_type == "cpu":
+        raise click.UsageError("--tensorrt-engine needs --backend=gpu: TensorRT only runs on the GPU")
+
     backend: type[Backend]
     # Imported lazily: the CPU backend must work on machines without the NVIDIA
     # driver, where loading PyNvVideoCodec may fail
@@ -63,15 +81,15 @@ def run(
 
             backend = GPUBackend
 
-    match onnx_model, safetensors_weights:
-        case Path(), Path():
-            raise click.UsageError("--onnx-model and --safetensors-weights are mutually exclusive")
-        case Path(), None:
-            settings = DrawCircleWithONNX.Settings(model_path=onnx_model, radius_ratio=radius)
-            run_pipeline(backend, DrawCircleWithONNX, settings, input_path, output_path)
-        case None, Path():
-            settings = DrawCircleWithSafeTensors.Settings(weights_path=safetensors_weights, radius_ratio=radius)
-            run_pipeline(backend, DrawCircleWithSafeTensors, settings, input_path, output_path)
-        case None, None:
-            settings = DrawCircleWithoutAnything.Settings(radius_ratio=radius)
-            run_pipeline(backend, DrawCircleWithoutAnything, settings, input_path, output_path)
+    if onnx_model is not None:
+        settings = DrawCircleWithONNX.Settings(model_path=onnx_model, radius_ratio=radius)
+        run_pipeline(backend, DrawCircleWithONNX, settings, input_path, output_path)
+    elif safetensors_weights is not None:
+        settings = DrawCircleWithSafeTensors.Settings(weights_path=safetensors_weights, radius_ratio=radius)
+        run_pipeline(backend, DrawCircleWithSafeTensors, settings, input_path, output_path)
+    elif tensorrt_engine is not None:
+        settings = DrawCircleWithTensorRT.Settings(engine_path=tensorrt_engine, radius_ratio=radius)
+        run_pipeline(backend, DrawCircleWithTensorRT, settings, input_path, output_path)
+    else:
+        settings = DrawCircleWithoutAnything.Settings(radius_ratio=radius)
+        run_pipeline(backend, DrawCircleWithoutAnything, settings, input_path, output_path)

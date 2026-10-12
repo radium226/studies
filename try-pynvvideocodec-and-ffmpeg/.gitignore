@@ -4,3 +4,4 @@ __pycache__/
 *.onnx
 demo/
 *.safetensors
+*.engine

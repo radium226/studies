@@ -5,5 +5,7 @@ from .with_onnx import WithONNX as DrawCircleWithONNX
 from .with_onnx import export_onnx as export_onnx
 from .with_safetensors import WithSafeTensors as DrawCircleWithSafeTensors
 from .with_safetensors import export_safetensors as export_safetensors
+from .with_tensorrt import WithTensorRT as DrawCircleWithTensorRT
+from .with_tensorrt import export_tensorrt as export_tensorrt
 from .without_anything import DEFAULT_RADIUS_RATIO as DEFAULT_RADIUS_RATIO
 from .without_anything import WithoutAnything as DrawCircleWithoutAnything

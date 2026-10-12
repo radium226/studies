@@ -7,3 +7,4 @@ from .pipeline import run as run
 from .transforms import DrawCircleWithONNX as DrawCircleWithONNX
 from .transforms import DrawCircleWithoutAnything as DrawCircleWithoutAnything
 from .transforms import DrawCircleWithSafeTensors as DrawCircleWithSafeTensors
+from .transforms import DrawCircleWithTensorRT as DrawCircleWithTensorRT

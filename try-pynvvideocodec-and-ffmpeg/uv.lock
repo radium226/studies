@@ -668,6 +668,37 @@ wheels = [
 ]
 
 [[package]]
+name = "tensorrt-cu13"
+version = "11.4.0.106"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tensorrt-cu13-bindings" },
+    { name = "tensorrt-cu13-libs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/57/df/a0044af5a9becb484004fcbfb9bf91758ae7bc42dc85a5a91dd30d0c420a/tensorrt_cu13-11.4.0.106.tar.gz", hash = "sha256:ae8489f9e0b9593eaa67ced3422864f5d5d597bbcb2caafb58f8afb293977271", size = 17970, upload-time = "2026-10-08T18:46:38.79Z" }
+
+[[package]]
+name = "tensorrt-cu13-bindings"
+version = "11.4.0.106"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/f6/5083877a6aa6395c7362cc6f42e67d085f9ffe0bead9d9949110c2cb555a/tensorrt_cu13_bindings-11.4.0.106-cp313-none-manylinux_2_28_x86_64.whl", hash = "sha256:bac9a362c9189b5f5dd0444213913846e4b46003237834958e890eff57d86ed5", size = 1262506, upload-time = "2026-10-08T18:51:34.671Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/3c/5bcd76e28b61e2d307e8bb24a358b8e60eb5bb0bc8768bc1033923e9fee3/tensorrt_cu13_bindings-11.4.0.106-cp313-none-manylinux_2_35_aarch64.whl", hash = "sha256:9b070517bbd1ae157a60a07fc6a9f5a055aecf7b160fa3ef679ad08beb440982", size = 1232875, upload-time = "2026-10-08T18:51:59.632Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/c5/f091173571ba742c602d00f92d2cede23bdd7831f91f3455c4042b3e3fb0/tensorrt_cu13_bindings-11.4.0.106-cp313-none-win_amd64.whl", hash = "sha256:9a6027837063208e5f9239640bd7b8f5fad525ab99323a6e8337f091538d6fad", size = 895980, upload-time = "2026-10-08T18:52:19.987Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/bd/ec805df1aa919deb57a4b58ee2145f6255b7e88227a43f5abba6f5b7a3db/tensorrt_cu13_bindings-11.4.0.106-cp313-none-win_arm64.whl", hash = "sha256:227126258fa459944e03d66fc8961d8f9973427066d3ebe5a1a172d7606c1461", size = 832946, upload-time = "2026-10-08T18:52:39.525Z" },
+    { url = "https://files.pythonhosted.org/packages/be/43/6fd7f0d80da5df9cf45373d76d35acff69e8946dff0e63724eef50e76f14/tensorrt_cu13_bindings-11.4.0.106-cp314-none-manylinux_2_28_x86_64.whl", hash = "sha256:233f5f02af7940b7cf15a5b526fc16b203d93181473a58588937bf401ca1d293", size = 1267097, upload-time = "2026-10-08T18:53:04.109Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/50/8fbeb2b2417d26c5ae982dd40f823ebf5a1609fd13ce4731196b7249f240/tensorrt_cu13_bindings-11.4.0.106-cp314-none-manylinux_2_35_aarch64.whl", hash = "sha256:e6398a45a2b059f22efca25cb0f00d286fea9dceb44ddb1b5bce5c322b97e618", size = 1238065, upload-time = "2026-10-08T18:53:26.307Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/06/c6cc38db4608415dfa07c7bfc147fa3dbb181943e6f13158f44db2278eb9/tensorrt_cu13_bindings-11.4.0.106-cp314-none-win_amd64.whl", hash = "sha256:b5e2f99fbb5e7279479317f08f42b98b2ecedc1eff8413c4be57bdb91b2b317f", size = 896926, upload-time = "2026-10-08T18:53:49.002Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/96/144fafde57bd45fcc51a7a0c832b7cf7dd25be4d38fd122bc8c1725d4d21/tensorrt_cu13_bindings-11.4.0.106-cp314-none-win_arm64.whl", hash = "sha256:728d5de37872ebbd900d49035b2062b99bbc416c7064cd46ef8acdba629da6ab", size = 833901, upload-time = "2026-10-08T18:54:15.717Z" },
+]
+
+[[package]]
+name = "tensorrt-cu13-libs"
+version = "11.4.0.106"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/a0/328dd4e184ec6e3296a1676a2f7c2d014faf53c32339f3dd4f358ddeb1b1/tensorrt_cu13_libs-11.4.0.106.tar.gz", hash = "sha256:fc29af15a9bb5489567a58a98a56d457de64c16ab3c8ea010ef21447ff29bbea", size = 15508, upload-time = "2026-10-08T18:48:37.773Z" }
+
+[[package]]
 name = "torch"
 version = "2.14.1"
 source = { registry = "https://pypi.org/simple" }
@@ -728,6 +759,7 @@ dependencies = [
     { name = "pynvvideocodec" },
     { name = "safetensors" },
     { name = "structlog" },
+    { name = "tensorrt-cu13" },
     { name = "torch" },
 ]
 
@@ -741,6 +773,7 @@ requires-dist = [
     { name = "pynvvideocodec", specifier = ">=2.2.3" },
     { name = "safetensors", specifier = ">=0.8.0" },
     { name = "structlog", specifier = ">=26.1.0" },
+    { name = "tensorrt-cu13", specifier = ">=11.4.0.106" },
     { name = "torch", specifier = ">=2.14.1" },
 ]
 

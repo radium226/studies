@@ -21,10 +21,14 @@ class Model(torch.nn.Module):
         self.register_buffer("color", torch.tensor(color, dtype=torch.uint8))
 
     def forward(self, frame: torch.Tensor, radius_ratio: torch.Tensor) -> torch.Tensor:
+        return torch.where(self.circle_mask(frame, radius_ratio), self.color, frame)
+
+    def circle_mask(self, frame: torch.Tensor, radius_ratio: torch.Tensor) -> torch.Tensor:
+        """(H, W, 1) bool: True inside the circle."""
         y = torch.arange(frame.shape[0], device=frame.device, dtype=torch.float32)
         x = torch.arange(frame.shape[1], device=frame.device, dtype=torch.float32)
         # Sizes as tensors, not Python scalars: with dynamic shapes, `frame.shape[0] / 2`
         # is a symbolic float the ONNX exporter fails to convert
         height, width = y[-1] + 1, x[-1] + 1
         mask = (x.view(1, -1) - width / 2) ** 2 + (y.view(-1, 1) - height / 2) ** 2 <= (height * radius_ratio) ** 2
-        return torch.where(mask.unsqueeze(-1), self.color, frame)
+        return mask.unsqueeze(-1)

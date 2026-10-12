@@ -52,6 +52,9 @@ The circle itself can be drawn three ways, with identical results:
 - **SafeTensors**: the circle's color is saved alone in a `.safetensors` file
   (just data, no code), and loaded back into our Python code. That's how
   machine-learning models usually ship their weights.
+- **TensorRT**: the drawing code is compiled by NVIDIA's TensorRT into an
+  "engine", optimized for this exact graphics card (it won't run on another
+  one). Graphics card only.
 
 ## Usage
 
@@ -70,10 +73,14 @@ uv run draw-circle run --onnx-model=circle.onnx --backend=cpu input.mp4 output.m
 # Same, with the circle's color stored as weights in a SafeTensors file
 uv run draw-circle export-safetensors --color 255 0 0 circle.safetensors
 uv run draw-circle run --safetensors-weights=circle.safetensors input.mp4 output.mp4
+
+# Same, compiled by TensorRT for this GPU (GPU backend only)
+uv run draw-circle export-tensorrt --color 255 0 0 circle.engine
+uv run draw-circle run --tensorrt-engine=circle.engine --radius=0.4 input.mp4 output.mp4
 ```
 
-`export-onnx` also takes `--color` (baked into the graph). Without `--color`,
-the circle is white.
+`export-onnx` and `export-tensorrt` also take `--color` (baked into the graph /
+engine). Without `--color`, the circle is white.
 
 Requirements: `ffmpeg` and `ffprobe` on the `PATH` (with libx265 for the CPU
 backend). For the GPU backend, an NVIDIA GPU with NVENC/NVDEC (tested on an
@@ -90,11 +97,12 @@ src/try_pynvvideocodec_and_ffmpeg/
 │   └── cpu.py            # CPUBackend: FfmpegSource, FfmpegSink (ffmpeg subprocesses)
 ├── transforms/
 │   └── draw_circle/
-│       ├── model.py             # Model (as DrawCircleModel): the torch.nn.Module behind ONNX and SafeTensors
+│       ├── model.py             # Model (as DrawCircleModel): the torch.nn.Module behind ONNX, SafeTensors and TensorRT
 │       ├── without_anything.py  # WithoutAnything (as DrawCircleWithoutAnything): plain PyTorch
 │       ├── with_onnx.py         # export_onnx(), WithONNX (as DrawCircleWithONNX): ONNX Runtime
-│       └── with_safetensors.py  # export_safetensors(),
-│                                # WithSafeTensors (as DrawCircleWithSafeTensors): Model + weights
+│       ├── with_safetensors.py  # export_safetensors(),
+│       │                        # WithSafeTensors (as DrawCircleWithSafeTensors): Model + weights
+│       └── with_tensorrt.py     # export_tensorrt(), WithTensorRT (as DrawCircleWithTensorRT): TensorRT engine
 ├── pipeline.py           # run(): source → transform → sink, with timing and PCIe logging
 ├── monitoring.py         # PCIeMonitor.monitor_pcie() (nvidia-smi dmon)
 └── cli/
@@ -103,7 +111,8 @@ src/try_pynvvideocodec_and_ffmpeg/
         ├── run.py                 # draw-circle run
         ├── export_onnx.py         # draw-circle export-onnx
         ├── export_safetensors.py  # draw-circle export-safetensors
-        └── options.py             # --color, shared by both exports
+        ├── export_tensorrt.py     # draw-circle export-tensorrt
+        └── options.py             # --color, shared by the exports
 ```
 
 Every frame is an `(H, W, 3)` `uint8` RGB tensor; only its `device` differs
@@ -300,6 +309,38 @@ a constant (an initializer), SafeTensors stores it alone. Outputs are
 bit-identical across `WithoutAnything`, `WithONNX` and `WithSafeTensors` (white),
 and between `WithONNX` and `WithSafeTensors` (red), on both backends.
 
+### The circle compiled by TensorRT
+
+TensorRT is NVIDIA's inference compiler: from the ONNX model, it builds an
+**engine**, the same computation optimized for one GPU model and one TensorRT
+version (an engine built here won't load anywhere else, and the error says so).
+`export-tensorrt` exports `Model` to ONNX in a temporary directory, then builds
+the engine (35 KB, a few seconds) with an optimization profile for frames from
+64×64 to 3840×2160, tuned for 1920×1080.
+
+`WithTensorRT.open()` loads the engine, sets the frame size once (all frames of a
+video have the same), and binds the radius tensor. `transform_frame` then hands
+TensorRT the raw GPU addresses of the input frame and of a fresh output tensor
+(`set_tensor_address`, like ONNX Runtime's IO binding), and enqueues the engine
+**on PyTorch's own CUDA stream** (`execute_async_v3(torch.cuda.current_stream().cuda_stream)`):
+unlike ONNX Runtime, no synchronization is needed between PyTorch and TensorRT.
+
+Things that were not obvious:
+
+- TensorRT has no `uint8` support for `Where` ("Found unsupported input type of
+  UINT8"): `TensorRTModel` runs the `where` in `int32` and casts back. Same
+  values, so the output stays bit-identical; ONNX and SafeTensors keep the
+  `uint8` `Model`.
+- `tensorrt-cu13` 11.4 matches PyTorch's CUDA 13. The `tensorrt` module only
+  re-exports a compiled one (`tensorrt_bindings.tensorrt`), invisible to type
+  checkers: importing that one directly gives an untyped module instead of an
+  error on every `trt.` attribute.
+- GPU only: `run --backend=cpu --tensorrt-engine=…` is rejected.
+
+Outputs are bit-identical to plain PyTorch, ONNX and SafeTensors (same MD5 over
+all decoded frames, white and red, radius 0.2 and 0.45), at the same speed: the
+GPU isn't the bottleneck.
+
 ### Throughput
 
 | Input         | Backend | Frames | Time   | FPS  |
@@ -310,6 +351,7 @@ and between `WithONNX` and `WithSafeTensors` (red), on both backends.
 | 1080p30, 10s  | `cpu` + ONNX | 300 | 29.6s | ~10  |
 | 1080p30, 100s | `gpu`        | 3000 | 11.2s | ~270 |
 | 1080p30, 100s | `gpu` + ONNX | 3000 | 11.2s | ~270 |
+| 1080p30, 100s | `gpu` + TensorRT | 3000 | 11.0s | ~270 |
 
 The CPU backend is bound by libx265 (software HEVC encoding). On the GPU, Nsight
 Systems shows ~0.8 ms of CUDA kernels per frame out of ~3.7 ms: the GPU waits on

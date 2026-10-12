@@ -5,5 +5,7 @@ from .draw_circle import DrawCircleModel as DrawCircleModel
 from .draw_circle import DrawCircleWithONNX as DrawCircleWithONNX
 from .draw_circle import DrawCircleWithoutAnything as DrawCircleWithoutAnything
 from .draw_circle import DrawCircleWithSafeTensors as DrawCircleWithSafeTensors
+from .draw_circle import DrawCircleWithTensorRT as DrawCircleWithTensorRT
 from .draw_circle import export_onnx as export_onnx
 from .draw_circle import export_safetensors as export_safetensors
+from .draw_circle import export_tensorrt as export_tensorrt

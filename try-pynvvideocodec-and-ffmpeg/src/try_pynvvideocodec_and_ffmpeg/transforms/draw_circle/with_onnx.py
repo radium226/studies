@@ -29,10 +29,16 @@ log = structlog.get_logger()
 
 
 def export_onnx(path: Path, color: Color = DEFAULT_COLOR) -> None:
+    # The color ends up as a constant (an "initializer") in the graph
+    export_model_to_onnx(Model(color), path)
+
+
+def export_model_to_onnx(model: Model, path: Path) -> None:
+    model.eval()  # Inference behavior (no difference for this model, but the expected state for an export)
     example_frame = torch.zeros((1080, 1920, 3), dtype=torch.uint8)
     example_radius_ratio = torch.tensor(DEFAULT_RADIUS_RATIO, dtype=torch.float32)
     torch.onnx.export(
-        Model(color),  # The color ends up as a constant (an "initializer") in the graph
+        model,
         (example_frame, example_radius_ratio),
         path,
         input_names=[FRAME_INPUT, RADIUS_RATIO_INPUT],
