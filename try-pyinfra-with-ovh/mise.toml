@@ -1,0 +1,17 @@
+[tasks.plan]
+description = "Show what the playbook would change (dry run)"
+dir = "{{config_root}}/pyinfra"
+run = 'uvx --with "{{config_root}}/lib" --with pyinfra pyinfra @local playbook.py --dry'
+
+[tasks.apply]
+description = "Run the playbook against localhost"
+dir = "{{config_root}}/pyinfra"
+run = 'uvx --with "{{config_root}}/lib" --with pyinfra pyinfra @local playbook.py --yes'
+
+[tasks."ovh:consumer-key"]
+description = "Request an OVH consumer key allowed to manage DNS zones"
+run = 'uv run --no-project --with "{{config_root}}/lib" python -m radium226.unattended.ovh.credentials'
+
+[tasks."freebox:app-token"]
+description = "Register the app on the Freebox (confirm on the box's front panel)"
+run = 'uv run --no-project --with "{{config_root}}/lib" python -m radium226.unattended.freebox.credentials'

@@ -1,0 +1,25 @@
+[project]
+name = "radium226-unattended"
+version = "0.1.0"
+description = "Unattended provisioning helpers (OVH DNS, pyinfra facts and operations)"
+readme = "README.md"
+authors = [
+    { name = "radium226", email = "radium226@rouages.xyz" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "loguru>=0.7",
+    "ovh>=1.2",
+    "httpx2>=2.13",
+    "pyinfra>=3.10.0",
+]
+
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
+
+[tool.uv.build-backend]
+module-name = "radium226.unattended"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
