@@ -1,0 +1,77 @@
+from pathlib import Path
+from typing import Literal
+
+import click
+
+from ...core import Backend
+from ...pipeline import run as run_pipeline
+from ...transforms import (
+    DEFAULT_RADIUS_RATIO,
+    DrawCircleWithONNX,
+    DrawCircleWithoutAnything,
+    DrawCircleWithSafeTensors,
+)
+
+
+@click.command()
+@click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("output_path", type=click.Path(dir_okay=False, path_type=Path))
+@click.option(
+    "--backend",
+    "backend_type",
+    type=click.Choice(["cpu", "gpu"]),
+    default="gpu",
+    show_default=True,
+    help="gpu: NVDEC → PyTorch (CUDA) → NVENC. cpu: ffmpeg → PyTorch (CPU) → ffmpeg (libx265), no GPU needed.",
+)
+@click.option(
+    "--radius",
+    type=float,
+    default=DEFAULT_RADIUS_RATIO,
+    show_default=True,
+    help="Circle radius, relative to the frame height.",
+)
+@click.option(
+    "--onnx-model",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Draw the circle with this ONNX model (see `export-onnx`), run by ONNX Runtime.",
+)
+@click.option(
+    "--safetensors-weights",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Draw the circle with these weights (see `export-safetensors`), loaded into the PyTorch model.",
+)
+def run(
+    input_path: Path,
+    output_path: Path,
+    backend_type: Literal["cpu", "gpu"],
+    radius: float,
+    onnx_model: Path | None,
+    safetensors_weights: Path | None,
+) -> None:
+    """Process INPUT_PATH, and write the result to OUTPUT_PATH."""
+    backend: type[Backend]
+    # Imported lazily: the CPU backend must work on machines without the NVIDIA
+    # driver, where loading PyNvVideoCodec may fail
+    match backend_type:
+        case "cpu":
+            from ...backends.cpu import CPUBackend
+
+            backend = CPUBackend
+        case "gpu":
+            from ...backends.gpu import GPUBackend
+
+            backend = GPUBackend
+
+    match onnx_model, safetensors_weights:
+        case Path(), Path():
+            raise click.UsageError("--onnx-model and --safetensors-weights are mutually exclusive")
+        case Path(), None:
+            settings = DrawCircleWithONNX.Settings(model_path=onnx_model, radius_ratio=radius)
+            run_pipeline(backend, DrawCircleWithONNX, settings, input_path, output_path)
+        case None, Path():
+            settings = DrawCircleWithSafeTensors.Settings(weights_path=safetensors_weights, radius_ratio=radius)
+            run_pipeline(backend, DrawCircleWithSafeTensors, settings, input_path, output_path)
+        case None, None:
+            settings = DrawCircleWithoutAnything.Settings(radius_ratio=radius)
+            run_pipeline(backend, DrawCircleWithoutAnything, settings, input_path, output_path)

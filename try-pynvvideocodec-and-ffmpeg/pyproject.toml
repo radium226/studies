@@ -1,0 +1,32 @@
+[project]
+name = "try-pynvvideocodec-and-ffmpeg"
+version = "0.1.0"
+description = "Decode, process and encode video, either fully on the GPU (NVDEC / PyTorch / NVENC) or on the CPU (ffmpeg)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.5.0",
+    "numpy>=2.5.4",
+    "onnx>=1.23.2",
+    "onnxruntime-gpu>=1.31.0",
+    "onnxscript>=0.7.2",
+    "pynvvideocodec>=2.2.3",
+    "safetensors>=0.8.0",
+    "structlog>=26.1.0",
+    "torch>=2.14.1",
+]
+
+[project.scripts]
+draw-circle = "try_pynvvideocodec_and_ffmpeg.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint.per-file-ignores]
+# Re-exports are renamed (`from .with_onnx import WithONNX as DrawCircleWithONNX`),
+# which ruff doesn't recognize as explicit, and we don't use `__all__`
+"__init__.py" = ["F401"]
