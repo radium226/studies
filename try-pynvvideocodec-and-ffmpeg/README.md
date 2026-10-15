@@ -77,6 +77,10 @@ uv run draw-circle run --safetensors-weights=circle.safetensors input.mp4 output
 # Same, compiled by TensorRT for this GPU (GPU backend only)
 uv run draw-circle export-tensorrt --color 255 0 0 circle.engine
 uv run draw-circle run --tensorrt-engine=circle.engine --radius=0.4 input.mp4 output.mp4
+
+# Gaussian blur instead of the circle: conv2d in plain PyTorch, 8 frames at a time
+uv run draw-circle blur input.mp4 output.mp4
+uv run draw-circle blur --sigma=8 --batch-size=1 --backend=cpu input.mp4 output.mp4
 ```
 
 `export-onnx` and `export-tensorrt` also take `--color` (baked into the graph /
@@ -91,11 +95,15 @@ RTX 500 Ada Laptop, driver 615). The CPU backend runs without any GPU, e.g.
 
 ```
 src/try_pynvvideocodec_and_ffmpeg/
-├── core.py               # VideoInfo + the Protocols: FrameSource, FrameTransformer, FrameSink, Backend
+├── core.py               # VideoInfo + the Protocols: FrameSource, FrameTransformer, BatchFrameTransformer,
+│                         # FrameSink, Backend
 ├── backends/
 │   ├── gpu.py            # GPUBackend: NvDecSource, NvEncSink (PyNvVideoCodec)
 │   └── cpu.py            # CPUBackend: FfmpegSource, FfmpegSink (ffmpeg subprocesses)
 ├── transforms/
+│   ├── blur/
+│   │   ├── model.py             # Model (as BlurModel): Gaussian blur, two grouped conv2d
+│   │   └── without_anything.py  # WithoutAnything (as BlurWithoutAnything): runs it, on batches of frames
 │   └── draw_circle/
 │       ├── model.py             # Model (as DrawCircleModel): the torch.nn.Module behind ONNX, SafeTensors and TensorRT
 │       ├── without_anything.py  # WithoutAnything (as DrawCircleWithoutAnything): plain PyTorch
@@ -103,16 +111,17 @@ src/try_pynvvideocodec_and_ffmpeg/
 │       ├── with_safetensors.py  # export_safetensors(),
 │       │                        # WithSafeTensors (as DrawCircleWithSafeTensors): Model + weights
 │       └── with_tensorrt.py     # export_tensorrt(), WithTensorRT (as DrawCircleWithTensorRT): TensorRT engine
-├── pipeline.py           # run(): source → transform → sink, with timing and PCIe logging
+├── pipeline.py           # run() / run_batched(): source → transform → sink, with timing and PCIe logging
 ├── monitoring.py         # PCIeMonitor.monitor_pcie() (nvidia-smi dmon)
 └── cli/
     ├── main.py           # click group: the `draw-circle` entry point
     └── commands/
         ├── run.py                 # draw-circle run
+        ├── blur.py                # draw-circle blur
         ├── export_onnx.py         # draw-circle export-onnx
         ├── export_safetensors.py  # draw-circle export-safetensors
         ├── export_tensorrt.py     # draw-circle export-tensorrt
-        └── options.py             # --color, shared by the exports
+        └── options.py             # --color, shared by the exports; --backend, shared by run and blur
 ```
 
 Every frame is an `(H, W, 3)` `uint8` RGB tensor; only its `device` differs
@@ -345,6 +354,35 @@ Things that were not obvious:
 Outputs are bit-identical to plain PyTorch, ONNX and SafeTensors (same MD5 over
 all decoded frames, white and red, radius 0.2 and 0.45), at the same speed: the
 GPU isn't the bottleneck.
+
+### Blur with `conv2d`
+
+`draw-circle blur` runs a Gaussian blur, written with `torch.nn.functional`
+only (no torchvision): the kernel is `exp(-x² / 2σ²)` over `[-⌈3σ⌉, ⌈3σ⌉]`,
+normalized to sum to 1, and stored as the `Model`'s buffer.
+
+- **Separable**: the 2D Gaussian is the outer product of the 1D one with
+  itself, so `Model` runs two `conv2d`, a `(1, K)` then a `(K, 1)` kernel: 2K
+  multiplications per pixel instead of K² (50 instead of 625 at σ=4).
+- **`groups=3`**: each channel is convolved with its own copy of the kernel, so
+  R, G and B don't mix.
+- **Edges**: `F.pad(mode="replicate")` then `conv2d` without padding. With
+  `conv2d`'s own `padding=` (zeros), the borders would fade to black.
+- **Dtype**: `float16` on the GPU, `float32` on the CPU (no fast `float16`
+  convolution there). Outputs are within 1 of a `float64` shifted-sum reference.
+
+It's the only **batched** transformer (`BatchFrameTransformer`):
+`transform_frames` takes `(N, H, W, 3)` and every operation runs on the N
+frames at once. `run_batched()` copies decoded frames into one reused `(N, H,
+W, 3)` `uint8` buffer (`--batch-size`, 8 by default): the decoder recycles its
+surfaces, so a frame can't be kept until its batch is full without a copy. On
+the GPU, that copy is synchronized before the next frame is decoded.
+
+Batching doesn't pay here: on the 10s 1080p clip, 182 fps with
+`--batch-size=1`, 145 with 8, 132 with 32. As for the circle, the GPU isn't
+the bottleneck, and batching serializes the stages (decode N frames, blur them,
+encode them) where one frame at a time interleaves them. PCIe traffic stays at
+~15 MB/s: frames never leave the GPU. On the CPU, ~10 fps.
 
 ### Throughput
 

@@ -54,6 +54,23 @@ class FrameTransformer[S](Protocol):
         ...
 
 
+class BatchFrameTransformer[S](Protocol):
+    """Like `FrameTransformer`, but turns a batch of frames into new ones at once.
+
+    Frames come stacked in one `(N, H, W, 3)` `uint8` tensor, so that every
+    operation runs on the N frames in parallel.
+    """
+
+    @staticmethod
+    def open(
+        info: VideoInfo, device: torch.device, settings: S
+    ) -> AbstractContextManager["BatchFrameTransformer[S]"]: ...
+
+    def transform_frames(self, frames: torch.Tensor) -> torch.Tensor:
+        """`(N, H, W, 3)` in, `(N, H, W, 3)` out. Must not modify its input. Only valid until `open()` exits."""
+        ...
+
+
 class FrameSink(Protocol):
     """Encodes frames and writes them to a video file."""
 

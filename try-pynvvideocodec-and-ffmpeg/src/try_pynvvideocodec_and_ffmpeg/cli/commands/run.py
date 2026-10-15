@@ -1,9 +1,7 @@
 from pathlib import Path
-from typing import Literal
 
 import click
 
-from ...core import Backend
 from ...pipeline import run as run_pipeline
 from ...transforms import (
     DEFAULT_RADIUS_RATIO,
@@ -12,19 +10,13 @@ from ...transforms import (
     DrawCircleWithSafeTensors,
     DrawCircleWithTensorRT,
 )
+from .options import BackendType, backend_option, load_backend
 
 
 @click.command()
 @click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("output_path", type=click.Path(dir_okay=False, path_type=Path))
-@click.option(
-    "--backend",
-    "backend_type",
-    type=click.Choice(["cpu", "gpu"]),
-    default="gpu",
-    show_default=True,
-    help="gpu: NVDEC → PyTorch (CUDA) → NVENC. cpu: ffmpeg → PyTorch (CPU) → ffmpeg (libx265), no GPU needed.",
-)
+@backend_option
 @click.option(
     "--radius",
     type=float,
@@ -50,7 +42,7 @@ from ...transforms import (
 def run(
     input_path: Path,
     output_path: Path,
-    backend_type: Literal["cpu", "gpu"],
+    backend_type: BackendType,
     radius: float,
     onnx_model: Path | None,
     safetensors_weights: Path | None,
@@ -68,18 +60,7 @@ def run(
     if tensorrt_engine is not None and backend_type == "cpu":
         raise click.UsageError("--tensorrt-engine needs --backend=gpu: TensorRT only runs on the GPU")
 
-    backend: type[Backend]
-    # Imported lazily: the CPU backend must work on machines without the NVIDIA
-    # driver, where loading PyNvVideoCodec may fail
-    match backend_type:
-        case "cpu":
-            from ...backends.cpu import CPUBackend
-
-            backend = CPUBackend
-        case "gpu":
-            from ...backends.gpu import GPUBackend
-
-            backend = GPUBackend
+    backend = load_backend(backend_type)
 
     if onnx_model is not None:
         settings = DrawCircleWithONNX.Settings(model_path=onnx_model, radius_ratio=radius)
